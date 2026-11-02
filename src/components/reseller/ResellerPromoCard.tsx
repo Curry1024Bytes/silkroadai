@@ -20,6 +20,8 @@
  */
 import Link from 'next/link';
 import { ArrowUpRight, UsersRound } from 'lucide-react';
+import { useMessages } from '@/lib/i18n/client';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown> = {}): void {
     void fetch('/api/portal/analytics', {
@@ -39,16 +41,20 @@ interface Props {
 }
 
 export function ResellerPromoCard({ sourceStatus }: Props) {
+    const m = useMessages(resellerMessages).promo;
     return (
         <aside className="flex flex-col gap-4 rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:flex-row sm:items-center sm:p-6">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
                 <UsersRound size={19} strokeWidth={1.8} aria-hidden="true" />
             </span>
             <div className="min-w-0 flex-1">
-                <p className="m-0 font-display text-base font-semibold text-portal-ink">邀请朋友充值,你也赚佣金</p>
+                <p className="m-0 font-display text-base font-semibold text-portal-ink">{m.headline}</p>
                 <p className="m-0 mt-1 text-sm leading-relaxed text-portal-muted">
-                    阶梯佣金 <strong className="text-navy">10% / 15% / 20%</strong>,归因期{' '}
-                    <strong className="text-navy">24 个月</strong>,月结打款。最低门槛,代理人人可申请。
+                    {m.bodyBefore}
+                    <strong className="text-navy">{m.rates}</strong>
+                    {m.bodyMid}
+                    <strong className="text-navy">{m.attribution}</strong>
+                    {m.bodyAfter}
                 </p>
             </div>
             <Link
@@ -56,7 +62,7 @@ export function ResellerPromoCard({ sourceStatus }: Props) {
                 onClick={() => fireAnalytics('reseller_promo_card_clicked', { source: sourceStatus })}
                 className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-panel px-4 text-sm font-semibold text-portal-ink no-underline transition-colors hover:bg-portal-soft"
             >
-                了解代理计划 <ArrowUpRight size={15} aria-hidden="true" />
+                {m.cta} <ArrowUpRight size={15} aria-hidden="true" />
             </Link>
         </aside>
     );

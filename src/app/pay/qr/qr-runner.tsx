@@ -25,6 +25,8 @@
  * their payment had failed).
  */
 import { useEffect, useRef, useState } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { payMessages } from '@/lib/i18n/messages/pay';
 
 const POLL_INTERVAL_MS = 3_000;
 const TIMEOUT_MS = 15 * 60 * 1_000; // 15 minutes
@@ -64,19 +66,21 @@ interface PollResponse {
 // success → status-success, terminal failure → status-error. The
 // sustained-outage hint uses muted-ink (calm grey, NOT a warning red): it is
 // a "still trying" reassurance, not a failure the customer must act on.
-const PHASE_TEXT: Record<DisplayPhase, { label: string; color: string }> = {
-    waiting: { label: '等待付款…', color: 'var(--color-muted-ink)' },
-    paid: { label: '付款已收到,正在到账…', color: 'var(--color-navy)' },
-    recharging: { label: '正在到账…', color: 'var(--color-navy)' },
-    success: { label: '充值成功,正在跳转余额页…', color: 'var(--color-status-success-text)' },
-    failed: { label: '订单失败,正在跳转结果页…', color: 'var(--color-status-error-text)' },
-    timeout: { label: '等待超时,正在跳转结果页…', color: 'var(--color-status-error-text)' },
+// Labels live in `payMessages.qrRunner` (same keys as DisplayPhase).
+const PHASE_COLOR: Record<DisplayPhase, string> = {
+    waiting: 'var(--color-muted-ink)',
+    paid: 'var(--color-navy)',
+    recharging: 'var(--color-navy)',
+    success: 'var(--color-status-success-text)',
+    failed: 'var(--color-status-error-text)',
+    timeout: 'var(--color-status-error-text)',
     // Shown only after FAILURE_GRACE_TICKS consecutive failures — a single
     // transient blip never reaches here. Calm copy + muted ink on purpose.
-    reconnecting: { label: '正在重新连接,请稍候…', color: 'var(--color-muted-ink)' },
+    reconnecting: 'var(--color-muted-ink)',
 };
 
 export function QrPollRunner({ orderId, accessToken }: { orderId: string; accessToken: string | null }) {
+    const m = useMessages(payMessages).qrRunner;
     const [phase, setPhase] = useState<DisplayPhase>('waiting');
     // Avoid double-redirect (interval + timeout racing) and stale state on unmount.
     const redirectedRef = useRef(false);
@@ -172,7 +176,8 @@ export function QrPollRunner({ orderId, accessToken }: { orderId: string; access
         };
     }, [orderId, accessToken]);
 
-    const { label, color } = PHASE_TEXT[phase];
+    const label = m[phase];
+    const color = PHASE_COLOR[phase];
 
     return (
         <div

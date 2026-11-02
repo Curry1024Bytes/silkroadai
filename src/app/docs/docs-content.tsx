@@ -26,6 +26,8 @@ import Link from 'next/link';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import {
     ANTHROPIC_API_BASE_URL,
     CUSTOMER_API_BASE_URL,
@@ -33,11 +35,11 @@ import {
     SUPPORT_WECHAT,
 } from '@/lib/public-config';
 
-export const DOCS_METADATA = {
-    title: '集成文档 — LLmRoute',
-    description:
-        'LLmRoute 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex(CLI / IDE 插件 / 桌面 app)、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
-};
+/** Page metadata for /docs and /workspace/docs. Docs prose stays Chinese; title + description follow the site locale. */
+export function docsMetadata(locale: Locale = 'zh'): { title: string; description: string } {
+    const m = pickMessages(commonMessages, locale);
+    return { title: m.docs.pageTitle, description: m.docs.pageDescription };
+}
 
 interface AgentSection {
     id: string;
@@ -165,9 +167,16 @@ const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
 const SAMPLE_OPENAI_MODEL = 'gpt-5.4';
 const SAMPLE_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
-export function DocsContent({ embedded = false }: { embedded?: boolean }) {
+/**
+ * Docs prose is Chinese-only for now (English edition = separate PR). The
+ * chrome (header nav, back button) follows the site locale and English
+ * visitors get a notice bar. `locale` comes from the top-level page
+ * (`getLocale()`), see src/lib/i18n/README.md rule 2.
+ */
+export function DocsContent({ embedded = false, locale = 'zh' }: { embedded?: boolean; locale?: Locale }) {
     const modelsHref = embedded ? '/workspace/models' : '/models';
     const Root = embedded ? 'section' : 'main';
+    const m = pickMessages(commonMessages, locale);
 
     return (
         <Root className={embedded ? 'w-full' : 'min-h-screen bg-paper'}>
@@ -177,16 +186,16 @@ export function DocsContent({ embedded = false }: { embedded?: boolean }) {
                         <Logo variant="primary-flat" size={28} />
                         <nav className="flex items-center gap-3 text-sm">
                             <Link href={modelsHref} className="text-muted-ink hover:text-navy no-underline">
-                                模型清单
+                                {m.nav.models}
                             </Link>
                             <Link href="/login" className="text-muted-ink hover:text-navy no-underline">
-                                登录
+                                {m.nav.login}
                             </Link>
                             <Link
                                 href="/dashboard"
                                 className="px-3 py-1.5 border border-navy rounded-lg text-navy no-underline hover:bg-paper-muted"
                             >
-                                进入控制台 →
+                                {m.nav.console} →
                             </Link>
                         </nav>
                     </div>
@@ -194,6 +203,15 @@ export function DocsContent({ embedded = false }: { embedded?: boolean }) {
             )}
 
             <div className={embedded ? 'mx-auto w-full max-w-5xl' : 'max-w-5xl mx-auto px-4 sm:px-6 py-10'}>
+                {locale === 'en' ? (
+                    <p
+                        role="note"
+                        lang="en"
+                        className="m-0 mb-6 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-3 text-sm text-status-warning-text"
+                    >
+                        {m.docs.languageNotice}
+                    </p>
+                ) : null}
                 <section className="mb-10">
                     {/* W7 D4 PR-R Item D — back-to-landing link, sits
                      *  above the h1 so customers who deep-linked into
@@ -202,7 +220,7 @@ export function DocsContent({ embedded = false }: { embedded?: boolean }) {
                     {!embedded && (
                         <BackButton className="mb-3 inline-flex w-fit cursor-pointer items-center gap-1 border-0 bg-transparent p-0 text-xs text-muted-ink no-underline transition-colors duration-150 ease-brand hover:text-brand-accent">
                             <span aria-hidden="true">←</span>
-                            <span>返回</span>
+                            <span>{m.nav.back}</span>
                         </BackButton>
                     )}
                     {embedded && <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">DOCUMENTATION</p>}
@@ -4255,7 +4273,7 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
   "response": {
     "status_code": 200,
     "request_id": null,
-    "body": { "created": 1756450000, "data": [ { "url": "https://images.silkroadai.io/gen/xxxx.png" } ] }
+    "body": { "created": 1756450000, "data": [ { "url": "https://images.llmroute.club/gen/xxxx.png" } ] }
   },
   "error": null
 }
@@ -4702,9 +4720,9 @@ print(r.data[0].url)`}</CodeBlock>
   "created": 1788705888,
   "model": "seedream-5-0-pro",
   "data": [
-    { "url": "https://images.silkroadai.io/gen/2026-09-06/….png", "size": "2048x2048", "output_format": "png", "z_index": 0 },
+    { "url": "https://images.llmroute.club/gen/2026-09-06/….png", "size": "2048x2048", "output_format": "png", "z_index": 0 },
     {
-      "url": "https://images.silkroadai.io/gen/2026-09-06/….png",
+      "url": "https://images.llmroute.club/gen/2026-09-06/….png",
       "size": "1273x265", "output_format": "png", "z_index": 1,
       "bounding_box": { "absolute": [383, 120, 1655, 384], "normalized": [187, 59, 808, 188] },
       "name": "标题文字", "description": "黄色大号衬线标题"

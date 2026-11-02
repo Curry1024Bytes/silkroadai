@@ -1,8 +1,11 @@
 /** Public documentation route; authenticated users use /workspace/docs. */
-import { DOCS_METADATA, DocsContent } from './docs-content';
+import { getLocale } from '@/lib/i18n/server';
+import { DocsContent, docsMetadata } from './docs-content';
 
-export const metadata = DOCS_METADATA;
+export async function generateMetadata() {
+    return docsMetadata(await getLocale());
+}
 
-export default function DocsPage() {
-    return <DocsContent />;
+export default async function DocsPage() {
+    return <DocsContent locale={await getLocale()} />;
 }

@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { BalanceAlertForm } from '@/app/(authenticated)/dashboard/balance-alert-form';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 describe('<BalanceAlertForm /> SSR (W6 D2)', () => {
     it('renders the threshold input with the initial value populated', () => {
@@ -41,5 +42,23 @@ describe('<BalanceAlertForm /> SSR (W6 D2)', () => {
     it('mentions the 0 = opt-out copy in the descriptive text', () => {
         const html = renderToString(<BalanceAlertForm initialThreshold={10} />);
         expect(html).toMatch(/0\s*关闭提醒/);
+    });
+});
+
+describe('<BalanceAlertForm /> English locale', () => {
+    it('renders heading, hint, label, button and the alerts-off badge in English', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <BalanceAlertForm initialThreshold={0} />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('Low-balance alert');
+        expect(html).toContain('Enter 0 to turn alerts off');
+        expect(html).toContain('Threshold (CNY)');
+        expect(html).toContain('aria-label="Low-balance alert threshold"');
+        expect(html).toContain('>Save<');
+        expect(html).toContain('Alerts off');
+        expect(html).not.toContain('余额提醒设置');
+        expect(html).not.toContain('已关闭提醒');
     });
 });

@@ -1,3 +1,7 @@
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { modelsMessages } from '@/lib/i18n/messages/models';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { FormError } from '@/components/ui/FormError';
@@ -16,6 +20,9 @@ async function pricingViewer() {
 }
 
 export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }) {
+    const locale = await getLocale();
+    const m = pickMessages(modelsMessages, locale);
+    const c = pickMessages(commonMessages, locale);
     let catalog: Awaited<ReturnType<typeof loadPlazaData>> | null = null;
     try {
         catalog = await loadPlazaData(await pricingViewer());
@@ -25,8 +32,8 @@ export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }
 
     const content = !catalog ? (
         <>
-            <h1 className="m-0 mb-4 text-3xl font-semibold text-navy">模型广场</h1>
-            <FormError severity="banner">当前无法获取模型清单与价格，请稍后重试。</FormError>
+            <h1 className="m-0 mb-4 text-3xl font-semibold text-navy">{m.catalog.heading}</h1>
+            <FormError severity="banner">{m.catalog.loadFailed}</FormError>
         </>
     ) : (
         <PlazaLoader
@@ -47,7 +54,7 @@ export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }
                 <header className="mb-6 flex flex-col gap-3">
                     <BackButton className="inline-flex w-fit cursor-pointer items-center gap-1 border-0 bg-transparent p-0 text-xs text-muted-ink no-underline transition-colors duration-150 ease-brand hover:text-brand-accent">
                         <span aria-hidden="true">←</span>
-                        <span>返回</span>
+                        <span>{c.nav.back}</span>
                     </BackButton>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />

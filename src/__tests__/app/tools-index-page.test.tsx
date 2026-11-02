@@ -7,8 +7,8 @@ import { renderToString } from 'react-dom/server';
 import ToolsIndexPage from '@/app/(authenticated)/tools/page';
 
 describe('工具箱 /tools index', () => {
-    it('renders the 5 tool cards with correct hrefs', () => {
-        const html = renderToString(<ToolsIndexPage />);
+    it('renders the 5 tool cards with correct hrefs', async () => {
+        const html = renderToString(await ToolsIndexPage());
         expect(html).toContain('工具箱');
         expect(html).toContain('Seedance 视频测试');
         expect(html).toContain('AI 对话测试');

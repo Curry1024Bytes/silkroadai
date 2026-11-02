@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
         'src/generated/newapi-readonly/**',
         // Codex skills are standalone tooling with their own runtime/style.
         '.codex/**',
+        // Claude task metadata and nested worktrees are standalone tooling/state.
+        '.claude/**',
         // Supplier new-api fork is local reference source, not Portal code.
         'new-api-custom-full/**',
         // Git submodules:

@@ -1,3 +1,6 @@
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { toolsMessages } from '@/lib/i18n/messages/tools';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
@@ -12,11 +15,7 @@ import {
     Wrench,
 } from 'lucide-react';
 
-export const metadata: Metadata = {
-    title: '工具箱 · LLmRoute',
-    description:
-        'LLmRoute 工具箱 —— Seedance 视频 / AI 对话 / AI 生图在线测试工具，以及 OpenAI Codex / Claude Code 接入。',
-};
+export async function generateMetadata(): Promise<Metadata> { const m = pickMessages(toolsMessages, await getLocale()).index; return { title: m.metaTitle, description: m.metaDescription }; }
 
 interface ToolItem {
     icon: LucideIcon;
@@ -26,55 +25,57 @@ interface ToolItem {
     action: string;
 }
 
+export default async function ToolsIndexPage() {
+    const m = pickMessages(toolsMessages, await getLocale()).index;
 const ONLINE_TOOLS: ToolItem[] = [
     {
         icon: Clapperboard,
-        title: 'Seedance 视频测试',
-        description: '在线生成 Seedance 视频，支持文生视频、图生视频、首尾帧与参考音频等完整工作流。',
+        title: m.seedance.title,
+        description: m.seedance.description,
         href: '/tools/seedance',
-        action: '打开视频工具',
+        action: m.seedance.action,
     },
     {
         icon: MessageSquareText,
-        title: 'AI 对话测试',
-        description: '使用 API Key 测试逐字流式对话，覆盖 GPT、Claude、Gemini 与 DeepSeek 等模型。',
+        title: m.chat.title,
+        description: m.chat.description,
         href: '/tools/chat',
-        action: '打开对话工具',
+        action: m.chat.action,
     },
     {
         icon: ImageIcon,
-        title: 'AI 生图测试',
-        description: '测试文生图与图生图能力，快速验证 Gemini、GPT Image 等视觉模型的实际效果。',
+        title: m.image.title,
+        description: m.image.description,
         href: '/tools/image',
-        action: '打开生图工具',
+        action: m.image.action,
     },
 ];
 
 const INTEGRATIONS: ToolItem[] = [
     {
         icon: TerminalSquare,
-        title: 'OpenAI Codex 接入',
-        description: '配置 Codex CLI、IDE 插件与桌面版，通过 LLmRoute 使用 ChatGPT 系模型。',
+        title: m.codex.title,
+        description: m.codex.description,
         href: '/workspace/docs#codex-cli',
-        action: '查看接入指南',
+        action: m.viewGuide,
     },
     {
         icon: Bot,
-        title: 'Claude Code 接入',
-        description: '配置 Base URL 与 API Key，在 Claude Code 桌面版或 CLI 中使用 Claude 模型。',
+        title: m.claudeCode.title,
+        description: m.claudeCode.description,
         href: '/workspace/docs#claude-code',
-        action: '查看接入指南',
+        action: m.viewGuide,
     },
 ];
 
-export default function ToolsIndexPage() {
+
     return (
         <section className="space-y-8">
             <div>
                 <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">TOOLKIT</p>
-                <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">工具箱</h1>
+                <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">{m.title}</h1>
                 <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                    在线验证模型能力，或将常用开发工具接入 LLmRoute。
+                    {m.intro}
                 </p>
             </div>
 
@@ -83,9 +84,9 @@ export default function ToolsIndexPage() {
                     <Wrench size={18} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
                     <div>
                         <h2 id="online-tools-heading" className="m-0 text-base font-semibold text-portal-ink">
-                            在线工具
+                            {m.onlineHeading}
                         </h2>
-                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">无需本地配置，直接验证 API 能力</p>
+                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">{m.onlineHint}</p>
                     </div>
                 </div>
 
@@ -128,9 +129,9 @@ export default function ToolsIndexPage() {
                     <Code2 size={18} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
                     <div>
                         <h2 id="integrations-heading" className="m-0 text-base font-semibold text-portal-ink">
-                            开发工具接入
+                            {m.integrationsHeading}
                         </h2>
-                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">CLI、IDE 与桌面客户端配置指南</p>
+                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">{m.integrationsHint}</p>
                     </div>
                 </div>
 

@@ -7,7 +7,9 @@
  * a11y-correct radio-style button group with active/idle styles) and
  * stay visually adjacent in the studio layout.
  */
-import { IMAGE_COUNT_OPTIONS, IMAGE_SIZE_OPTIONS } from '@/data/image-models';
+import { IMAGE_COUNT_OPTIONS, IMAGE_SIZE_OPTIONS, imageSizeLabel } from '@/data/image-models';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface SizeProps {
     value: string;
@@ -16,8 +18,10 @@ interface SizeProps {
 }
 
 export function SizeSelector({ value, onChange, disabled = false }: SizeProps) {
+    const m = useMessages(imageMessages).selectors;
+    const locale = useLocale();
     return (
-        <div role="radiogroup" aria-label="图像尺寸" className="inline-flex flex-wrap gap-1.5">
+        <div role="radiogroup" aria-label={m.sizeAria} className="inline-flex flex-wrap gap-1.5">
             {IMAGE_SIZE_OPTIONS.map((s) => {
                 const active = s.id === value;
                 return (
@@ -38,7 +42,7 @@ export function SizeSelector({ value, onChange, disabled = false }: SizeProps) {
                             disabled ? 'opacity-60 cursor-not-allowed' : '',
                         ].join(' ')}
                     >
-                        <span className="block">{s.label}</span>
+                        <span className="block">{imageSizeLabel(s, locale)}</span>
                         <span className="block text-[10px] text-minor-ink mt-0.5 tabular-nums">{s.sub}</span>
                     </button>
                 );
@@ -54,8 +58,9 @@ interface CountProps {
 }
 
 export function CountSelector({ value, onChange, disabled = false }: CountProps) {
+    const m = useMessages(imageMessages).selectors;
     return (
-        <div role="radiogroup" aria-label="生成张数" className="inline-flex gap-1.5">
+        <div role="radiogroup" aria-label={m.countAria} className="inline-flex gap-1.5">
             {IMAGE_COUNT_OPTIONS.map((n) => {
                 const active = n === value;
                 return (

@@ -13,6 +13,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import { SettlementClient } from '@/app/(authenticated)/reseller/settlement/settlement-client';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 /** React SSR splits adjacent dynamic+static JSX nodes with `<!-- -->`.
  *  Strip them so substring assertions target the user-visible string. */
@@ -125,5 +126,81 @@ describe('<SettlementClient />', () => {
         expect(html).toContain('alipay-txn-001');
         expect(html).toContain('¥250.00');
         expect(html).toContain('¥180.00');
+    });
+});
+
+describe('<SettlementClient /> (en)', () => {
+    it('renders English banner, reasons, history copy and chips', () => {
+        const html = strip(
+            renderToString(
+                <LocaleProvider locale="en">
+                    <SettlementClient
+                        {...baseProps}
+                        thisMonth={{ period: '2026-05', confirmed_cny: 200, confirmed_count: 5, pending_count: 3 }}
+                        history={[
+                            {
+                                id: 's-1',
+                                period_month: '2026-03',
+                                total_commission_cny: 250,
+                                commission_count: 10,
+                                status: 'paid',
+                                requested_at: '2026-04-01T00:00:00.000Z',
+                                paid_at: '2026-04-03T00:00:00.000Z',
+                                paid_tx_ref: 'alipay-txn-001',
+                                notes: 'wired',
+                            },
+                            {
+                                id: 's-2',
+                                period_month: '2026-02',
+                                total_commission_cny: 180,
+                                commission_count: 7,
+                                status: 'requested',
+                                requested_at: '2026-03-01T00:00:00.000Z',
+                                paid_at: null,
+                                paid_tx_ref: null,
+                                notes: null,
+                            },
+                        ]}
+                    />
+                </LocaleProvider>,
+            ),
+        );
+        expect(html).toContain('Payout details on file');
+        expect(html).toContain('Method alipay · Payee Frank · Account ****.com');
+        expect(html).toContain('Reseller console');
+        expect(html).toContain('Settlement history');
+        expect(html).toContain('This month · 2026-05');
+        expect(html).toContain('Last month · 2026-04');
+        expect(html).toContain('Request payout');
+        expect(html).toContain('3 pending');
+        expect(html).toContain('3 commissions for this month are still on hold');
+        expect(html).toContain('Below the ¥100.00 payout minimum');
+        expect(html).toContain('(10 commissions)');
+        expect(html).toContain('Paid on 4/3/2026 · ref alipay-txn-001');
+        expect(html).toContain('Requested on 3/1/2026 · awaiting payment');
+        expect(html).toContain('Notes: wired');
+        expect(html).toContain('Awaiting payment');
+        expect(html).not.toContain('已打款');
+        expect(html).not.toContain('申请结算');
+    });
+
+    it('incomplete payout details → English warning + disabled reason', () => {
+        const html = strip(
+            renderToString(
+                <LocaleProvider locale="en">
+                    <SettlementClient
+                        {...baseProps}
+                        settleInfoComplete={false}
+                        settleMethod={null}
+                        settleAccount={null}
+                        settleName={null}
+                    />
+                </LocaleProvider>,
+            ),
+        );
+        expect(html).toContain('Please complete your payout details');
+        expect(html).toContain('Complete your payout details first');
+        expect(html).toContain('No settlements yet');
+        expect(html).not.toContain('请补全收款信息');
     });
 });

@@ -12,6 +12,8 @@
 import { useState } from 'react';
 import useSWRInfinite from 'swr/infinite';
 import type { ImageGenerationItem, ListPage } from './types';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 type Filter = 'all' | 'favorite';
 
@@ -31,6 +33,7 @@ interface Props {
 const PAGE_SIZE = 20;
 
 export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
+    const m = useMessages(imageMessages).history;
     const [open, setOpen] = useState(false);
     const [filter, setFilter] = useState<Filter>('all');
 
@@ -50,7 +53,7 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
     const hasMore = lastPage?.has_more ?? false;
 
     return (
-        <section aria-label="生成历史" className="mt-8 border-t border-brand-border pt-6">
+        <section aria-label={m.aria} className="mt-8 border-t border-brand-border pt-6">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <button
                     type="button"
@@ -69,16 +72,16 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
                     >
                         ▸
                     </span>
-                    <span className="font-medium">{open ? '收起历史' : '展开历史'}</span>
+                    <span className="font-medium">{open ? m.collapse : m.expand}</span>
                 </button>
 
                 {open && (
-                    <div role="tablist" aria-label="历史筛选" className="inline-flex gap-1.5">
+                    <div role="tablist" aria-label={m.filterAria} className="inline-flex gap-1.5">
                         <TabBtn active={filter === 'all'} onClick={() => setFilter('all')}>
-                            全部
+                            {m.all}
                         </TabBtn>
                         <TabBtn active={filter === 'favorite'} onClick={() => setFilter('favorite')}>
-                            收藏
+                            {m.favorites}
                         </TabBtn>
                     </div>
                 )}
@@ -87,10 +90,10 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
             {open && (
                 <div className="mt-5">
                     {!data ? (
-                        <div className="text-sm text-muted-ink py-6 text-center">加载中…</div>
+                        <div className="text-sm text-muted-ink py-6 text-center">{m.loading}</div>
                     ) : items.length === 0 ? (
                         <div className="text-sm text-muted-ink py-10 text-center">
-                            {filter === 'favorite' ? '还没收藏过图' : '还没生成过图'}
+                            {filter === 'favorite' ? m.noFavorites : m.noImages}
                         </div>
                     ) : (
                         <ul className="list-none p-0 m-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -100,7 +103,7 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
                                         <button
                                             type="button"
                                             onClick={() => onOpen(it, i)}
-                                            aria-label={`查看 ${it.prompt.slice(0, 30)}`}
+                                            aria-label={m.viewAria(it.prompt.slice(0, 30))}
                                             className={[
                                                 'group relative block w-full aspect-square overflow-hidden rounded-lg cursor-zoom-in',
                                                 'bg-paper-muted border border-brand-border',
@@ -116,7 +119,7 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
                                             />
                                             {it.is_favorite ? (
                                                 <span
-                                                    aria-label="已收藏"
+                                                    aria-label={m.favorited}
                                                     className="absolute top-1.5 right-1.5 text-brand-accent text-base bg-surface/80 rounded px-1"
                                                 >
                                                     ★
@@ -143,7 +146,7 @@ export function HistoryGallery({ suppressIds = [], onOpen }: Props) {
                                     isValidating ? 'opacity-50 cursor-wait' : '',
                                 ].join(' ')}
                             >
-                                {isValidating ? '加载中…' : '加载更多'}
+                                {isValidating ? m.loading : m.loadMore}
                             </button>
                         </div>
                     )}

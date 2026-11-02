@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { LoaderCircle, LogOut } from 'lucide-react';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
 
 /**
  * Logout button. POSTs /api/auth/logout (clears the silkroad_session cookie
@@ -14,6 +16,7 @@ import { LoaderCircle, LogOut } from 'lucide-react';
  */
 export function LogoutButton() {
     const [loggingOut, setLoggingOut] = useState(false);
+    const m = useMessages(commonMessages);
 
     async function handleLogout() {
         if (loggingOut) return;
@@ -36,8 +39,8 @@ export function LogoutButton() {
             type="button"
             onClick={handleLogout}
             disabled={loggingOut}
-            aria-label={loggingOut ? '退出中' : '退出登录'}
-            title={loggingOut ? '退出中' : '退出登录'}
+            aria-label={loggingOut ? m.auth.loggingOutLabel : m.auth.logoutLabel}
+            title={loggingOut ? m.auth.loggingOutLabel : m.auth.logoutLabel}
             className="flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm text-portal-muted transition-colors duration-200 hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25 disabled:cursor-wait disabled:opacity-60"
         >
             {loggingOut ? (
@@ -45,7 +48,7 @@ export function LogoutButton() {
             ) : (
                 <LogOut size={17} strokeWidth={1.8} aria-hidden="true" />
             )}
-            <span className="hidden lg:inline">{loggingOut ? '退出中…' : '退出'}</span>
+            <span className="hidden lg:inline">{loggingOut ? m.auth.loggingOut : m.auth.logout}</span>
         </button>
     );
 }

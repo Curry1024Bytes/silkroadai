@@ -1,4 +1,6 @@
 'use client';
+import { useMessages } from '@/lib/i18n/client';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 /**
  * W6 D2 — Balance alert threshold settings (client form).
@@ -28,6 +30,7 @@ interface Props {
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 export function BalanceAlertForm({ initialThreshold }: Props) {
+    const copy = useMessages(dashboardMessages);
     const [value, setValue] = useState<string>(String(initialThreshold));
     const [persisted, setPersisted] = useState<number>(initialThreshold);
     const [status, setStatus] = useState<SaveStatus>('idle');
@@ -73,17 +76,16 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
             <div className="border-b border-portal-line px-5 py-4 sm:px-6">
                 <div className="flex items-center gap-2">
                     <BellRing size={17} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
-                    <h2 className="m-0 font-display text-base font-semibold text-portal-ink">余额提醒设置</h2>
+                    <h2 className="m-0 font-display text-base font-semibold text-portal-ink">{copy.alert.heading}</h2>
                 </div>
-                <p className="m-0 mt-1 text-xs text-portal-subtle">账户保护</p>
+                <p className="m-0 mt-1 text-xs text-portal-subtle">{copy.portal.protection}</p>
             </div>
             <div className="px-5 py-5 sm:px-6">
                 <p className="m-0 mb-5 text-sm leading-relaxed text-portal-muted">
-                    当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0 关闭提醒。
-                </p>
+                    {copy.alert.hint}</p>
                 <div className="flex items-end gap-2.5 flex-wrap">
                     <div>
-                        <Label htmlFor="balance-alert-threshold">阈值(CNY)</Label>
+                        <Label htmlFor="balance-alert-threshold">{copy.alert.thresholdLabel}</Label>
                         <Input
                             id="balance-alert-threshold"
                             type="number"
@@ -95,7 +97,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                                 setValue(e.target.value);
                                 if (status !== 'idle') setStatus('idle');
                             }}
-                            aria-label="余额提醒阈值"
+                            aria-label={copy.alert.thresholdAria}
                             block={false}
                             className="w-32 border-portal-line tabular-nums"
                         />
@@ -108,7 +110,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         loading={status === 'saving'}
                         disabled={!canSave}
                     >
-                        {status === 'saving' ? '保存中…' : '保存'}
+                        {status === 'saving' ? copy.alert.saving : copy.alert.save}
                     </Button>
                     {persisted === 0 && (
                         <span
@@ -117,15 +119,14 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                                 'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
                             ].join(' ')}
                         >
-                            已关闭提醒
-                        </span>
+                            {copy.alert.disabled}</span>
                     )}
                     {status === 'saved' && persisted > 0 && (
                         <span className="text-xs text-status-success-text">已保存 ✓ 当前阈值 ¥{persisted}</span>
                     )}
                     {status === 'error' && errMsg && <span className="text-xs text-status-error-text">{errMsg}</span>}
                     {status === 'idle' && !validRange && dirty && (
-                        <span className="text-xs text-status-error-text">请输入 0–1000 的整数</span>
+                        <span className="text-xs text-status-error-text">{copy.alert.invalidRange}</span>
                     )}
                 </div>
             </div>

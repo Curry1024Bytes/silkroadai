@@ -1,3 +1,5 @@
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 /**
  * /dashboard streaming sections(P1 — 2026-08-29)。
  *
@@ -37,7 +39,7 @@ import {
     isSettlementRefund,
     parseCacheTokens,
     settlementRefundContent,
-    FAILED_VIDEO_REFUND_NOTE,
+    failedVideoRefundNote,
     type RefundKind,
 } from '@/lib/newapi/log-display';
 import { periodToRange, type UsagePeriod } from './period';
@@ -111,7 +113,7 @@ export interface UsageData {
     calls: CallRow[];
 }
 
-function toCallRow(log: NewApiUsageLog, refundKind: RefundKind | null = null): CallRow {
+function toCallRow(log: NewApiUsageLog, refundKind: RefundKind | null = null, locale: Locale = 'zh'): CallRow {
     const cache = parseCacheTokens(log.other);
     return {
         id: log.id,
@@ -136,14 +138,14 @@ function toCallRow(log: NewApiUsageLog, refundKind: RefundKind | null = null): C
         costCny: quotaToCny(log.quota),
         type: log.type,
         refundKind,
-        content: sanitizeLogContent(log.content),
+        content: sanitizeLogContent(log.content, locale),
     };
 }
 
-function settlementRefundRow(log: NewApiUsageLog): CallRow {
-    const row = toCallRow(log, 'settlement');
+function settlementRefundRow(log: NewApiUsageLog, locale: Locale): CallRow {
+    const row = toCallRow(log, 'settlement', locale);
     row.costCny = -quotaToCny(log.quota);
-    row.content = settlementRefundContent(log, (quota) => formatSignedCny(quotaToCny(quota), { preciseSmall: true }));
+    row.content = settlementRefundContent(log, (quota) => formatSignedCny(quotaToCny(quota), { preciseSmall: true }), locale);
     return row;
 }
 
@@ -153,8 +155,9 @@ export async function loadUsageData(args: {
     newapiUserId: number | null;
     newapiUsername: string | null;
     period: UsagePeriod;
+    locale?: Locale;
 }): Promise<UsageData> {
-    const { portalUserId, newapiUserId, newapiUsername, period } = args;
+    const { portalUserId, newapiUserId, newapiUsername, period, locale = 'zh' } = args;
     if (newapiUserId == null || newapiUsername == null) {
         return { agg: null, usageErr: 'account_not_provisioned', calls: [] };
     }
@@ -217,12 +220,12 @@ export async function loadUsageData(args: {
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, CALLS_CAP)
         .map((l) => {
-            if (isSettlementRefund(l)) return settlementRefundRow(l);
-            const row = toCallRow(l);
+            if (isSettlementRefund(l)) return settlementRefundRow(l, locale);
+            const row = toCallRow(l, null, locale);
             if (failedConsumeIds.has(l.id)) {
                 row.type = 6; // → callResult 判失败
                 row.costCny = 0; // 已退款,本次不计费
-                row.content = FAILED_VIDEO_REFUND_NOTE;
+                row.content = failedVideoRefundNote(locale);
             }
             return row;
         });
@@ -233,7 +236,8 @@ export async function loadUsageData(args: {
 // ────────────────────────── streamed sections ──────────────────────────
 
 /** 余额 stale / 失败横幅(在汇总卡上方)。无事可报时渲染 null。 */
-export async function BalanceNotices({ data }: { data: Promise<BalanceData> }) {
+export async function BalanceNotices({ data, locale = 'zh' }: { data: Promise<BalanceData>; locale?: Locale }) {
+    const m = pickMessages(dashboardMessages, locale);
     const { bal, balErr } = await data;
     if (!bal?.stale && !balErr) return null;
     return (
@@ -243,12 +247,12 @@ export async function BalanceNotices({ data }: { data: Promise<BalanceData> }) {
                     role="status"
                     className="mb-4 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-2.5 text-xs text-status-warning-text"
                 >
-                    余额数据暂时不可更新,显示的是稍早数据。
+                    {m.notices.balanceStale}
                 </div>
             )}
             {balErr && (
                 <div className="mb-4">
-                    <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
+                    <FormError severity="banner">{m.notices.balanceError}</FormError>
                 </div>
             )}
         </>
@@ -456,15 +460,16 @@ export function StatCardSkeletons({ count }: { count: number }) {
 }
 
 /** 用量主体骨架:真实标题(不闪)+ 图表块 + 明细行。 */
-export function UsageBodySkeleton({ periodLabel }: { periodLabel: string }) {
+export function UsageBodySkeleton({ periodLabel, locale = 'zh' }: { periodLabel: string; locale?: Locale }) {
+    const m = pickMessages(dashboardMessages, locale);
     return (
         <>
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">{m.usage.chartHeading(periodLabel)}</h2>
             <div className="mb-6">
                 <Bone className="h-64 w-full" />
             </div>
             <div className="mb-3 flex items-end justify-between gap-3">
-                <h2 className="m-0 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+                <h2 className="m-0 text-base font-semibold text-navy">{m.usage.callsHeading(periodLabel)}</h2>
             </div>
             <div className="mb-8 space-y-3">
                 {Array.from({ length: 6 }, (_, i) => (

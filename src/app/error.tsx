@@ -27,7 +27,9 @@
 import { Logo } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
-import { SUPPORT_WECHAT } from '@/lib/public-config';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { SUPPORT_EMAIL, SUPPORT_WECHAT } from '@/lib/public-config';
 
 export default function ErrorBoundary({ error }: { error: Error & { digest?: string }; reset: () => void }) {
     // `digest` is Next's server-side error fingerprint, useful for ops
@@ -35,6 +37,7 @@ export default function ErrorBoundary({ error }: { error: Error & { digest?: str
     // support can paste it. Won't leak secrets — Next strips messages
     // from prod boundaries, only the digest reaches us here.
     const digest = error?.digest;
+    const m = useMessages(commonMessages);
     return (
         <main className="min-h-[70vh] flex items-center justify-center bg-paper px-4 py-12">
             <Card className="w-full max-w-md p-8 text-center">
@@ -48,32 +51,32 @@ export default function ErrorBoundary({ error }: { error: Error & { digest?: str
                 >
                     500
                 </p>
-                <h1 className="m-0 mb-2 text-xl font-semibold text-navy">服务暂不可用</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">我们已收到错误,请稍后重试。</p>
+                <h1 className="m-0 mb-2 text-xl font-semibold text-navy">{m.errors.serverErrorTitle}</h1>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">{m.errors.serverErrorBody}</p>
                 <div className="flex flex-col sm:flex-row gap-2 justify-center">
                     <Button href="/" variant="primary" size="md">
-                        返回首页
+                        {m.nav.backHome}
                     </Button>
                     <Button href="/dashboard" variant="secondary" size="md">
-                        进入控制台
+                        {m.nav.console}
                     </Button>
                 </div>
                 {digest ? (
                     <p className="m-0 mt-5 text-xs text-minor-ink">
-                        错误编号:{' '}
+                        {m.errors.errorId}{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             {digest}
                         </code>
                     </p>
                 ) : null}
                 <p className="m-0 mt-4 text-xs text-minor-ink">
-                    需要帮助?微信{' '}
+                    {m.support.needHelp}{' '}
                     <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                         {SUPPORT_WECHAT}
                     </code>{' '}
-                    · 邮箱{' '}
-                    <a href="mailto:support@llmroute.club" className="text-navy no-underline hover:text-brand-accent">
-                        support@llmroute.club
+                    · {m.support.email}{' '}
+                    <a href={`mailto:${SUPPORT_EMAIL}`} className="text-navy no-underline hover:text-brand-accent">
+                        {SUPPORT_EMAIL}
                     </a>
                 </p>
             </Card>

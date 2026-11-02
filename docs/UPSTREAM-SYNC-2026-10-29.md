@@ -75,3 +75,33 @@
 - 品牌扫描：`git grep` 客户可见文案中不再出现 `Silk Road`、`silkroadai.io`、上游客服微信；`X-Silkroadai-*` 头与 `silkroadai` 元数据命名空间按 CLAUDE.md 保留。
 - `f5525351` 原有测试全部通过；为四个标签和两个服务端句子补英文断言。
 - 只推 `origin/dev`；不动 prod，不部署。合并后在本报告追加三方取舍与实际结果。
+
+## 8. 实际合并结果（2026-11-02，北京时间）
+
+operator 已确认采用第 6 节推荐方案：
+
+- dev 改写/新增的客户文案补齐英文；首次访问按 `Accept-Language`，并由 `portal_locale` cookie 持久化；CSV 保持中文。
+- `MERGE_HEAD=e7acdafcf62af7b0d874b6acf190fc4c532ca1cc` 的 62 个冲突路径已逐一处理，未保留冲突标记；`tools/page.tsx` 继续删除，工具箱使用 `(authenticated)/tools/page.tsx`。
+- 业务语义以 dev 为准：保留 LLmRoute customer shell、动态模型/价格目录、Key 额度/到期与失效状态、视频退款两类负金额行、失败退款配对、固定 API 路径和现有品牌配置。上游 i18n 的消息模块、LocaleProvider、Cookie/Accept-Language 解析和页面级英文覆盖按冲突文件重放。
+- 日志退款语义保持：结算退款独立负金额行；配不上预扣的失败退款独立负金额行；配上的失败退款将预扣行改成失败且金额 ¥0；CSV 对账格式保持中文。
+- 生产兼容：无 migration、无 API/Nginx/Cloudflare/Docker 变更；新增开发依赖 `eslint-plugin-react-hooks`，并将本地 `.claude/**` 工作目录加入 ESLint 忽略。没有修改 new-api 源码、渠道、价格或生产环境。
+
+三方语义审计按文件类别完成：
+
+| 文件类别 | dev 基线语义 | 上游语义 | 最终选择 |
+| --- | --- | --- | --- |
+| dashboard / portal-sections / call-detail / usage loader | LLmRoute 账户卡、热门模型、调用明细、视频退款与固定金额格式 | 旧结构的 i18n 文案与语言上下文 | 保留 dev 结构和退款/计量行为，接入 dashboard messages 与 locale-aware formatting |
+| logs viewer / `/api/portal/logs` / export | 过滤、脱敏、失败配对、结算/失败退款分类 | 全站英文过滤器、状态、脱敏文案 | 保留 dev refundKind/配对/CSV 语义，接入 logs messages；CSV 仍中文 |
+| keys / pricing / models | 动态拓扑、专属倍率、Key 额度/到期、LLmRoute URL | 上游旧版页面结构与英文 messages | 保留 dev 数据与路由结构，接入对应 messages；不采用上游旧硬编码价格或公共 URL |
+| auth / pay / reseller / storage / tools / image | LLmRoute 品牌、客户路由、现有功能入口 | 上游中英文页面文案与 metadata | 保留 dev 行为和链接，采用双语消息并替换上游品牌/客服 |
+| docs / legal / admin / enterprise | docs-content、法律和控制台现有结构 | 上游公共文档外壳及语言提示 | 保留 docs-content 与 LLmRoute URL；正文/法律/管理端范围仍按报告规定不翻译 |
+| tests | dev 既有行为断言 | #574 新增英文回归 | 保留上游回归场景；仅将旧品牌、已删除 GPU、workspace 路由和 dev 结构差异改为当前契约 |
+
+验证结果：
+
+- `corepack pnpm test:ci`: **400 files / 6404 passed / 1 skipped / 0 failed**。
+- `corepack pnpm typecheck`: 通过。
+- `corepack pnpm lint`: 通过，0 errors；保留既有 warnings。
+- 改动文件 Prettier 检查：通过；`git diff --check`：通过。
+- `corepack pnpm build`: 通过，Next 路由表生成成功。构建仅提示项目主目录存在误创建的 `/Users/elon/pnpm-lock.yaml`，不属于应用代码；构建未部署。
+- 当前 merge 尚未提交、未推送、未进入 prod，未登录 VPS。

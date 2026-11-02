@@ -17,10 +17,15 @@
  */
 import Link from 'next/link';
 import { prisma } from '@/lib/db';
-import { SUPPORT_WECHAT } from '@/lib/public-config';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { payMessages } from '@/lib/i18n/messages/pay';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '支付结果 — LLmRoute' };
+export async function generateMetadata() {
+    const m = pickMessages(payMessages, await getLocale());
+    return { title: m.result.pageTitle };
+}
 
 const containerStyle: React.CSSProperties = {
     minHeight: '100vh',
@@ -61,15 +66,16 @@ export default async function PayResultPage({
     // direct-from-gateway redirects sometimes carry out_trade_no.
     const orderIdRaw = params.order_id ?? params.out_trade_no;
     const orderId = typeof orderIdRaw === 'string' ? orderIdRaw : null;
+    const m = pickMessages(payMessages, await getLocale()).result;
 
     if (!orderId) {
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#0e1715' }}>访问无效</h1>
-                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>缺少订单参数。</p>
+                    <h1 style={{ margin: 0, fontSize: 18, color: '#0e1715' }}>{m.invalidTitle}</h1>
+                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>{m.invalidBody}</p>
                     <Link href="/" style={buttonStyle}>
-                        返回首页
+                        {m.backHome}
                     </Link>
                 </div>
             </main>
@@ -85,12 +91,12 @@ export default async function PayResultPage({
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单异常</h1>
-                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>
-                        未找到该订单。如已付款请联系客服:微信 {SUPPORT_WECHAT}。
-                    </p>
+                    <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>
+                        {m.notFoundTitle}
+                    </h1>
+                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>{m.notFoundBody}</p>
                     <Link href="/" style={buttonStyle}>
-                        返回首页
+                        {m.backHome}
                     </Link>
                 </div>
             </main>
@@ -99,6 +105,7 @@ export default async function PayResultPage({
 
     const success = order.status === 'COMPLETED';
     const processing = order.status === 'PAID' || order.status === 'RECHARGING';
+    const amount = `¥${Number(order.amount).toFixed(2)}`;
 
     return (
         <main style={containerStyle}>
@@ -114,17 +121,13 @@ export default async function PayResultPage({
                               : 'var(--color-status-error-text)',
                     }}
                 >
-                    {success ? '付款成功' : processing ? '付款已收到,处理中' : '订单异常'}
+                    {success ? m.successTitle : processing ? m.processingTitle : m.abnormalTitle}
                 </h1>
                 <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>
-                    {success
-                        ? `¥${Number(order.amount).toFixed(2)} 已到账,余额刷新可能延迟最多 60 秒。`
-                        : processing
-                          ? `¥${Number(order.amount).toFixed(2)} 已确认,正在到账,通常几秒内完成。`
-                          : `订单状态异常,如已付款请联系客服:微信 ${SUPPORT_WECHAT}。`}
+                    {success ? m.successBody(amount) : processing ? m.processingBody(amount) : m.abnormalBody}
                 </p>
                 <Link href={success || processing ? '/balance' : '/'} style={buttonStyle}>
-                    {success || processing ? '返回 /balance' : '返回首页'}
+                    {success || processing ? m.backToBalance : m.backHome}
                 </Link>
             </div>
         </main>

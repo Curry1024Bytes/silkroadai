@@ -47,14 +47,17 @@ import {
     type CatalogBillingDetails,
 } from '@/lib/models/catalog-pricing-details';
 import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { getLocale } from '@/lib/i18n/server';
+import { pricingMessages, type PricingMessages } from '@/lib/i18n/messages/pricing';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const metadata = {
-    title: '模型价格 — LLmRoute',
-    description:
-        'LLmRoute 模型价格总表:Claude / GPT / Gemini 等按百万 token 计费,生图模型按张计费,全部人民币标价,按档次(号池 / 官方稳定 / 专属)分列。',
-};
+export async function generateMetadata() {
+    const m = pickMessages(pricingMessages, await getLocale());
+    return { title: m.meta.title, description: m.meta.description };
+}
 
 async function getPricingUserId(): Promise<string | undefined> {
     const h = await headers();
@@ -218,6 +221,9 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
 }
 
 export default async function PricingPage() {
+    // Only this top-level page resolves the locale; the sections below are sync and get `m` as a prop.
+    const locale = await getLocale();
+    const m = pickMessages(pricingMessages, locale);
     let sheet: Awaited<ReturnType<typeof loadPricingSheet>> | null = null;
     let fetchErr = false;
     try {
@@ -234,44 +240,44 @@ export default async function PricingPage() {
                 <header className="mb-6 flex flex-col gap-3">
                     <BackButton className="inline-flex items-center gap-1 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit cursor-pointer border-0 bg-transparent p-0">
                         <span aria-hidden="true">←</span>
-                        <span>返回</span>
+                        <span>{m.back}</span>
                     </BackButton>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
                         <p className="m-0 text-xs text-minor-ink">One route. Every model.</p>
+                        <LocaleSwitcher className="ml-auto" />
                     </div>
-                    <h1 className="m-0 text-3xl font-semibold text-navy">模型价格</h1>
+                    <h1 className="m-0 text-3xl font-semibold text-navy">{m.title}</h1>
                     <p className="m-0 text-sm text-muted-ink leading-relaxed max-w-3xl">
-                        全部为人民币标价:对话模型按 <strong className="text-navy">¥ / 百万 token</strong>(输入 /
-                        输出分列)计费,生图模型按 <strong className="text-navy">¥ / 张</strong> 计费。
-                        同一模型的不同「档次」对应不同上游线路(号池 / 官方稳定 / 专属等),在{' '}
+                        {m.intro.a}
+                        <strong className="text-navy">{m.intro.perToken}</strong>
+                        {m.intro.b}
+                        <strong className="text-navy">{m.intro.perImage}</strong>
+                        {m.intro.c}
                         <Link href="/keys" className="text-navy underline">
-                            密钥管理
-                        </Link>{' '}
-                        创建 API Key 时选择。这里展示已保存的目录价格；完整模型清单见{' '}
-                        <Link href="/models" className="text-navy underline">
-                            /models
+                            {m.intro.keysLink}
                         </Link>
-                        。
+                        {m.intro.d}
+                        <Link href="/models" className="text-navy underline">
+                            {m.intro.modelsLink}
+                        </Link>
+                        {m.intro.e}
                     </p>
                 </header>
 
-                {sheet && sheet.vendors.some((v) => v.models.some((m) => m.rows.some((r) => r.special))) && (
+                {sheet && sheet.vendors.some((v) => v.models.some((mb) => mb.rows.some((r) => r.special))) && (
                     <p role="status" className="mb-6 text-sm text-brand-accent">
-                        已按您的专属倍率显示价格
+                        {m.specialBanner}
                     </p>
                 )}
                 {fetchErr || !sheet ? (
-                    <FormError severity="banner">当前无法获取价格表,请稍后重试。</FormError>
+                    <FormError severity="banner">{m.loadError}</FormError>
                 ) : (
                     <div className="flex flex-col gap-10">
                         {sheet.vendors.map((vb) => (
-                            <VendorPriceSection key={vb.vendor} block={vb} />
+                            <VendorPriceSection key={vb.vendor} block={vb} m={m} locale={locale} />
                         ))}
-                        <p className="m-0 text-xs text-minor-ink leading-relaxed">
-                            共 {sheet.modelCount} 个已标价模型。部分长尾模型(开源系 / 视频等)未列入本表,
-                            以实际用量账单为准;如需批量或企业价,请联系我们。
-                        </p>
+                        <p className="m-0 text-xs text-minor-ink leading-relaxed">{m.footer(sheet.modelCount)}</p>
                     </div>
                 )}
             </div>
@@ -279,8 +285,11 @@ export default async function PricingPage() {
     );
 }
 
-function VendorPriceSection({ block }: { block: VendorBlock }) {
+function VendorPriceSection({ block, m, locale }: { block: VendorBlock; m: PricingMessages; locale: Locale }) {
     const meta = VENDOR_META[block.vendor];
+    const en = locale === 'en';
+    // zh keeps the catalog's own subtitle (`VENDOR_META[*].zh`); en uses the translated map.
+    const subtitle = en ? m.vendor.sub[block.vendor] : meta.zh;
     return (
         <section>
             <header className="flex items-center gap-3 mb-4 pb-3 border-b border-brand-border">
@@ -292,10 +301,10 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                 </span>
                 <div className="min-w-0">
                     <h2 className="m-0 text-xl font-semibold text-navy leading-tight">{block.vendor}</h2>
-                    {meta.zh && <p className="m-0 text-xs text-minor-ink">{meta.zh}</p>}
+                    {subtitle && <p className="m-0 text-xs text-minor-ink">{subtitle}</p>}
                 </div>
                 <span className="ml-auto shrink-0 text-xs font-medium text-muted-ink bg-paper-muted border border-brand-border rounded-full px-2.5 py-1">
-                    {block.models.length} 个模型
+                    {m.vendor.modelCount(block.models.length)}
                 </span>
             </header>
 
@@ -303,41 +312,41 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                 <table className="w-full border-collapse text-sm">
                     <thead>
                         <tr className="text-left text-xs uppercase tracking-wide text-muted-ink border-b border-brand-border">
-                            <th className="py-2 pr-4 font-semibold">模型</th>
-                            <th className="py-2 pr-4 font-semibold">档次</th>
-                            <th className="py-2 pr-4 font-semibold text-right">输入 ¥/1M</th>
-                            <th className="py-2 pr-4 font-semibold text-right">输出 ¥/1M</th>
-                            <th className="py-2 font-semibold text-right">生图 ¥/张</th>
-                            <th className="py-2 pl-4 font-semibold text-right">有效倍率</th>
+                            <th className="py-2 pr-4 font-semibold">{m.table.model}</th>
+                            <th className="py-2 pr-4 font-semibold">{m.table.tier}</th>
+                            <th className="py-2 pr-4 font-semibold text-right">{m.table.input}</th>
+                            <th className="py-2 pr-4 font-semibold text-right">{m.table.output}</th>
+                            <th className="py-2 font-semibold text-right">{m.table.image}</th>
+                            <th className="py-2 pl-4 font-semibold text-right">{m.table.multiplier}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {block.models.map((m) =>
-                            m.rows.map((row, i) => (
-                                <Fragment key={`${m.slug}:${row.tierKey}`}>
+                        {block.models.map((mb) =>
+                            mb.rows.map((row, i) => (
+                                <Fragment key={`${mb.slug}:${row.tierKey}`}>
                                     <tr className="border-b border-brand-border/60">
                                         {i === 0 && (
                                             <td
                                                 className="py-2.5 pr-4 align-top"
-                                                rowSpan={m.rows.reduce(
+                                                rowSpan={mb.rows.reduce(
                                                     (total, item) => total + (item.billingDetails ? 2 : 1),
                                                     0,
                                                 )}
                                             >
-                                                <div className="font-medium text-navy">{m.displayName}</div>
-                                                <code className="text-xs text-minor-ink">{m.slug}</code>
+                                                <div className="font-medium text-navy">{mb.displayName}</div>
+                                                <code className="text-xs text-minor-ink">{mb.slug}</code>
                                             </td>
                                         )}
                                         <td className="py-2.5 pr-4 text-muted-ink">
                                             {row.tierLabel}
-                                            {row.special && <span className="ml-2 text-xs">专属价</span>}
+                                            {row.special && <span className="ml-2 text-xs">{m.table.specialBadge}</span>}
                                             {row.billingDetails && (
                                                 <span className="block mt-1 text-xs">
                                                     {row.billingDetails.mode !== 'tiered_token'
-                                                        ? '详细计费规则见下方'
+                                                        ? m.billingHint.media
                                                         : isUniformPricingDetails(row.billingDetails)
-                                                          ? '统一单价 · 不随输入长度变化'
-                                                          : '阶梯计费 · 此行显示首档'}
+                                                          ? m.billingHint.uniform
+                                                          : m.billingHint.tiered}
                                                 </span>
                                             )}
                                         </td>
@@ -358,11 +367,13 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                         <tr className="border-b border-brand-border/60">
                                             <td colSpan={5} className="py-3 text-muted-ink">
                                                 {row.billingDetails.mode !== 'tiered_token' ? (
-                                                    <CatalogMediaPriceDetails details={row.billingDetails} />
+                                                    <CatalogMediaPriceDetails details={row.billingDetails} en={en} />
                                                 ) : (
                                                     <TieredPriceTable
                                                         details={row.billingDetails}
                                                         tierLabel={row.tierLabel}
+                                                        t={m.tiered}
+                                                        en={en}
                                                     />
                                                 )}
                                             </td>
@@ -378,7 +389,17 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
     );
 }
 
-function TieredPriceTable({ details, tierLabel }: { details: TieredPricingDetails; tierLabel: string }) {
+function TieredPriceTable({
+    details,
+    tierLabel,
+    t,
+    en,
+}: {
+    details: TieredPricingDetails;
+    tierLabel: string;
+    t: PricingMessages['tiered'];
+    en: boolean;
+}) {
     const uniform = isUniformPricingDetails(details);
     const hasWrite = details.tiers.some(
         (tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null,
@@ -386,21 +407,19 @@ function TieredPriceTable({ details, tierLabel }: { details: TieredPricingDetail
     return (
         <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
             <p className="m-0 mb-2 text-xs">
-                {uniform
-                    ? '所有输入长度均使用以下单价。单位：元／百万 token。'
-                    : '按完整输入长度选择一档，整次请求按该档计费；不是分段累进。以下均为 ¥ / 百万 token。'}
+                {uniform ? t.introUniform : t.introTiered}
             </p>
-            <table className="w-full text-xs" aria-label={`${tierLabel}${uniform ? '统一单价' : '完整阶梯价格'}`}>
+            <table className="w-full text-xs" aria-label={t.aria(tierLabel, uniform)}>
                 <thead>
                     <tr className="text-left">
-                        <th className="py-2 pr-3">适用条件</th>
-                        <th className="py-2 pr-3 text-right">输入</th>
-                        <th className="py-2 pr-3 text-right">输出</th>
-                        <th className="py-2 text-right">缓存读取</th>
+                        <th className="py-2 pr-3">{t.condition}</th>
+                        <th className="py-2 pr-3 text-right">{t.input}</th>
+                        <th className="py-2 pr-3 text-right">{t.output}</th>
+                        <th className="py-2 text-right">{t.cacheRead}</th>
                         {hasWrite && (
                             <>
-                                <th className="py-2 pl-3 text-right">缓存写入</th>
-                                <th className="py-2 pl-3 text-right">缓存写入 1 小时</th>
+                                <th className="py-2 pl-3 text-right">{t.cacheWrite}</th>
+                                <th className="py-2 pl-3 text-right">{t.cacheWrite1h}</th>
                             </>
                         )}
                     </tr>
@@ -408,22 +427,22 @@ function TieredPriceTable({ details, tierLabel }: { details: TieredPricingDetail
                 <tbody>
                     {details.tiers.map((tier) => (
                         <tr key={tier.name} className="border-t border-brand-border/60">
-                            <td className="py-2 pr-3">{tieredPricingConditionLabel(tier)}</td>
+                            <td className="py-2 pr-3">{tieredPricingConditionLabel(tier, en)}</td>
                             <td className="py-2 pr-3 text-right tabular-nums">¥{fmtCny(tier.rates.input)}</td>
                             <td className="py-2 pr-3 text-right tabular-nums">¥{fmtCny(tier.rates.output)}</td>
                             <td className="py-2 text-right tabular-nums">
-                                {tier.rates.cache_read === null ? '未单列' : `¥${fmtCny(tier.rates.cache_read)}`}
+                                {tier.rates.cache_read === null ? t.notListed : `¥${fmtCny(tier.rates.cache_read)}`}
                             </td>
                             {hasWrite && (
                                 <>
                                     <td className="py-2 pl-3 text-right tabular-nums">
                                         {tier.rates.cache_write === null
-                                            ? '未单列'
+                                            ? t.notListed
                                             : `¥${fmtCny(tier.rates.cache_write)}`}
                                     </td>
                                     <td className="py-2 pl-3 text-right tabular-nums">
                                         {tier.rates.cache_write_1h === null
-                                            ? '未单列'
+                                            ? t.notListed
                                             : `¥${fmtCny(tier.rates.cache_write_1h)}`}
                                     </td>
                                 </>

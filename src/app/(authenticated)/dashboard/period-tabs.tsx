@@ -1,4 +1,6 @@
 'use client';
+import { useMessages } from '@/lib/i18n/client';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 /**
  * 周期 tabs(P2 2026-08-29:Link 换 useTransition + router.push)。
@@ -24,6 +26,7 @@ const TABS: Tab[] = [
 ];
 
 export function PeriodTabs({ active }: { active: UsagePeriod }) {
+    const copy = useMessages(dashboardMessages);
     const pathname = usePathname();
     const router = useRouter();
     const [isPending, startTransition] = useTransition();
@@ -43,7 +46,7 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
     return (
         <div
             role="tablist"
-            aria-label="时间窗口"
+            aria-label={copy.periodTabsAria}
             aria-busy={isPending || undefined}
             className="inline-flex h-11 items-center rounded-lg border border-portal-line bg-portal-panel p-1 shadow-card"
         >
@@ -65,7 +68,7 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
                             isActive && isPending ? 'animate-pulse' : '',
                         ].join(' ')}
                     >
-                        {tab.label}
+                        {copy.periods[tab.key]}
                     </button>
                 );
             })}

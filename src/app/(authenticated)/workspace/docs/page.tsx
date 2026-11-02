@@ -1,7 +1,10 @@
-import { DocsContent } from '@/app/docs/docs-content';
+import { getLocale } from '@/lib/i18n/server';
+import { DocsContent, docsMetadata } from '@/app/docs/docs-content';
 
-export const metadata = { title: '集成文档 — LLmRoute' };
+export async function generateMetadata() {
+    return { title: docsMetadata(await getLocale()).title };
+}
 
-export default function WorkspaceDocsPage() {
-    return <DocsContent embedded />;
+export default async function WorkspaceDocsPage() {
+    return <DocsContent embedded locale={await getLocale()} />;
 }

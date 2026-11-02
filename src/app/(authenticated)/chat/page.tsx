@@ -16,28 +16,36 @@ import { ChatConsole } from './chat-console';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { chatMessages } from '@/lib/i18n/messages/chat';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'AI 对话 — LLmRoute' };
+export async function generateMetadata() {
+    const m = pickMessages(chatMessages, await getLocale());
+    return { title: m.page.metaTitle };
+}
 
 export default async function ChatPage() {
     const h = await headers();
     const user = await getCurrentUser(
         new NextRequest('http://internal/chat', { headers: { cookie: h.get('cookie') ?? '' } }),
     );
-    const { groups, flat, totalModels } = await listChatModels(user?.id, user?.tenant_id);
+    const [{ groups, flat, totalModels }, locale] = await Promise.all([
+        listChatModels(user?.id, user?.tenant_id),
+        getLocale(),
+    ]);
+    const m = pickMessages(chatMessages, locale);
 
     return (
         <section>
             <div className="mb-4">
-                <h1 className="m-0 mb-1 text-2xl font-semibold text-navy">AI 对话</h1>
-                <p className="m-0 text-sm text-muted-ink">
-                    选择我们接入的任意对话模型,实时流式回复;视觉模型可传图,可开启联网搜索。不保存历史,刷新即清空。
-                </p>
+                <h1 className="m-0 mb-1 text-2xl font-semibold text-navy">{m.page.title}</h1>
+                <p className="m-0 text-sm text-muted-ink">{m.page.intro}</p>
             </div>
 
             {totalModels === 0 ? (
-                <FormError severity="banner">当前无法获取可用模型,请稍后重试。</FormError>
+                <FormError severity="banner">{m.page.noModels}</FormError>
             ) : (
                 <ChatConsole groups={groups} modelIds={flat.map((m) => m.id)} />
             )}

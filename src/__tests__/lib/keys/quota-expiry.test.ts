@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildQuotaExpiryPayload,
+    EXPIRY_PRESET_LABELS,
+    expiryPresetLabels,
     formatExpiry,
     isExpired,
     MAX_QUOTA_CNY,
@@ -89,5 +91,38 @@ describe('isExpired / formatExpiry / toDatetimeLocalValue', () => {
     it('toDatetimeLocalValue yields yyyy-MM-ddTHH:mm', () => {
         expect(toDatetimeLocalValue('2026-06-05T01:02:00.000Z')).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
         expect(toDatetimeLocalValue(null, NOW)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    });
+});
+
+describe('English locale', () => {
+    it('formatExpiry → "Never expires" / en-US Beijing time', () => {
+        expect(formatExpiry(null, 'en')).toBe('Never expires');
+        expect(formatExpiry('2026-01-01T04:00:00.000Z', 'en')).toBe('1/1/2026, 12:00:00');
+    });
+    it('buildQuotaExpiryPayload errors are English', () => {
+        const bad = buildQuotaExpiryPayload(
+            { quotaUnlimited: false, quotaCny: '0', expiryPreset: 'never', expiryCustom: '' },
+            NOW,
+            'en',
+        );
+        expect(bad.ok).toBe(false);
+        if (!bad.ok) expect(bad.error).toContain('spending cap');
+        const past = buildQuotaExpiryPayload(
+            { quotaUnlimited: true, quotaCny: '', expiryPreset: 'custom', expiryCustom: '2020-01-01T00:00' },
+            NOW,
+            'en',
+        );
+        if (!past.ok) expect(past.error).toBe('Expiry time must be in the future');
+    });
+    it('expiryPresetLabels: zh alias unchanged, en labels', () => {
+        expect(expiryPresetLabels()).toEqual(EXPIRY_PRESET_LABELS);
+        expect(EXPIRY_PRESET_LABELS.never).toBe('永不');
+        expect(expiryPresetLabels('en')).toEqual({
+            never: 'Never',
+            '1h': '1 hour',
+            '1d': '1 day',
+            '1m': '1 month',
+            custom: 'Custom',
+        });
     });
 });

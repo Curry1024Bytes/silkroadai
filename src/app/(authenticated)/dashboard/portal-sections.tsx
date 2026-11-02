@@ -1,3 +1,5 @@
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Activity, ArrowUpRight, BarChart3, Coins, Database, Wallet } from 'lucide-react';
@@ -48,24 +50,26 @@ function MetricCell({
     );
 }
 
-const NO_DATA = <span className="text-base font-medium text-portal-subtle">暂无数据</span>;
 
-export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
+
+export async function PortalBalance({ data, locale = 'zh' }: { data: Promise<BalanceData>; locale?: Locale }) {
+    const m = pickMessages(dashboardMessages, locale);
+    const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
     const { bal } = await data;
-    const balance = bal ? formatCny(bal.balanceCny) : null;
-    const spent = bal ? formatCny(bal.spentCny) : null;
+    const balance = bal ? formatCny(bal.balanceCny, locale) : null;
+    const spent = bal ? formatCny(bal.spentCny, locale) : null;
     return (
         <article className="relative overflow-hidden rounded-lg border border-portal-line bg-portal-panel p-6 shadow-portal lg:col-span-4 lg:min-h-[220px]">
             <div className="flex items-start justify-between gap-4">
                 <div>
-                    <p className="m-0 text-sm font-medium text-portal-muted">当前余额</p>
+                    <p className="m-0 text-sm font-medium text-portal-muted">{m.cards.balance}</p>
                     <div className="mt-4">
                         {bal ? (
                             <p className="m-0 font-display text-[38px] font-semibold leading-none text-portal-ink tabular-nums">
                                 <CompactValue value={balance!} prefix="¥" />
                             </p>
                         ) : (
-                            <p className="m-0 text-base font-medium text-portal-subtle">暂无数据</p>
+                            <p className="m-0 text-base font-medium text-portal-subtle">{m.cards.noData}</p>
                         )}
                     </div>
                     {balance?.compact && <p className="mt-2 text-xs text-portal-subtle">{balance.exact}</p>}
@@ -77,9 +81,9 @@ export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
 
             <div className="mt-8 flex items-end justify-between gap-4 border-t border-portal-line pt-4">
                 <div>
-                    <p className="m-0 text-xs text-portal-subtle">历史消费</p>
+                    <p className="m-0 text-xs text-portal-subtle">{m.cards.spent}</p>
                     <p className="m-0 mt-1 font-display text-lg font-semibold text-portal-ink tabular-nums">
-                        {spent ? <CompactValue value={spent} prefix="¥" /> : '暂无数据'}
+                        {spent ? <CompactValue value={spent} prefix="¥" /> : m.cards.noData}
                     </p>
                     {spent?.compact && <p className="mt-1 text-xs text-portal-subtle">{spent.exact}</p>}
                 </div>
@@ -87,43 +91,45 @@ export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
                     href="/pay"
                     className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent no-underline transition-colors hover:text-brand-accent-strong"
                 >
-                    账户充值 <ArrowUpRight size={14} aria-hidden="true" />
+                    {m.portal.balanceTopUp} <ArrowUpRight size={14} aria-hidden="true" />
                 </Link>
             </div>
         </article>
     );
 }
-export async function PortalUsageStats({ data, periodLabel }: { data: Promise<UsageData>; periodLabel: string }) {
+export async function PortalUsageStats({ data, periodLabel, locale = 'zh' }: { data: Promise<UsageData>; periodLabel: string; locale?: Locale }) {
+    const m = pickMessages(dashboardMessages, locale);
+    const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
     const { agg } = await data;
     const totalTokens = agg?.totalTokens ?? 0;
-    const spend = agg ? formatCny(quotaToCny(agg.totalUsedQuota)) : null;
-    const calls = agg ? formatCount(agg.totalCalls) : null;
+    const spend = agg ? formatCny(quotaToCny(agg.totalUsedQuota), locale) : null;
+    const calls = agg ? formatCount(agg.totalCalls, locale) : null;
     const tokens = formatTokens(totalTokens);
     return (
         <div className="grid overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal sm:grid-cols-3 lg:col-span-8">
             <MetricCell
                 icon={Coins}
-                label="本期消费"
+                label={m.cards.periodSpend}
                 value={spend ? <CompactValue value={spend} prefix="¥" /> : NO_DATA}
                 detail={
                     agg ? (
                         <>
                             {spend?.compact && <>{spend.exact} · </>}
                             {periodLabel}
-                            {agg.source === 'fallback' && ' · 数据稍滞后'}
+                            {agg.source === 'fallback' && m.cards.dataLagging}
                         </>
                     ) : (
-                        '当前周期'
+                        m.portal.currentPeriod
                     )
                 }
             />
             <MetricCell
                 icon={Activity}
-                label="请求次数"
+                label={m.cards.requests}
                 value={calls ? <CompactValue value={calls} /> : NO_DATA}
                 detail={
                     <>
-                        {calls?.compact && <>{calls.exact} 次 · </>}
+                        {calls?.compact && <>{calls.exact}{m.cards.requestsSep}</>}
                         {periodLabel}
                     </>
                 }
@@ -131,12 +137,12 @@ export async function PortalUsageStats({ data, periodLabel }: { data: Promise<Us
             />
             <MetricCell
                 icon={Database}
-                label="统计 Tokens"
+                label={m.cards.tokens}
                 value={agg ? <CompactValue value={tokens} /> : NO_DATA}
                 detail={
                     <>
                         {tokens.compact && <>{tokens.exact} · </>}
-                        {periodLabel} · 输入+输出
+                        {periodLabel} · {m.cards.inputPlusOutput}
                     </>
                 }
                 className="border-t border-portal-line sm:border-l sm:border-t-0"
@@ -144,7 +150,9 @@ export async function PortalUsageStats({ data, periodLabel }: { data: Promise<Us
         </div>
     );
 }
-export async function PortalUsageBody({ data, periodLabel }: { data: Promise<UsageData>; periodLabel: string }) {
+export async function PortalUsageBody({ data, periodLabel, locale = 'zh' }: { data: Promise<UsageData>; periodLabel: string; locale?: Locale }) {
+    const m = pickMessages(dashboardMessages, locale);
+    const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
     const { agg, usageErr, calls } = await data;
     const byModel = agg ? agg.byModel.slice(0, 5) : [];
     return (
@@ -153,8 +161,8 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
                 <div>
                     <FormError severity="banner">
                         {usageErr === 'account_not_provisioned'
-                            ? '账户尚未关联到上游,请联系管理员。'
-                            : '当前无法获取用量数据,请稍后重试。'}
+                            ? m.notices.accountNotProvisioned
+                            : m.notices.usageFetchFailed}
                     </FormError>
                 </div>
             )}
@@ -171,11 +179,11 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
                                     aria-hidden="true"
                                 />
                                 <h2 className="m-0 font-display text-base font-semibold text-portal-ink">
-                                    模型消耗分布
+                                    {m.portal.chart}
                                 </h2>
                             </div>
                             <p className="m-0 mt-1.5 text-xs text-portal-subtle">
-                                按日展示各模型消费趋势 · {periodLabel}
+                                {m.portal.chartHint} · {periodLabel}
                             </p>
                         </div>
                     </div>
@@ -189,8 +197,8 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
                 <aside className="rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-3">
                         <div>
-                            <h2 className="m-0 font-display text-base font-semibold text-portal-ink">热门模型</h2>
-                            <p className="m-0 mt-1 text-xs text-portal-subtle">按消费金额排序 · {periodLabel}</p>
+                            <h2 className="m-0 font-display text-base font-semibold text-portal-ink">{m.portal.topModels}</h2>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">{m.portal.topHint} · {periodLabel}</p>
                         </div>
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
                             <Activity size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -199,7 +207,7 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
 
                     {byModel.length === 0 ? (
                         <div className="flex min-h-[248px] items-center justify-center border-t border-portal-line text-center text-sm text-portal-subtle">
-                            暂无模型消费数据
+                            {m.portal.noModelData}
                         </div>
                     ) : (
                         <ol className="m-0 list-none divide-y divide-portal-line p-0">
@@ -235,7 +243,7 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
                                                     </span>
                                                 </div>
                                                 <p className="m-0 mt-1.5 text-[11px] text-portal-subtle tabular-nums">
-                                                    {model.calls.toLocaleString('en-US')} 次调用
+                                                    {model.calls.toLocaleString('en-US')} {m.portal.calls}
                                                 </p>
                                             </div>
                                         </div>
@@ -256,18 +264,18 @@ export async function PortalUsageBody({ data, periodLabel }: { data: Promise<Usa
                                 id="recent-calls-title"
                                 className="m-0 font-display text-base font-semibold text-portal-ink"
                             >
-                                调用明细
+                                {m.portal.details}
                             </h2>
                         </div>
                         <p className="m-0 mt-1.5 text-xs text-portal-subtle">
-                            最近调用的模型、密钥、耗时、Token、消费与结果 · {periodLabel}
+                            {m.portal.detailsHint} · {periodLabel}
                         </p>
                     </div>
                     <Link
                         href="/logs"
                         className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-portal-muted no-underline transition-colors hover:text-portal-ink"
                     >
-                        查看全部日志 <ArrowUpRight size={14} aria-hidden="true" />
+                        {m.portal.allLogs} <ArrowUpRight size={14} aria-hidden="true" />
                     </Link>
                 </div>
                 <CallDetailTable rows={calls} />

@@ -13,6 +13,8 @@
  * on mount, fires `onExpire` immediately.
  */
 import { useEffect, useState } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     /** ms until rate-limit window frees. */
@@ -25,6 +27,7 @@ interface Props {
 }
 
 export function RateLimitToast({ retryAfterMs, onExpire, onDismiss }: Props) {
+    const m = useMessages(imageMessages).rateLimit;
     const initialSec = Math.max(0, Math.ceil(retryAfterMs / 1000));
     const [secLeft, setSecLeft] = useState(initialSec);
 
@@ -52,13 +55,15 @@ export function RateLimitToast({ retryAfterMs, onExpire, onDismiss }: Props) {
                 ⏳
             </span>
             <span className="flex-1">
-                您 1 分钟内生成次数已达上限(10 次),请稍候 <strong className="tabular-nums">{secLeft}</strong> 秒再试
+                {m.before}
+                <strong className="tabular-nums">{secLeft}</strong>
+                {m.after}
             </span>
             {onDismiss && (
                 <button
                     type="button"
                     onClick={onDismiss}
-                    aria-label="关闭"
+                    aria-label={m.close}
                     className="w-7 h-7 flex items-center justify-center rounded cursor-pointer text-status-warning-text/70 hover:text-status-warning-text"
                 >
                     ✕

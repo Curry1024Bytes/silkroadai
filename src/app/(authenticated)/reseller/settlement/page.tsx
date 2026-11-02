@@ -20,9 +20,14 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { prisma } from '@/lib/db';
 import { SettlementClient, type SettlementHistoryRow } from './settlement-client';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '结算 — 代理后台' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.settlementTitle };
+}
 
 /** Settlement min-threshold mirror of brief: "单次满 ¥100 起结". */
 export const SETTLEMENT_MIN_CNY = 100;

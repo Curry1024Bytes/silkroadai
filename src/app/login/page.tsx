@@ -21,10 +21,17 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { Card } from '@/components/ui/Card';
 import { FormError } from '@/components/ui/FormError';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { authMessages } from '@/lib/i18n/messages/auth';
 import { LoginForm } from './login-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '登录 — LLmRoute' };
+export async function generateMetadata() {
+    const m = pickMessages(authMessages, await getLocale());
+    return { title: m.login.pageTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -46,15 +53,6 @@ function safeNext(raw: string | undefined): string {
     return raw;
 }
 
-const FRIENDLY_OAUTH_ERROR: Record<string, string> = {
-    google_denied: 'Google 登录被取消,请重试。',
-    github_denied: 'GitHub 登录被取消,请重试。',
-    google_invalid: 'Google 登录失败 — 请重试,或使用邮箱密码登录。',
-    github_invalid: 'GitHub 登录失败 — 请重试,或使用邮箱密码登录。',
-    oauth_state_mismatch: '登录会话已过期,请重新登录。',
-    oauth_provider_error: '第三方登录服务暂不可达,请稍后重试。',
-};
-
 export default async function LoginPage({
     searchParams,
 }: {
@@ -69,9 +67,14 @@ export default async function LoginPage({
         redirect(next);
     }
 
+    const locale = await getLocale();
+    const m = pickMessages(authMessages, locale);
+
+    // Friendly copy for known OAuth callback error codes; unknown codes are
+    // shown truncated so a long/garbage query value can't blow up the banner.
     const oauthMessage = oauthError
-        ? (FRIENDLY_OAUTH_ERROR[oauthError] ??
-          `OAuth 登录失败:${oauthError.length > 60 ? oauthError.slice(0, 60) + '…' : oauthError}`)
+        ? (m.login.oauthErrors[oauthError] ??
+          m.login.oauthGenericError(oauthError.length > 60 ? oauthError.slice(0, 60) + '…' : oauthError))
         : null;
 
     return (
@@ -80,18 +83,21 @@ export default async function LoginPage({
                 <header className="mb-8 flex flex-col items-center text-center">
                     <BrandLogo variant="primary-flat" size={32} />
                     <p className="m-0 mt-3 text-sm text-minor-ink">One route. Every model.</p>
+                    <LocaleSwitcher className="mt-4" />
                 </header>
                 <Card className="w-full p-7 sm:p-8">
                     <div className="mb-7">
-                        <h1 className="m-0 font-display text-2xl font-semibold leading-tight text-navy">欢迎回来</h1>
-                        <p className="m-0 mt-2 text-sm text-muted-ink">登录你的 LLmRoute 账户。</p>
+                        <h1 className="m-0 font-display text-2xl font-semibold leading-tight text-navy">
+                            {m.login.heading}
+                        </h1>
+                        <p className="m-0 mt-2 text-sm text-muted-ink">{m.login.subtitle}</p>
                     </div>
                     {oauthMessage ? (
                         <div className="mb-4">
                             <FormError severity="banner">{oauthMessage}</FormError>
                         </div>
                     ) : null}
-                    <Suspense fallback={<p className="text-sm text-muted-ink">加载中…</p>}>
+                    <Suspense fallback={<p className="text-sm text-muted-ink">{m.loading}</p>}>
                         <LoginForm next={next} />
                     </Suspense>
                 </Card>

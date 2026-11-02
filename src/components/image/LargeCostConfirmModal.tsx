@@ -12,6 +12,8 @@
  */
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     open: boolean;
@@ -23,36 +25,38 @@ interface Props {
 }
 
 export function LargeCostConfirmModal({ open, onCancel, onConfirm, costCny, remainCny }: Props) {
+    const m = useMessages(imageMessages).largeCost;
     return (
         <Modal
             open={open}
             onClose={onCancel}
-            title="确认生成"
+            title={m.title}
             icon="💸"
             dismissible={false}
             footer={
                 <>
                     <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
-                        取消
+                        {m.cancel}
                     </Button>
                     <Button type="button" variant="primary" size="sm" onClick={onConfirm}>
-                        确认生成
+                        {m.confirm}
                     </Button>
                 </>
             }
         >
             <p className="m-0">
-                本次将消耗 <strong className="text-navy">¥{costCny.toFixed(2)}</strong>
+                {m.willSpend}
+                <strong className="text-navy">¥{costCny.toFixed(2)}</strong>
                 {typeof remainCny === 'number' ? (
                     <>
-                        (当前余额 <span className="text-muted-ink">¥{remainCny.toFixed(2)}</span>)
+                        {m.balanceOpen}
+                        <span className="text-muted-ink">¥{remainCny.toFixed(2)}</span>
+                        {m.balanceClose}
                     </>
                 ) : null}
-                。
+                {m.end}
             </p>
-            <p className="m-0 mt-2 text-muted-ink text-xs">
-                单次成本超过 ¥5 时弹窗确认,避免误点。其他模型 / 数量不弹。
-            </p>
+            <p className="m-0 mt-2 text-muted-ink text-xs">{m.explainer}</p>
         </Modal>
     );
 }

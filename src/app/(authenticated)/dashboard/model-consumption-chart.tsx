@@ -1,4 +1,6 @@
 'use client';
+import { useMessages } from '@/lib/i18n/client';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 /**
  * 模型消耗分布图 — daily consumption stacked by model (new-api 看板 风格).
@@ -70,6 +72,7 @@ function ChartTooltip({
     label?: string;
     cnyPerQuota: number;
 }) {
+    const copy = useMessages(dashboardMessages);
     if (!active || !payload?.length) return null;
     // Skip zero stacks so a busy day's tooltip stays readable.
     const rows = payload.filter((p) => p.value > 0);
@@ -87,7 +90,7 @@ function ChartTooltip({
                 </p>
             ))}
             <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-portal-line pt-1.5 font-medium text-portal-ink">
-                <span>合计</span>
+                <span>{copy.chart.total}</span>
                 <span className="tabular-nums">¥{(total * cnyPerQuota).toFixed(2)}</span>
             </p>
         </div>
@@ -95,11 +98,11 @@ function ChartTooltip({
 }
 
 export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsumptionChartProps) {
+    const copy = useMessages(dashboardMessages);
     if (byDay.length === 0 || models.length === 0) {
         return (
             <div className="flex h-[260px] items-center justify-center rounded-md border border-dashed border-portal-line bg-portal-soft px-6 text-center text-sm text-portal-subtle sm:h-[300px]">
-                该时间段内暂无消耗数据。完成首次调用后,趋势会显示在这里。
-            </div>
+                {copy.chart.empty}</div>
         );
     }
 

@@ -23,6 +23,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Logo } from '@/components/brand/Logo';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import { BRAND_NAME, BRAND_TAGLINE, SUPPORT_EMAIL, SUPPORT_WECHAT } from '@/lib/public-config';
 
 const CUSTOMER_WORKSPACE_ROOTS = [
@@ -45,6 +48,7 @@ export function isCustomerWorkspacePath(pathname: string): boolean {
 
 export function Footer() {
     const pathname = usePathname();
+    const m = useMessages(commonMessages);
     const useWorkspaceLinks = isCustomerWorkspacePath(pathname);
     const year = new Date().getFullYear();
     if (useWorkspaceLinks) return null;
@@ -58,21 +62,21 @@ export function Footer() {
                         <span className="text-minor-ink">{BRAND_TAGLINE}</span>
                     </div>
 
-                    <nav className="flex flex-wrap items-center gap-x-5 gap-y-3" aria-label="页脚导航">
+                    <nav className="flex flex-wrap items-center gap-x-5 gap-y-3" aria-label={m.nav.footerAria}>
                         <Link href="/models" className="no-underline transition-colors hover:text-navy">
-                            模型清单
+                            {m.nav.models}
                         </Link>
                         <Link href="/docs" className="no-underline transition-colors hover:text-navy">
-                            文档
+                            {m.nav.docs}
                         </Link>
                         <Link href="/terms" className="no-underline transition-colors hover:text-navy">
-                            服务条款
+                            {m.footer.terms}
                         </Link>
                         <Link href="/privacy" className="no-underline transition-colors hover:text-navy">
-                            隐私政策
+                            {m.footer.privacy}
                         </Link>
                         <Link href="/refund" className="no-underline transition-colors hover:text-navy">
-                            退款政策
+                            {m.footer.refund}
                         </Link>
                     </nav>
                 </div>
@@ -80,7 +84,7 @@ export function Footer() {
                 <div className="flex flex-col gap-3 border-t border-brand-border py-4 text-minor-ink sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                         <span>
-                            微信 <code className="font-mono text-xs text-muted-ink">{SUPPORT_WECHAT}</code>
+                            {m.footer.wechat} <code className="font-mono text-xs text-muted-ink">{SUPPORT_WECHAT}</code>
                         </span>
                         <a
                             href={`mailto:${SUPPORT_EMAIL}`}
@@ -89,9 +93,12 @@ export function Footer() {
                             {SUPPORT_EMAIL}
                         </a>
                     </div>
-                    <span>
-                        © {year} {BRAND_NAME}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <span>
+                            © {year} {BRAND_NAME}
+                        </span>
+                        <LocaleSwitcher />
+                    </div>
                 </div>
             </div>
         </footer>

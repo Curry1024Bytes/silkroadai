@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { formatSignedCny } from '@/lib/format/number';
+import { getLocale } from '@/lib/i18n/server';
 import { resolveVideoRefunds } from '@/lib/newapi/failed-video-match';
 import {
     collapseRetriedFailures,
@@ -31,7 +32,7 @@ import {
     refundKindOf,
     settlementRefundContent,
     unmatchedFailureRefundContent,
-    FAILED_VIDEO_REFUND_NOTE,
+    failedVideoRefundNote,
     type RefundKind,
 } from '@/lib/newapi/log-display';
 
@@ -81,7 +82,7 @@ export interface LogRow {
 
 const cnyOfQuota = (quota: number) => formatSignedCny(quotaToCny(quota), { preciseSmall: true });
 
-function toLogRow(log: NewApiUsageLog, failedConsume: boolean): LogRow {
+function toLogRow(log: NewApiUsageLog, failedConsume: boolean, locale: import('@/lib/i18n').Locale): LogRow {
     const cache = parseCacheTokens(log.other);
     const refundKind = refundKindOf(log);
     const cost = quotaToCny(log.quota);
@@ -104,12 +105,12 @@ function toLogRow(log: NewApiUsageLog, failedConsume: boolean): LogRow {
         refundKind,
         content:
             refundKind === 'settlement'
-                ? settlementRefundContent(log, cnyOfQuota)
+                ? settlementRefundContent(log, cnyOfQuota, locale)
                 : refundKind === 'failure'
-                  ? unmatchedFailureRefundContent(formatSignedCny(cost))
+                  ? unmatchedFailureRefundContent(formatSignedCny(cost), locale)
                   : failedConsume
-                    ? FAILED_VIDEO_REFUND_NOTE
-                    : sanitizeLogContent(log.content), // 脱敏后才出参
+                    ? failedVideoRefundNote(locale)
+                    : sanitizeLogContent(log.content, locale), // 脱敏后才出参
     };
 }
 
@@ -124,6 +125,7 @@ export async function GET(req: NextRequest) {
     if (!parsed.success) return NextResponse.json({ error: 'invalid_params' }, { status: 400 });
     const q = parsed.data;
     const newapiUserId = user.newapi_user_id;
+    const locale = await getLocale();
 
     let items: NewApiUsageLog[];
     try {
@@ -157,7 +159,7 @@ export async function GET(req: NextRequest) {
     const visibleErrors = collapseRetriedFailures(consume, errors);
     const rows: LogRow[] = [...consume, ...visibleErrors, ...visibleRefunds]
         .sort((a, b) => b.created_at - a.created_at)
-        .map((l) => toLogRow(l, failedConsumeIds.has(l.id)));
+        .map((l) => toLogRow(l, failedConsumeIds.has(l.id), locale));
 
     // 满页(拿满 100 原始行)= 大概率还有下一页。折叠后 rows 可能 <100,但翻页按 new-api 原始页走。
     return NextResponse.json({ rows, page: q.page, hasMore: items.length >= PAGE_SIZE });

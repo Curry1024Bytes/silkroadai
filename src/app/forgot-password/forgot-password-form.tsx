@@ -5,8 +5,11 @@ import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { useMessages } from '@/lib/i18n/client';
+import { authMessages } from '@/lib/i18n/messages/auth';
 
 export function ForgotPasswordForm() {
+    const m = useMessages(authMessages).forgotForm;
     const [email, setEmail] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -35,12 +38,12 @@ export function ForgotPasswordForm() {
                 setSent(true);
             } else {
                 const data = await r.json().catch(() => ({}));
-                setError(data?.error === 'invalid_input' ? '请检查邮箱格式' : `提交失败 (${r.status}),请稍后重试`);
+                setError(data?.error === 'invalid_input' ? m.invalidInput : m.failedWithStatus(r.status));
                 fired.current = false;
                 setSubmitting(false);
             }
         } catch {
-            setError('网络错误,请稍后重试');
+            setError(m.networkError);
             fired.current = false;
             setSubmitting(false);
         }
@@ -50,13 +53,17 @@ export function ForgotPasswordForm() {
         return (
             <div>
                 <div className="text-sm leading-relaxed rounded-lg px-4 py-3 bg-status-success-bg border border-status-success-border text-status-success-text">
-                    如果 <strong>{email}</strong> 已注册,我们已向该邮箱发送密码重置链接,请查收(链接 1 小时内有效)。
+                    {m.sentBefore}
+                    <strong>{email}</strong>
+                    {m.sentAfter}
                     <br />
-                    几分钟内没收到的话,请检查邮箱的<strong>「垃圾箱 / 订阅邮件」</strong>分类。
+                    {m.spamBefore}
+                    <strong>{m.spamFolder}</strong>
+                    {m.spamAfter}
                 </div>
                 <p className="m-0 mt-6 text-center text-sm text-minor-ink">
                     <a href="/login" className="text-muted-ink font-medium hover:text-brand-accent transition-colors">
-                        ← 返回登录
+                        {m.backToLogin}
                     </a>
                 </p>
             </div>
@@ -65,12 +72,10 @@ export function ForgotPasswordForm() {
 
     return (
         <div>
-            <p className="m-0 mb-4 text-sm leading-relaxed text-minor-ink">
-                输入你的注册邮箱,我们会给你发送一封密码重置邮件,点击邮件里的链接即可设置新密码。
-            </p>
+            <p className="m-0 mb-4 text-sm leading-relaxed text-minor-ink">{m.intro}</p>
             <form onSubmit={handleSubmit} className="space-y-3.5">
                 <div>
-                    <Label htmlFor="forgot-email">邮箱</Label>
+                    <Label htmlFor="forgot-email">{m.email}</Label>
                     <Input
                         id="forgot-email"
                         type="email"
@@ -83,13 +88,13 @@ export function ForgotPasswordForm() {
                 </div>
                 <FormError>{error}</FormError>
                 <Button type="submit" block loading={submitting} disabled={submitting || !email}>
-                    {submitting ? '发送中…' : '发送重置邮件'}
+                    {submitting ? m.submitting : m.submit}
                 </Button>
             </form>
             <p className="m-0 mt-6 text-center text-sm text-minor-ink">
-                想起密码了?{' '}
+                {m.remembered}{' '}
                 <a href="/login" className="text-muted-ink font-medium hover:text-brand-accent transition-colors">
-                    返回登录 →
+                    {m.backToLoginArrow}
                 </a>
             </p>
         </div>

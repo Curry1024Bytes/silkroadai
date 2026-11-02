@@ -20,11 +20,14 @@ import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-g
 import { getVerifiedEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
 import { getTokenMetaForCustomer, expiredTimeToIso } from '@/lib/newapi/token-meta';
 import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { keysMessages } from '@/lib/i18n/messages/keys';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'API Keys — LLmRoute' };
+export async function generateMetadata() { return { title: pickMessages(keysMessages, await getLocale()).pageTitle }; }
 
 async function getSessionUser() {
     const h = await headers();
@@ -45,6 +48,7 @@ function maskKey(value: string): string {
 
 export default async function KeysPage() {
     const user = await getSessionUser();
+    const m = pickMessages(keysMessages, await getLocale());
     // Layout already gated; null branch only to satisfy TS narrowing.
     if (!user) return null;
 
@@ -159,7 +163,7 @@ export default async function KeysPage() {
                 <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">ACCESS</p>
                 <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">API Keys</h1>
                 <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                    创建并管理用于调用 LLmRoute 的访问密钥。密钥撤销后立即失效。
+                    {m.subtitle}
                 </p>
             </div>
             <KeysList initialRows={rows} tiers={tiers} quotaLimitsEnabled={keyQuotaLimitsEnabled()} />

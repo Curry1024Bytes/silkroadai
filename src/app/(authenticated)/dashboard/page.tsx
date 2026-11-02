@@ -26,6 +26,9 @@
  * independent — one failing degrades only its own section (暂无数据 / empty
  * state), never the whole page.
  */
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages, intlLocale } from '@/lib/i18n';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 import { Suspense } from 'react';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
@@ -36,25 +39,16 @@ import { CreditCard, History as HistoryIcon, ReceiptText } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { fetchResellerStatus, type ResellerStatusSnap } from '@/lib/reseller/fetch-status';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
-import { parsePeriod, type UsagePeriod } from './period';
+import { parsePeriod } from './period';
 import { PeriodTabs } from './period-tabs';
 import { BalanceAlertForm } from './balance-alert-form';
 import { BalanceNotices, loadBalanceData, loadUsageData, StatCardSkeletons, UsageBodySkeleton } from './sections';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '概览 — LLmRoute' };
+export async function generateMetadata() { return { title: pickMessages(dashboardMessages, await getLocale()).pageTitle }; }
 
 const HISTORY_LIMIT = 10;
 
-const PERIOD_LABEL: Record<UsagePeriod, string> = { '7d': '近 7 天', '30d': '近 30 天', all: '全部' };
-
-const RECHARGE_SOURCE_LABEL: Record<string, string> = {
-    payment: '在线支付',
-    manual: '管理员充值',
-    refund: '退款',
-    promo: '推广奖励',
-    adjustment: '余额调整',
-};
 
 async function getSessionUser() {
     const h = await headers();
@@ -73,9 +67,11 @@ export default async function DashboardPage({
     // Layout already gated; this is just TS narrowing.
     if (!user) return null;
 
+    const locale = await getLocale();
+    const m = pickMessages(dashboardMessages, locale);
     const params = (await searchParams) ?? {};
     const period = parsePeriod(params.period);
-    const periodLabel = PERIOD_LABEL[period];
+    const periodLabel = m.periods[period];
 
     // Kick off 慢请求但【不 await】—— 壳只等下面的本地 DB;两个共享
     // promise 分别喂给多个 <Suspense> 区块(一次 fetch,多处消费),数据到
@@ -87,6 +83,7 @@ export default async function DashboardPage({
         newapiUserId: user.newapi_user_id,
         newapiUsername: user.newapi_username,
         period,
+        locale,
     });
 
     // ── 快壳数据:本地 DB 一波并行(fetchResellerStatus 与 layout 同请求
@@ -115,23 +112,23 @@ export default async function DashboardPage({
         <section className="space-y-8">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                    <p className="m-0 mb-2 text-xs font-semibold text-brand-accent">账户概览</p>
+                    <p className="m-0 mb-2 text-xs font-semibold text-brand-accent">{m.portal.overview}</p>
                     <h1 className="m-0 font-display text-[28px] font-semibold leading-tight text-portal-ink">
-                        你好，{displayName}
+                        {m.welcome(displayName)}
                     </h1>
-                    <p className="m-0 mt-2 text-sm text-portal-muted">余额、用量和最近调用，一目了然。</p>
+                    <p className="m-0 mt-2 text-sm text-portal-muted">{m.portal.subtitle}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                     <PeriodTabs active={period} />
                     <Button href="/pay" size="md">
                         <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
-                        充值
+                        {m.portal.topUp}
                     </Button>
                 </div>
             </div>
 
             <Suspense fallback={null}>
-                <BalanceNotices data={balanceData} />
+                <BalanceNotices locale={locale} data={balanceData} />
             </Suspense>
             <div className="grid gap-4 lg:grid-cols-12">
                 <Suspense
@@ -141,7 +138,7 @@ export default async function DashboardPage({
                         </div>
                     }
                 >
-                    <PortalBalance data={balanceData} />
+                    <PortalBalance locale={locale} data={balanceData} />
                 </Suspense>
                 <Suspense
                     fallback={
@@ -150,11 +147,11 @@ export default async function DashboardPage({
                         </div>
                     }
                 >
-                    <PortalUsageStats data={usageData} periodLabel={periodLabel} />
+                    <PortalUsageStats locale={locale} data={usageData} periodLabel={periodLabel} />
                 </Suspense>
             </div>
-            <Suspense fallback={<UsageBodySkeleton periodLabel={periodLabel} />}>
-                <PortalUsageBody data={usageData} periodLabel={periodLabel} />
+            <Suspense fallback={<UsageBodySkeleton locale={locale} periodLabel={periodLabel} />}>
+                <PortalUsageBody locale={locale} data={usageData} periodLabel={periodLabel} />
             </Suspense>
             <div className="grid items-start gap-4 xl:grid-cols-2">
                 <BalanceAlertForm
@@ -173,9 +170,9 @@ export default async function DashboardPage({
                                     strokeWidth={1.8}
                                     aria-hidden="true"
                                 />
-                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">充值流水</h2>
+                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">{m.recharge.heading}</h2>
                             </div>
-                            <p className="m-0 mt-1 text-xs text-portal-subtle">最近 {HISTORY_LIMIT} 笔账户入账记录</p>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">{m.portal.latest} {HISTORY_LIMIT} {m.portal.historyTail}</p>
                         </div>
                         <HistoryIcon
                             size={17}
@@ -187,10 +184,10 @@ export default async function DashboardPage({
 
                     {history.length === 0 ? (
                         <EmptyState
-                            title="暂无充值记录"
+                            title={m.recharge.emptyTitle}
                             body={
                                 <>
-                                    完成第一笔<code className="mx-1 font-mono text-xs">充值</code>后,记录会显示在这里。
+                                    {m.portal.firstBefore}<code className="mx-1 font-mono text-xs">{m.portal.topUp}</code>{m.portal.firstAfter}
                                 </>
                             }
                             className="min-h-[210px] py-8"
@@ -201,16 +198,16 @@ export default async function DashboardPage({
                                 <thead>
                                     <tr className="bg-portal-soft text-portal-muted">
                                         <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                                            金额(CNY)
+                                            {m.recharge.colAmount}
                                         </th>
                                         <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                                            类型
+                                            {m.recharge.colType}
                                         </th>
                                         <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                                            订单号
+                                            {m.recharge.colOrder}
                                         </th>
                                         <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                                            时间
+                                            {m.recharge.colTime}
                                         </th>
                                     </tr>
                                 </thead>
@@ -224,13 +221,13 @@ export default async function DashboardPage({
                                                     ¥{Number(row.amount).toFixed(2)}
                                                 </td>
                                                 <td className={cell}>
-                                                    {RECHARGE_SOURCE_LABEL[row.source] ?? row.source}
+                                                    {(m.rechargeSources as Record<string,string>)[row.source] ?? row.source}
                                                 </td>
                                                 <td className={`${cell} font-mono text-xs text-portal-muted`}>
                                                     {row.order_id ? row.order_id.slice(0, 8) : '—'}
                                                 </td>
                                                 <td className={`${cell} text-portal-muted`}>
-                                                    {row.created_at.toLocaleString('zh-CN', {
+                                                    {row.created_at.toLocaleString(intlLocale(locale), {
                                                         timeZone: 'Asia/Shanghai',
                                                     })}
                                                 </td>

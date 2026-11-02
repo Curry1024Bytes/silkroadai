@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { KeysSnippetsPanel } from '@/app/(authenticated)/keys/keys-snippets-panel';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
     it('renders the 调用示例 heading + YOUR_API_KEY placeholder hint', () => {
@@ -107,5 +108,24 @@ describe('<KeysSnippetsPanel /> accessibility', () => {
         // grab returns the wrapper's labelledby. Pin the assertion to
         // the tabpanel's labelledby attribute specifically.
         expect(html).toMatch(/<div[^>]*role="tabpanel"[^>]*aria-labelledby="keys-snippet-tab-curl"/);
+    });
+});
+
+describe('<KeysSnippetsPanel /> English locale', () => {
+    it('heading, base-URL chips, copy aria-label and footer links in English; code unchanged', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <KeysSnippetsPanel />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('Code examples');
+        expect(html).toContain('OpenAI-compatible base URL');
+        expect(html).toContain('Anthropic-compatible base URL');
+        expect(html).toMatch(/<button[^>]*aria-label="Copy the curl example"/);
+        expect(html).toContain('>Copy<');
+        expect(html).toContain('Full integration guide');
+        expect(html).toContain('Authorization: Bearer YOUR_API_KEY');
+        expect(html).not.toContain('调用示例');
+        expect(html).not.toContain('复制');
     });
 });

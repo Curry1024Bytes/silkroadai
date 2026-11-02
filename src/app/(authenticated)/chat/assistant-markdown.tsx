@@ -18,6 +18,8 @@ import { MarkdownTextPrimitive, type CodeHeaderProps } from '@assistant-ui/react
 import { makePrismAsyncLightSyntaxHighlighter } from '@assistant-ui/react-syntax-highlighter';
 import remarkGfm from 'remark-gfm';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useMessages } from '@/lib/i18n/client';
+import { chatMessages } from '@/lib/i18n/messages/chat';
 
 /** Async-light Prism: loads only the languages actually used, keeping the
  *  bundle lean. Returns a component assistant-ui drops into fenced blocks. */
@@ -35,6 +37,7 @@ const SyntaxHighlighter = makePrismAsyncLightSyntaxHighlighter({
 
 /** Fenced-code header: language label + copy button. */
 function CodeHeader({ language, code }: CodeHeaderProps) {
+    const m = useMessages(chatMessages).markdown;
     const [copied, setCopied] = useState(false);
     const onCopy = useCallback(() => {
         if (!code) return;
@@ -51,7 +54,7 @@ function CodeHeader({ language, code }: CodeHeaderProps) {
                 onClick={onCopy}
                 className="text-[11px] text-white/70 transition-colors hover:text-white cursor-pointer"
             >
-                {copied ? '已复制' : '复制'}
+                {copied ? m.copied : m.copy}
             </button>
         </div>
     );

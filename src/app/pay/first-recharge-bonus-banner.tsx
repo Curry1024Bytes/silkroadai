@@ -10,8 +10,15 @@
  *
  * W7 P2: warm gold-tinted banner using the design system's brand-accent
  * left rail (matches the landing-page promo banner aesthetic).
+ *
+ * i18n: sync server child of /pay — the page passes its resolved `locale`
+ * (cookie, or the legacy `?lang=` override). Omitted = Chinese.
  */
-export function FirstRechargeBonusBanner() {
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { payMessages } from '@/lib/i18n/messages/pay';
+
+export function FirstRechargeBonusBanner({ locale = 'zh' }: { locale?: Locale } = {}) {
+    const m = pickMessages(payMessages, locale).bonusBanner;
     return (
         <div
             role="note"
@@ -26,8 +33,8 @@ export function FirstRechargeBonusBanner() {
                 🎁
             </span>
             <span>
-                <strong className="text-navy">首充福利</strong>
-                <span className="ml-2 text-muted-ink">额外赠送 20% bonus,机会只此一次</span>
+                <strong className="text-navy">{m.title}</strong>
+                <span className="ml-2 text-muted-ink">{m.body}</span>
             </span>
         </div>
     );

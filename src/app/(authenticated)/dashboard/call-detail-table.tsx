@@ -21,7 +21,10 @@
  * (Gemini 生图等)token 是噪声、极不一致(1/0、9/124…)→ 显示 "—";按 token 计费的(gpt-image-2 /
  * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
+import { intlLocale } from '@/lib/i18n';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 import { useState } from 'react';
+import { useMessages, useLocale } from '@/lib/i18n/client';
 import {
     Check,
     CheckCircle2,
@@ -82,11 +85,16 @@ const COL_SPAN = 8;
 export function CallDetailTable({ rows }: { rows: CallRow[] }) {
     const [page, setPage] = useState(0);
     const [expanded, setExpanded] = useState<number | null>(null);
+    const locale = useLocale();
+    const en = locale === 'en';
+    const copy = useMessages(dashboardMessages).table;
 
     if (rows.length === 0) {
         return (
             <div className="flex min-h-[156px] items-center justify-center rounded-lg border border-dashed border-portal-line bg-portal-panel px-6 text-center text-sm text-portal-subtle">
-                该时间段内暂无调用记录。完成首次 API 调用后,记录会显示在这里。
+                {en
+                    ? 'No requests in this period. Your requests will appear here after the first API call.'
+                    : '该时间段内暂无调用记录。完成首次 API 调用后,记录会显示在这里。'}
             </div>
         );
     }
@@ -102,14 +110,16 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                 <table className="w-full border-collapse">
                     <thead>
                         <tr className="bg-portal-soft">
-                            <th className={HEAD}>时间</th>
-                            <th className={HEAD}>模型</th>
+                            <th className={HEAD}>{copy.colTime}</th>
+                            <th className={HEAD}>{copy.colModel}</th>
                             <th className={HEAD}>Key</th>
                             <th className={HEAD}>Request ID</th>
-                            <th className={`${HEAD} text-right`}>时长</th>
-                            <th className={`${HEAD} text-right`}>Tokens(输入/输出)</th>
-                            <th className={`${HEAD} text-right`}>消耗</th>
-                            <th className={`${HEAD} text-center`}>结果</th>
+                            <th className={`${HEAD} text-right`}>{copy.colDuration}</th>
+                            <th className={`${HEAD} text-right`}>
+                                {copy.colTokens}
+                            </th>
+                            <th className={`${HEAD} text-right`}>{copy.colCost}</th>
+                            <th className={`${HEAD} text-center`}>{copy.colResult}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -132,7 +142,9 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
 
             <div className="mt-3 flex items-center justify-between gap-3 text-xs text-portal-muted">
                 <span className="tabular-nums">
-                    共 {rows.length.toLocaleString('en-US')} 条 · 第 {safePage + 1} / {totalPages} 页
+                    {en
+                        ? `${rows.length.toLocaleString('en-US')} rows · page ${safePage + 1} / ${totalPages}`
+                        : `共 ${rows.length.toLocaleString('en-US')} 条 · 第 ${safePage + 1} / ${totalPages} 页`}
                 </span>
                 <div className="flex gap-2">
                     <button
@@ -142,7 +154,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         className="inline-flex h-8 items-center gap-1 rounded-md border border-portal-line bg-portal-panel px-2.5 text-xs text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-portal-panel"
                     >
                         <ChevronLeft size={14} aria-hidden="true" />
-                        上一页
+                        {copy.prev}
                     </button>
                     <button
                         type="button"
@@ -150,7 +162,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         disabled={safePage >= totalPages - 1}
                         className="inline-flex h-8 items-center gap-1 rounded-md border border-portal-line bg-portal-panel px-2.5 text-xs text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-portal-panel"
                     >
-                        下一页
+                        {copy.next}
                         <ChevronRight size={14} aria-hidden="true" />
                     </button>
                 </div>
@@ -163,6 +175,9 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
  *  only useful if it can be pasted into a support message). Empty id → "—". */
 function RequestIdCell({ value }: { value: string }) {
     const [copied, setCopied] = useState(false);
+    const locale = useLocale();
+    const en = locale === 'en';
+    const copy = useMessages(dashboardMessages).table;
     if (!value) return <span className="text-portal-subtle">—</span>;
     return (
         <span className="inline-flex items-center gap-1.5">
@@ -180,12 +195,20 @@ function RequestIdCell({ value }: { value: string }) {
                         /* clipboard unavailable (insecure ctx / old browser) — no-op */
                     }
                 }}
-                title="复制完整 Request ID"
-                aria-label={copied ? '已复制 Request ID' : '复制 Request ID'}
+                title={copy.copyFullRequestId}
+                aria-label={
+                    copied
+                        ? en
+                            ? 'Request ID copied'
+                            : '已复制 Request ID'
+                        : en
+                          ? 'Copy Request ID'
+                          : '复制 Request ID'
+                }
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-portal-subtle transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/25"
             >
                 {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-                <span className="sr-only">{copied ? '已复制' : '复制'}</span>
+                <span className="sr-only">{copied ? (en ? 'Copied' : '已复制') : en ? 'Copy' : '复制'}</span>
             </button>
         </span>
     );
@@ -193,7 +216,7 @@ function RequestIdCell({ value }: { value: string }) {
 
 /** 缓存读写副行(参照 new-api):仅当该调用真用了 prompt cache 才渲染,灰色小字不抢主信息。 */
 function CacheTokensLine({ row }: { row: CallRow }) {
-    const text = formatCacheTokens(row.cacheReadTokens, row.cacheWriteTokens, row.perImageBilled);
+    const text = formatCacheTokens(row.cacheReadTokens, row.cacheWriteTokens, row.perImageBilled, useLocale());
     if (!text) return null;
     return <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{text}</span>;
 }
@@ -210,13 +233,16 @@ function CallRowItem({
     isOpen: boolean;
     onToggle: () => void;
 }) {
+    const locale = useLocale();
+    const en = locale === 'en';
+    const copy = useMessages(dashboardMessages).table;
     const cell = 'px-4 py-3 text-sm text-portal-ink border-b border-portal-line';
     const isRefund = result === 'settlement_refund' || result === 'failure_refund';
     return (
         <>
             <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
                 <td className={`${cell} whitespace-nowrap text-portal-muted`}>
-                    {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                    {new Date(row.createdAt * 1000).toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
                 <td className={`${cell} text-xs`}>
@@ -245,12 +271,12 @@ function CallRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || refundLabel(result).chip}
+                            title={row.content || refundLabel(result, locale).chip}
                             aria-expanded={isOpen}
                             className="inline-flex items-center gap-1.5 rounded bg-status-warning-bg px-2 py-1 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95"
                         >
                             <Undo2 size={13} aria-hidden="true" />
-                            {refundLabel(result).chip}
+                            {refundLabel(result, locale).chip}
                             {isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
@@ -261,12 +287,12 @@ function CallRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || '调用失败'}
+                            title={row.content || (en ? 'Request failed' : '调用失败')}
                             aria-expanded={isOpen}
                             className="inline-flex items-center gap-1.5 rounded bg-status-error-bg px-2 py-1 text-xs font-medium text-status-error-text transition-colors hover:bg-red-100"
                         >
                             <XCircle size={13} aria-hidden="true" />
-                            失败
+                            {copy.failed}
                             {isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
@@ -276,7 +302,7 @@ function CallRowItem({
                     ) : (
                         <span className="inline-flex items-center gap-1.5 rounded bg-status-success-bg px-2 py-1 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} aria-hidden="true" />
-                            成功
+                            {copy.success}
                         </span>
                     )}
                 </td>
@@ -287,10 +313,10 @@ function CallRowItem({
                         <p
                             className={`m-0 mb-1 text-xs font-medium ${isRefund ? 'text-status-warning-text' : 'text-status-error-text'}`}
                         >
-                            {isRefund ? refundLabel(result).heading : '错误详情'}
+                            {isRefund ? refundLabel(result, locale).heading : en ? 'Error details' : '错误详情'}
                         </p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-portal-active px-3 py-2 font-mono text-xs text-portal-ink">
-                            {row.content || '(上游未返回错误详情)'}
+                            {row.content || (en ? '(the upstream returned no error details)' : '(上游未返回错误详情)')}
                         </pre>
                     </td>
                 </tr>

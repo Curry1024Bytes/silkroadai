@@ -12,13 +12,17 @@
 import { Logo } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
-import { SUPPORT_WECHAT } from '@/lib/public-config';
+import { getMessages } from '@/lib/i18n/server';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { SUPPORT_EMAIL, SUPPORT_WECHAT } from '@/lib/public-config';
 
-export const metadata = {
-    title: '页面没找到 — LLmRoute',
-};
+export async function generateMetadata() {
+    const m = await getMessages(commonMessages);
+    return { title: m.errors.notFoundPageTitle };
+}
 
-export default function NotFound() {
+export default async function NotFound() {
+    const m = await getMessages(commonMessages);
     return (
         <main className="min-h-[70vh] flex items-center justify-center bg-paper px-4 py-12">
             <Card className="w-full max-w-md p-8 text-center">
@@ -32,24 +36,24 @@ export default function NotFound() {
                 >
                     404
                 </p>
-                <h1 className="m-0 mb-2 text-xl font-semibold text-navy">页面没找到</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">您访问的链接可能已变更或不存在。</p>
+                <h1 className="m-0 mb-2 text-xl font-semibold text-navy">{m.errors.notFoundTitle}</h1>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">{m.errors.notFoundBody}</p>
                 <div className="flex flex-col sm:flex-row gap-2 justify-center">
                     <Button href="/" variant="primary" size="md">
-                        返回首页
+                        {m.nav.backHome}
                     </Button>
                     <Button href="/models" variant="secondary" size="md">
-                        查看模型清单
+                        {m.errors.viewModels}
                     </Button>
                 </div>
                 <p className="m-0 mt-6 text-xs text-minor-ink">
-                    需要帮助?微信{' '}
+                    {m.support.needHelp}{' '}
                     <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                         {SUPPORT_WECHAT}
                     </code>{' '}
-                    · 邮箱{' '}
-                    <a href="mailto:support@llmroute.club" className="text-navy no-underline hover:text-brand-accent">
-                        support@llmroute.club
+                    · {m.support.email}{' '}
+                    <a href={`mailto:${SUPPORT_EMAIL}`} className="text-navy no-underline hover:text-brand-accent">
+                        {SUPPORT_EMAIL}
                     </a>
                 </p>
             </Card>

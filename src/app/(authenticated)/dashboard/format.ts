@@ -1,3 +1,5 @@
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { logsMessages } from '@/lib/i18n/messages/logs';
 /**
  * Pure formatting helpers for the per-call detail table (客户控制台三合一).
  *
@@ -27,10 +29,9 @@ export function callResult(type: number, refundKind: RefundKind | null = null): 
 }
 
 /** 退款行的结果标签与展开说明的标题(明细表与调用记录页共用)。 */
-export function refundLabel(result: 'settlement_refund' | 'failure_refund'): { chip: string; heading: string } {
-    return result === 'settlement_refund'
-        ? { chip: '结算退款', heading: '结算说明' }
-        : { chip: '失败退款', heading: '退款说明' };
+export function refundLabel(result: 'settlement_refund' | 'failure_refund', locale: Locale = 'zh'): { chip: string; heading: string } {
+    const m = pickMessages(logsMessages, locale).refunds;
+    return result === 'settlement_refund' ? m.settlement : m.failure;
 }
 
 /**
@@ -75,13 +76,18 @@ export function formatTokens(promptTokens: number, completionTokens: number, per
  * 背景:Anthropic 面 prompt_tokens 不含缓存部分 —— prompt-cache 重度用户(如 CCMAX)
  * 会看到"输入 2 却 ¥0.07",缓存行就是解释。
  */
-export function formatCacheTokens(cacheReadTokens: number, cacheWriteTokens: number, perImageBilled = false): string {
+export function formatCacheTokens(
+    cacheReadTokens: number,
+    cacheWriteTokens: number,
+    perImageBilled = false,
+    locale: import('@/lib/i18n').Locale = 'zh',
+): string {
     if (perImageBilled) return '';
     const r = Number.isFinite(cacheReadTokens) && cacheReadTokens > 0 ? cacheReadTokens : 0;
     const w = Number.isFinite(cacheWriteTokens) && cacheWriteTokens > 0 ? cacheWriteTokens : 0;
     const parts: string[] = [];
-    if (r > 0) parts.push(`缓存读 ${r.toLocaleString('en-US')}`);
-    if (w > 0) parts.push(`缓存写 ${w.toLocaleString('en-US')}`);
+    if (r > 0) parts.push(`${locale === 'en' ? 'Cache read' : '缓存读'} ${r.toLocaleString('en-US')}`);
+    if (w > 0) parts.push(`${locale === 'en' ? 'Cache write' : '缓存写'} ${w.toLocaleString('en-US')}`);
     return parts.join(' · ');
 }
 

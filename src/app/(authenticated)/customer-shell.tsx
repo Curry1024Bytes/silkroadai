@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import { Menu } from 'lucide-react';
 import { Sidebar, type SidebarProps } from './sidebar';
 import { LogoutButton } from './logout-button';
@@ -15,6 +18,7 @@ interface CustomerShellProps {
 }
 
 export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandStyle, children }: CustomerShellProps) {
+    const m = useMessages(commonMessages).shell;
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const initial = userEmail.trim().charAt(0).toUpperCase() || 'U';
 
@@ -41,7 +45,7 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                 href="#portal-main"
                 className="fixed left-4 top-3 z-[70] -translate-y-20 rounded-md bg-portal-ink px-3 py-2 text-sm text-white transition-transform focus:translate-y-0"
             >
-                跳到主要内容
+                {m.skip}
             </a>
 
             <header className="sticky top-0 z-40 h-[60px] border-b border-black/[0.08] bg-white/90 backdrop-blur-xl supports-[backdrop-filter]:bg-white/80">
@@ -50,10 +54,10 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                         <button
                             type="button"
                             onClick={() => setMobileNavOpen(true)}
-                            aria-label="打开导航"
+                            aria-label={m.open}
                             aria-controls="portal-mobile-navigation"
                             aria-expanded={mobileNavOpen}
-                            title="打开导航"
+                            title={m.open}
                             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-portal-muted transition-colors duration-200 hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25 md:hidden"
                         >
                             <Menu size={20} strokeWidth={1.8} aria-hidden="true" />
@@ -62,7 +66,7 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                     </div>
 
                     <div className="hidden min-w-0 flex-1 items-center px-6 md:flex">
-                        <span className="font-display text-sm font-semibold text-portal-muted">工作台</span>
+                        <span className="font-display text-sm font-semibold text-portal-muted">{m.workspace}</span>
                     </div>
 
                     <div className="ml-auto flex h-full items-center gap-2 px-3 sm:gap-3 sm:px-5">
@@ -78,6 +82,7 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                             </span>
                         </div>
                         <div className="h-5 w-px bg-portal-line" aria-hidden="true" />
+                        <LocaleSwitcher />
                         <LogoutButton />
                     </div>
                 </div>

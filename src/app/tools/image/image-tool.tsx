@@ -1,6 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { toolsMessages } from '@/lib/i18n/messages/tools';
+
+type ImageToolMessages = (typeof toolsMessages)['zh']['image'];
 
 type Mode = 'text' | 'edit';
 type TaskStatus = 'IDLE' | 'IN_PROGRESS' | 'SUCCESS' | 'FAILURE';
@@ -10,19 +14,19 @@ const LAST_TASK_STORAGE_KEY = 'llmroute:image-tool:last-task';
 /** 分辨率(size)选项按模型给 —— gpt-image / dall-e 用 WxH,Gemini 生图用 1K/2K/4K 档。
  *  用错格式会被上游 400,所以 model 变了就重置 size(见 ImageTool)。 */
 type SizeOpt = { v: string; label: string };
-function sizeOptionsFor(model: string): SizeOpt[] {
+function sizeOptionsFor(model: string, t: ImageToolMessages): SizeOpt[] {
     const m = model.toLowerCase();
     if (m.includes('gpt-image') || m.includes('dall-e') || m.includes('dalle')) {
         return [
-            { v: '', label: '默认' },
-            { v: '1024x1024', label: '1024×1024 方' },
-            { v: '1536x1024', label: '1536×1024 横' },
-            { v: '1024x1536', label: '1024×1536 竖' },
+            { v: '', label: t.sizeDefault },
+            { v: '1024x1024', label: t.sizeSquare },
+            { v: '1536x1024', label: t.sizeLandscape },
+            { v: '1024x1536', label: t.sizePortrait },
         ];
     }
     // Gemini 生图:1K/2K/4K(pro 可自选;其余模型固定档时该参数被上游忽略,无害)
     return [
-        { v: '', label: '默认' },
+        { v: '', label: t.sizeDefault },
         { v: '1K', label: '1K (1024)' },
         { v: '2K', label: '2K (2048)' },
         { v: '4K', label: '4K (4096)' },
@@ -50,6 +54,7 @@ function buildBody(
 }
 
 export function ImageTool() {
+    const m = useMessages(toolsMessages);
     const [key, setKey] = useState('');
     const [showKey, setShowKey] = useState(false);
     const [models, setModels] = useState<string[]>([]);
@@ -106,14 +111,16 @@ export function ImageTool() {
                 };
                 if (stopped) return;
                 if (r.status === 401 || j.code === 'not_found') {
-                    setErr('找不到这个任务，请输入提交时使用的同一把 API Key。');
+                    setErr(m.image.taskNotFound);
                     return;
                 }
                 if (!r.ok || j.code !== 'success' || !j.data) {
                     throw new Error(
-                        (typeof j.error === 'string' ? j.error : j.error?.message) ||
-                            j.message ||
-                            `查询失败 (${r.status})`,
+                        m.shared.apiError(
+                            (typeof j.error === 'string' ? j.error : j.error?.message) ||
+                                j.message ||
+                                m.image.queryFailed(r.status),
+                        ),
                     );
                 }
                 if (j.data.status === 'SUCCESS') {
@@ -128,28 +135,28 @@ export function ImageTool() {
                                 typeof value === 'string' &&
                                 (value.startsWith('data:image/') ||
                                     (value.length > 1000 && /^[A-Za-z0-9+/=]+$/.test(value)))
-                                    ? `[图片数据，${value.length} 字符]`
+                                    ? m.image.imageData(value.length)
                                     : value,
                             2,
                         ),
                     );
                     setImgs(urls);
                     setTaskStatus('SUCCESS');
-                    setErr(urls.length ? '' : '任务已完成，但返回里没有图片（见下方原始响应）。');
+                    setErr(urls.length ? '' : m.image.noImages);
                     return;
                 }
                 if (j.data.status === 'FAILURE') {
                     setTaskStatus('FAILURE');
-                    setErr(j.data.fail_reason || '生图任务失败');
+                    setErr(j.data.fail_reason || m.image.taskFailed);
                     return;
                 }
-                if (j.data.status !== 'IN_PROGRESS') throw new Error('未知的任务状态');
+                if (j.data.status !== 'IN_PROGRESS') throw new Error(m.image.unknownStatus);
                 setTaskStatus('IN_PROGRESS');
                 setErr('');
                 timer = setTimeout(poll, 3000);
             } catch (e) {
                 if (stopped) return;
-                setErr(`查询暂时中断，正在自动重试：${e instanceof Error ? e.message : String(e)}`);
+                setErr(m.image.pollRetrying(e instanceof Error ? e.message : String(e)));
                 timer = setTimeout(poll, 5000);
             }
         };
@@ -159,7 +166,7 @@ export function ImageTool() {
             if (timer) clearTimeout(timer);
             controller.abort();
         };
-    }, [taskId, key]);
+    }, [taskId, key, m]);
 
     // 换模型时重置分辨率 —— 不同模型 size 格式不同(WxH vs 1K/2K/4K),留旧值会被上游 400。
     useEffect(() => {
@@ -176,9 +183,9 @@ export function ImageTool() {
         try {
             const r = await fetch('/api/tools/image/models', { headers: { Authorization: `Bearer ${key.trim()}` } });
             const j = await r.json();
-            if (!r.ok) throw new Error(j?.error?.message || j?.error || '加载失败');
+            if (!r.ok) throw new Error(m.shared.apiError(j?.error?.message || j?.error || m.shared.loadFailed));
             const ms: string[] = j.models || [];
-            if (!ms.length) throw new Error('这把 key 下没有可用的生图模型');
+            if (!ms.length) throw new Error(m.image.noModels);
             setModels(ms);
             setModel(ms[0]);
         } catch (e) {
@@ -188,7 +195,7 @@ export function ImageTool() {
         } finally {
             setLoadingModels(false);
         }
-    }, [key]);
+    }, [key, m]);
 
     const onUpload = useCallback((f: File | undefined) => {
         if (!f) return;
@@ -233,17 +240,21 @@ export function ImageTool() {
             try {
                 j = JSON.parse(text);
             } catch {
-                throw new Error(`返回非 JSON (${r.status})`);
+                throw new Error(m.image.nonJson(r.status));
             }
             if (!r.ok) {
                 const e = j as { error?: { message?: string } | string; message?: string };
                 throw new Error(
-                    (typeof e.error === 'string' ? e.error : e.error?.message) || e.message || `请求失败 (${r.status})`,
+                    m.shared.apiError(
+                        (typeof e.error === 'string' ? e.error : e.error?.message) ||
+                            e.message ||
+                            m.shared.requestFailed(r.status),
+                    ),
                 );
             }
             const task = (j as { data?: { task_id?: string; status?: string } }).data;
             if (!task?.task_id || !/^[0-9a-f]{32}$/.test(task.task_id)) {
-                throw new Error('未收到任务号，请检查原始响应');
+                throw new Error(m.image.noTaskId);
             }
             try {
                 window.localStorage.setItem(LAST_TASK_STORAGE_KEY, task.task_id);
@@ -257,53 +268,52 @@ export function ImageTool() {
         } finally {
             setBusy(false);
         }
-    }, [busy, taskStatus, model, prompt, bodyJson, key]);
+    }, [busy, taskStatus, model, prompt, bodyJson, key, m]);
 
     return (
         <div className="space-y-5">
             {/* Key */}
             <div className="rounded-lg border border-brand-border bg-surface p-4">
-                <label className="block text-sm font-medium text-navy mb-1">你的 API Key</label>
+                <label className="block text-sm font-medium text-navy mb-1">{m.shared.apiKeyLabel}</label>
                 <div className="flex gap-2">
                     <input
                         type={showKey ? 'text' : 'password'}
                         value={key}
                         onChange={(e) => setKey(e.target.value)}
-                        placeholder="sk-..."
+                        placeholder={m.shared.apiKeyPlaceholder}
                         className="flex-1 rounded border border-brand-border bg-paper px-3 py-2 text-sm font-mono"
                     />
                     <button
                         onClick={() => setShowKey((s) => !s)}
                         className="rounded border border-brand-border px-3 text-sm text-muted-ink"
                     >
-                        {showKey ? '隐藏' : '显示'}
+                        {showKey ? m.shared.hide : m.shared.show}
                     </button>
                     <button
                         onClick={loadModels}
                         disabled={!key.trim() || loadingModels}
                         className="rounded bg-brand-accent px-4 text-sm font-medium text-white disabled:opacity-50"
                     >
-                        {loadingModels ? '加载中…' : '加载模型'}
+                        {loadingModels ? m.shared.loading : m.shared.loadModels}
                     </button>
                 </div>
-                <p className="m-0 mt-2 text-xs text-minor-ink">
-                    Key 只用于本次调用、不保存。在「API 密钥」页用复制按钮取。
-                </p>
+                <p className="m-0 mt-2 text-xs text-minor-ink">{m.shared.keyNote}</p>
             </div>
 
             {taskId && (
                 <div className="rounded-lg border border-brand-border bg-surface p-4 text-sm text-navy space-y-1">
                     <p className="m-0">
-                        生图任务：<code className="font-mono break-all">{taskId}</code>
+                        {m.image.taskLabel}
+                        <code className="font-mono break-all">{taskId}</code>
                     </p>
                     <p className="m-0 text-muted-ink">
                         {taskStatus === 'SUCCESS'
-                            ? '已完成。刷新页面后，输入原 API Key 仍可取回结果。'
+                            ? m.image.taskDone
                             : taskStatus === 'FAILURE'
-                              ? '任务失败，详情见下方。'
+                              ? m.image.taskFailedHint
                               : key.trim()
-                                ? '生成中，页面会自动查询结果；网络短暂中断时请勿重复提交。'
-                                : '输入提交时的 API Key，即可继续查询上次任务。'}
+                                ? m.image.taskPolling
+                                : m.image.taskNeedKey}
                     </p>
                     <button
                         type="button"
@@ -319,7 +329,7 @@ export function ImageTool() {
                         }}
                         className="mt-2 rounded border border-brand-border px-3 py-1 text-xs text-muted-ink"
                     >
-                        移除本机任务记录
+                        {m.image.clearTask}
                     </button>
                 </div>
             )}
@@ -329,7 +339,7 @@ export function ImageTool() {
                     {/* 模型 + 模式 */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4 space-y-3">
                         <div className="flex items-center gap-3 flex-wrap">
-                            <label className="text-sm font-medium text-navy">模型</label>
+                            <label className="text-sm font-medium text-navy">{m.shared.model}</label>
                             <select
                                 value={model}
                                 onChange={(e) => setModel(e.target.value)}
@@ -343,17 +353,17 @@ export function ImageTool() {
                             </select>
                         </div>
                         <div className="flex gap-2">
-                            {(['text', 'edit'] as Mode[]).map((m) => (
+                            {(['text', 'edit'] as Mode[]).map((md) => (
                                 <button
-                                    key={m}
-                                    onClick={() => setMode(m)}
+                                    key={md}
+                                    onClick={() => setMode(md)}
                                     className={`rounded-full px-4 py-1.5 text-sm border ${
-                                        mode === m
+                                        mode === md
                                             ? 'bg-brand-accent text-white border-brand-accent'
                                             : 'border-brand-border text-muted-ink'
                                     }`}
                                 >
-                                    {m === 'text' ? '文生图' : '图生图'}
+                                    {md === 'text' ? m.image.modeText : m.image.modeEdit}
                                 </button>
                             ))}
                         </div>
@@ -362,18 +372,18 @@ export function ImageTool() {
                     {/* 参数 */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4 space-y-3">
                         <div>
-                            <label className="block text-sm font-medium text-navy mb-1">提示词</label>
+                            <label className="block text-sm font-medium text-navy mb-1">{m.image.prompt}</label>
                             <textarea
                                 value={prompt}
                                 onChange={(e) => setPrompt(e.target.value)}
                                 rows={3}
-                                placeholder="描述你想生成 / 修改的图片"
+                                placeholder={m.image.promptPlaceholder}
                                 className="w-full rounded border border-brand-border bg-paper px-3 py-2 text-sm"
                             />
                         </div>
                         <div className="flex items-center gap-4 flex-wrap">
                             <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium text-navy">比例</label>
+                                <label className="text-sm font-medium text-navy">{m.image.aspect}</label>
                                 <select
                                     value={aspect}
                                     onChange={(e) => {
@@ -392,7 +402,7 @@ export function ImageTool() {
                                 </select>
                             </div>
                             <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium text-navy">分辨率</label>
+                                <label className="text-sm font-medium text-navy">{m.image.resolution}</label>
                                 <select
                                     value={size}
                                     onChange={(e) => {
@@ -403,7 +413,7 @@ export function ImageTool() {
                                     }}
                                     className="rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
                                 >
-                                    {sizeOptionsFor(model).map((o) => (
+                                    {sizeOptionsFor(model, m.image).map((o) => (
                                         <option key={o.v} value={o.v}>
                                             {o.label}
                                         </option>
@@ -411,7 +421,7 @@ export function ImageTool() {
                                 </select>
                             </div>
                             <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium text-navy">数量</label>
+                                <label className="text-sm font-medium text-navy">{m.image.count}</label>
                                 <input
                                     type="number"
                                     min={1}
@@ -420,12 +430,12 @@ export function ImageTool() {
                                     onChange={(e) => setN(Math.max(1, Math.min(4, Number(e.target.value) || 1)))}
                                     className="w-16 rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
                                 />
-                                <span className="text-xs text-minor-ink">Gemini 系单次出 1 张</span>
+                                <span className="text-xs text-minor-ink">{m.image.geminiSingle}</span>
                             </div>
                         </div>
                         {mode === 'edit' && (
                             <div>
-                                <label className="block text-sm font-medium text-navy mb-1">参考图(图生图)</label>
+                                <label className="block text-sm font-medium text-navy mb-1">{m.image.refImage}</label>
                                 <input
                                     type="file"
                                     accept="image/*"
@@ -445,7 +455,7 @@ export function ImageTool() {
 
                     {/* JSON */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4">
-                        <label className="block text-sm font-medium text-navy mb-1">请求 JSON(可手动改)</label>
+                        <label className="block text-sm font-medium text-navy mb-1">{m.image.requestJson}</label>
                         <textarea
                             value={bodyJson}
                             onChange={(e) => setBodyJson(e.target.value)}
@@ -459,7 +469,11 @@ export function ImageTool() {
                         disabled={busy || taskStatus === 'IN_PROGRESS' || !prompt.trim()}
                         className="rounded bg-brand-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
                     >
-                        {busy ? '提交中…' : taskStatus === 'IN_PROGRESS' ? '生成中…' : '生成图片'}
+                        {busy
+                            ? m.image.submitting
+                            : taskStatus === 'IN_PROGRESS'
+                              ? m.shared.generating
+                              : m.image.generate}
                     </button>
                 </>
             )}
@@ -479,7 +493,7 @@ export function ImageTool() {
                                 onClick={() => downloadImage(u, i)}
                                 className="w-full rounded border border-brand-border px-3 py-1.5 text-sm font-medium text-navy hover:bg-paper-muted"
                             >
-                                下载图片
+                                {m.image.download}
                             </button>
                         </div>
                     ))}
@@ -488,7 +502,7 @@ export function ImageTool() {
 
             {raw && (
                 <details className="rounded-lg border border-brand-border bg-surface p-3 text-xs">
-                    <summary className="cursor-pointer text-muted-ink">响应详情</summary>
+                    <summary className="cursor-pointer text-muted-ink">{m.image.responseDetails}</summary>
                     <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-minor-ink">{raw}</pre>
                 </details>
             )}

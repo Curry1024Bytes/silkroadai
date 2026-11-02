@@ -1,4 +1,6 @@
 'use client';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { logsMessages } from '@/lib/i18n/messages/logs';
 
 /**
  * 全功能调用日志查看器(客户「调用日志」页)。
@@ -28,6 +30,7 @@ import {
 } from 'lucide-react';
 import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabel } from '../dashboard/format';
 import { formatSignedCny } from '@/lib/format/number';
+import { pickMessages, intlLocale, type Locale } from '@/lib/i18n';
 import type { LogRow } from '@/app/api/portal/logs/route';
 
 interface Filters {
@@ -83,7 +86,8 @@ interface LogsResult {
     error: string | null;
 }
 
-async function loadLogs(f: Filters, page: number, signal: AbortSignal): Promise<LogsResult | null> {
+async function loadLogs(f: Filters, page: number, signal: AbortSignal, locale: Locale): Promise<LogsResult | null> {
+    const copy = pickMessages(logsMessages, locale);
     const params = buildParams(f);
     params.set('page', String(page));
     try {
@@ -94,19 +98,21 @@ async function loadLogs(f: Filters, page: number, signal: AbortSignal): Promise<
             error?: string;
         };
         if (data.error === 'account_not_provisioned') {
-            return { rows: [], hasMore: false, error: '账号尚未开通,暂无调用日志。' };
+            return { rows: [], hasMore: false, error: copy.errors.notProvisioned };
         }
         if (data.error) {
-            return { rows: [], hasMore: false, error: '加载失败,请稍后重试。' };
+            return { rows: [], hasMore: false, error: copy.errors.loadFailed };
         }
         return { rows: data.rows ?? [], hasMore: !!data.hasMore, error: null };
     } catch {
         if (signal.aborted) return null;
-        return { rows: [], hasMore: false, error: '加载失败,请稍后重试。' };
+        return { rows: [], hasMore: false, error: copy.errors.loadFailed };
     }
 }
 
 export function LogsViewer() {
+    const copy = useMessages(logsMessages);
+    const locale = useLocale();
     const dr = defaultRange();
     const [filters, setFilters] = useState<Filters>({
         start: dr.start,
@@ -127,7 +133,7 @@ export function LogsViewer() {
 
     useEffect(() => {
         const controller = new AbortController();
-        void loadLogs(applied, page, controller.signal).then((result) => {
+        void loadLogs(applied, page, controller.signal, locale).then((result) => {
             if (!result || controller.signal.aborted) return;
             setRows(result.rows);
             setHasMore(result.hasMore);
@@ -135,7 +141,7 @@ export function LogsViewer() {
             setLoading(false);
         });
         return () => controller.abort();
-    }, [applied, page]);
+    }, [applied, page, locale]);
 
     const onSearch = () => {
         setExpanded(null);
@@ -159,15 +165,14 @@ export function LogsViewer() {
                 <div className="flex items-center gap-2 border-b border-portal-line px-4 py-3.5 sm:px-5">
                     <SlidersHorizontal size={17} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
                     <div>
-                        <h2 className="m-0 text-sm font-semibold text-portal-ink">筛选条件</h2>
-                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">默认查询最近 7 天</p>
+                        <h2 className="m-0 text-sm font-semibold text-portal-ink">{copy.viewer.filters}</h2>
+                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">{copy.viewer.range}</p>
                     </div>
                 </div>
                 <div className="p-4 sm:p-5">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            起始时间
-                            <input
+                            {copy.filters.start}<input
                                 type="datetime-local"
                                 className={INPUT}
                                 value={filters.start}
@@ -175,8 +180,7 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            结束时间
-                            <input
+                            {copy.filters.end}<input
                                 type="datetime-local"
                                 className={INPUT}
                                 value={filters.end}
@@ -184,37 +188,33 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            Request ID
-                            <input
+                            {copy.table.colRequestId}<input
                                 className={INPUT}
-                                placeholder="精确匹配"
+                                placeholder={copy.filters.requestIdPlaceholder}
                                 value={filters.requestId}
                                 onChange={(ev) => set('requestId', ev.target.value)}
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            令牌名(Key)
-                            <input
+                            {copy.filters.token}<input
                                 className={INPUT}
-                                placeholder="如 prod-openai"
+                                placeholder={copy.filters.tokenPlaceholder}
                                 value={filters.token}
                                 onChange={(ev) => set('token', ev.target.value)}
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            模型名
-                            <input
+                            {copy.filters.model}<input
                                 className={INPUT}
-                                placeholder="如 gpt-image-2"
+                                placeholder={copy.filters.modelPlaceholder}
                                 value={filters.model}
                                 onChange={(ev) => set('model', ev.target.value)}
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            渠道 ID
-                            <input
+                            {copy.filters.channel}<input
                                 className={INPUT}
-                                placeholder="数字"
+                                placeholder={copy.filters.channelPlaceholder}
                                 inputMode="numeric"
                                 value={filters.channel}
                                 onChange={(ev) => set('channel', ev.target.value)}
@@ -229,12 +229,11 @@ export function LogsViewer() {
                                 // Content-Disposition 直接下载,不离开本页。
                                 window.location.assign(`/api/portal/logs/export?${buildParams(filters).toString()}`);
                             }}
-                            title="按当前过滤条件导出 CSV(Excel 可直接打开)"
+                            title={copy.filters.exportTitle}
                             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-portal-line bg-portal-panel px-4 text-sm font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20"
                         >
                             <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-                            导出 CSV
-                        </button>
+                            {copy.filters.exportCsv}</button>
                         <button
                             type="button"
                             onClick={onSearch}
@@ -246,7 +245,7 @@ export function LogsViewer() {
                             ) : (
                                 <Search size={16} strokeWidth={1.8} aria-hidden="true" />
                             )}
-                            {loading ? '查询中…' : '搜索'}
+                            {loading ? copy.filters.searching : copy.filters.search}
                         </button>
                     </div>
                 </div>
@@ -259,7 +258,7 @@ export function LogsViewer() {
                         <AlertCircle size={20} strokeWidth={1.8} aria-hidden="true" />
                     </span>
                     <div>
-                        <p className="m-0 text-sm font-semibold text-portal-ink">日志加载失败</p>
+                        <p className="m-0 text-sm font-semibold text-portal-ink">{copy.viewer.failed}</p>
                         <p className="m-0 mt-1 text-sm text-portal-muted">{error}</p>
                     </div>
                 </div>
@@ -269,15 +268,14 @@ export function LogsViewer() {
                     className="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-sm text-portal-muted shadow-portal"
                 >
                     <LoaderCircle size={18} className="animate-spin text-portal-gold" aria-hidden="true" />
-                    正在加载调用记录…
-                </div>
+                    {copy.viewer.loading}</div>
             ) : rows.length === 0 && !loading ? (
                 <div className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-center shadow-portal">
                     <span className="flex h-10 w-10 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
                         <Search size={19} strokeWidth={1.8} aria-hidden="true" />
                     </span>
-                    <p className="m-0 text-sm font-semibold text-portal-ink">暂无调用记录</p>
-                    <p className="m-0 text-xs text-portal-subtle">请调整时间范围或筛选条件后重试</p>
+                    <p className="m-0 text-sm font-semibold text-portal-ink">{copy.viewer.empty}</p>
+                    <p className="m-0 text-xs text-portal-subtle">{copy.viewer.hint}</p>
                 </div>
             ) : (
                 <div
@@ -287,14 +285,14 @@ export function LogsViewer() {
                     <table className="w-full min-w-[1080px] border-collapse">
                         <thead>
                             <tr className="bg-portal-soft">
-                                <th className={HEAD}>时间</th>
-                                <th className={HEAD}>模型</th>
-                                <th className={HEAD}>Key</th>
-                                <th className={HEAD}>Request ID</th>
-                                <th className={`${HEAD} text-right`}>时长</th>
-                                <th className={`${HEAD} text-right`}>Tokens(输入/输出)</th>
-                                <th className={`${HEAD} text-right`}>消耗</th>
-                                <th className={`${HEAD} text-center`}>结果</th>
+                                <th className={HEAD}>{copy.table.colTime}</th>
+                                <th className={HEAD}>{copy.table.colModel}</th>
+                                <th className={HEAD}>{copy.table.colKey}</th>
+                                <th className={HEAD}>{copy.table.colRequestId}</th>
+                                <th className={`${HEAD} text-right`}>{copy.table.colDuration}</th>
+                                <th className={`${HEAD} text-right`}>{copy.table.colTokens}</th>
+                                <th className={`${HEAD} text-right`}>{copy.table.colCost}</th>
+                                <th className={`${HEAD} text-center`}>{copy.table.colResult}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -319,7 +317,7 @@ export function LogsViewer() {
             {/* 分页(服务端)*/}
             <div className="flex items-center justify-between gap-3 text-xs text-portal-muted">
                 <span className="tabular-nums">
-                    第 {page} 页{loading ? ' · 加载中…' : ''}
+                    {copy.pager.page(page)}{loading ? copy.pager.loading : ''}
                 </span>
                 <div className="flex gap-2">
                     <button
@@ -329,16 +327,14 @@ export function LogsViewer() {
                         className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
                         <ChevronLeft size={14} aria-hidden="true" />
-                        上一页
-                    </button>
+                        {copy.pager.prev}</button>
                     <button
                         type="button"
                         onClick={() => goToPage(page + 1)}
                         disabled={!hasMore || loading}
                         className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
-                        下一页
-                        <ChevronRight size={14} aria-hidden="true" />
+                        {copy.pager.next}<ChevronRight size={14} aria-hidden="true" />
                     </button>
                 </div>
             </div>
@@ -347,6 +343,8 @@ export function LogsViewer() {
 }
 
 function RequestIdCell({ value }: { value: string }) {
+    const copy = useMessages(logsMessages);
+    const locale = useLocale();
     const [copied, setCopied] = useState(false);
     if (!value) return <span className="text-portal-subtle">—</span>;
     return (
@@ -365,8 +363,8 @@ function RequestIdCell({ value }: { value: string }) {
                         /* clipboard unavailable — no-op */
                     }
                 }}
-                title={copied ? '已复制' : '复制完整 Request ID'}
-                aria-label={copied ? 'Request ID 已复制' : '复制完整 Request ID'}
+                title={copied ? copy.table.copied : copy.table.copyFullRequestId}
+                aria-label={copied ? 'Request ID 已复制' : copy.table.copyFullRequestId}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-portal-subtle transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20"
             >
                 {copied ? <Check size={13} aria-hidden="true" /> : <Clipboard size={13} aria-hidden="true" />}
@@ -386,12 +384,14 @@ function LogRowItem({
     isOpen: boolean;
     onToggle: () => void;
 }) {
+    const copy = useMessages(logsMessages);
+    const locale = useLocale();
     const isRefund = result === 'settlement_refund' || result === 'failure_refund';
     return (
         <>
             <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
                 <td className={`${CELL} whitespace-nowrap text-portal-muted`}>
-                    {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                    {new Date(row.createdAt * 1000).toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${CELL} font-mono text-xs`}>{row.model || '<unknown>'}</td>
                 <td className={`${CELL} text-xs`}>
@@ -414,6 +414,7 @@ function LogRowItem({
                             row.cacheReadTokens,
                             row.cacheWriteTokens,
                             row.perImageBilled,
+                            locale,
                         );
                         return cacheText ? (
                             <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{cacheText}</span>
@@ -430,12 +431,12 @@ function LogRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || refundLabel(result).chip}
+                            title={row.content || refundLabel(result, locale).chip}
                             aria-expanded={isOpen}
                             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-warning-border bg-status-warning-bg px-2 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-warning-text/20"
                         >
                             <Undo2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            {refundLabel(result).chip}
+                            {refundLabel(result, locale).chip}
                             {isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
@@ -446,13 +447,12 @@ function LogRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || '调用失败'}
+                            title={row.content || copy.table.callFailed}
                             aria-expanded={isOpen}
                             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-error-border bg-status-error-bg px-2 text-xs font-medium text-status-error-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error-text/20"
                         >
                             <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
-                            失败
-                            {isOpen ? (
+                            {copy.table.failed}{isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
                                 <ChevronDown size={12} aria-hidden="true" />
@@ -461,8 +461,7 @@ function LogRowItem({
                     ) : (
                         <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            成功
-                        </span>
+                            {copy.table.success}</span>
                     )}
                 </td>
             </tr>
@@ -472,10 +471,10 @@ function LogRowItem({
                         <p
                             className={`m-0 mb-1 text-xs font-medium ${isRefund ? 'text-status-warning-text' : 'text-status-error-text'}`}
                         >
-                            {isRefund ? refundLabel(result).heading : '错误详情'}
+                            {isRefund ? refundLabel(result, locale).heading : copy.table.errorDetail}
                         </p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-portal-line bg-portal-panel px-3 py-2 font-mono text-xs text-portal-ink">
-                            {row.content || '(无错误详情)'}
+                            {row.content || copy.table.noErrorDetail}
                         </pre>
                     </td>
                 </tr>

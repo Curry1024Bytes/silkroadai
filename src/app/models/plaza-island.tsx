@@ -9,7 +9,8 @@
 import { useEffect, useMemo, useRef } from 'react';
 import type { PricingData } from '@newapi/features/pricing/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import '@newapi/i18n/config';
+import i18n from '@newapi/i18n/config';
+import { useLocale } from '@/lib/i18n/client';
 import { Pricing } from '@newapi/features/pricing';
 import { PortalContainerContext } from '@newapi/components/ui/portal-container';
 import { usePlazaRuntime, type PlazaRuntimeConfig } from '@newapi/lib/plaza-runtime';
@@ -22,6 +23,12 @@ export interface PlazaIslandProps {
 }
 
 export default function PlazaIsland({ runtime, initialData, embedded }: PlazaIslandProps) {
+    // Follow the portal locale (cookie) instead of the vendored default `zhCN`.
+    // Resources are bundled, so changeLanguage is synchronous; doing it during
+    // render (guarded) avoids a one-frame Chinese flash before an effect runs.
+    const locale = useLocale();
+    const lng = locale === 'en' ? 'en' : 'zhCN';
+    if (i18n.language !== lng) void i18n.changeLanguage(lng);
     const client = useMemo(
         () =>
             new QueryClient({

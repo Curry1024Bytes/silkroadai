@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatCny } from '@/lib/format/number';
 import { Input } from '@/components/ui/Input';
+import { intlLocale, type Locale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { keysMessages, type KeysMessages } from '@/lib/i18n/messages/keys';
 import {
     buildQuotaExpiryPayload,
-    KEY_INACTIVE_MESSAGE,
     EXPIRY_PRESETS,
-    EXPIRY_PRESET_LABELS,
+    expiryPresetLabels,
     formatExpiry,
     isExpired,
     toDatetimeLocalValue,
@@ -80,22 +83,21 @@ const ACTION_BUTTON =
     'transition-colors hover:border-portal-line hover:bg-portal-soft hover:text-portal-ink ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20 disabled:cursor-not-allowed disabled:opacity-40';
 
-/** Render `last_used_at` as a friendly Chinese relative-time string.
- *  Returns null sentinel for "never used" so callers can phrase it in
- *  context (e.g. "从未调用"). */
-function formatLastUsed(iso: string | null): string {
-    if (!iso) return '从未调用';
+/** Render `last_used_at` as a friendly relative-time string in the current
+ *  locale ("从未调用" / "Never used" for the null sentinel). */
+function formatLastUsed(iso: string | null, t: KeysMessages['lastUsed']): string {
+    if (!iso) return t.never;
     const then = new Date(iso).getTime();
     if (Number.isNaN(then)) return '—';
     const now = Date.now();
     const diffSec = Math.max(0, Math.floor((now - then) / 1000));
-    if (diffSec < 60) return '刚刚';
+    if (diffSec < 60) return t.justNow;
     const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin} 分钟前`;
+    if (diffMin < 60) return t.minutesAgo(diffMin);
     const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} 小时前`;
+    if (diffHr < 24) return t.hoursAgo(diffHr);
     const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay} 天前`;
+    return t.daysAgo(diffDay);
 }
 
 /** State of the per-row "displayed key" — either the real sk- (showing) or
@@ -158,11 +160,13 @@ export function QuotaExpiryFields(props: {
     quotaLimitsEnabled?: boolean;
 }) {
     const { value, onChange, disabled, idPrefix, quotaLimitsEnabled = false } = props;
+    const t = useMessages(keysMessages).fields;
+    const presetLabels = expiryPresetLabels(useLocale());
     return (
         <div className="grid gap-3 sm:grid-cols-2">
             {quotaLimitsEnabled && (
                 <div>
-                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">额度上限</p>
+                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">{t.quotaCap}</p>
                     <label className="flex items-center gap-2 text-sm text-ink">
                         <input
                             type="checkbox"
@@ -171,7 +175,7 @@ export function QuotaExpiryFields(props: {
                             disabled={disabled}
                             onChange={(e) => onChange({ quotaUnlimited: e.target.checked })}
                         />
-                        无限额度
+                        {t.unlimited}
                     </label>
                     {!value.quotaUnlimited && (
                         <div className="mt-1.5 flex items-center gap-1.5">
@@ -179,24 +183,22 @@ export function QuotaExpiryFields(props: {
                             <Input
                                 type="text"
                                 inputMode="decimal"
-                                placeholder="例如 100"
+                                placeholder={t.quotaPlaceholder}
                                 value={value.quotaCny}
                                 disabled={disabled}
                                 onChange={(e) => onChange({ quotaCny: e.target.value })}
-                                aria-label="额度上限(元)"
+                                aria-label={t.quotaAria}
                                 block={false}
                                 className="w-32 text-sm"
                             />
                         </div>
                     )}
-                    <p className="m-0 mt-1 text-xs text-minor-ink">
-                        这把 key 一共还能花多少,独立于账户余额;用完即拒绝调用,充值不会自动补。
-                    </p>
+                    <p className="m-0 mt-1 text-xs text-minor-ink">{t.quotaHint}</p>
                 </div>
             )}
             <div>
-                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">到期时间</p>
-                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="到期时间">
+                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">{t.expiry}</p>
+                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={t.expiry}>
                     {EXPIRY_PRESETS.map((preset) => {
                         const active = value.expiryPreset === preset;
                         return (
@@ -215,7 +217,7 @@ export function QuotaExpiryFields(props: {
                                     'disabled:cursor-not-allowed disabled:opacity-50',
                                 ].join(' ')}
                             >
-                                {EXPIRY_PRESET_LABELS[preset]}
+                                {presetLabels[preset]}
                             </button>
                         );
                     })}
@@ -226,12 +228,12 @@ export function QuotaExpiryFields(props: {
                         value={value.expiryCustom}
                         disabled={disabled}
                         onChange={(e) => onChange({ expiryCustom: e.target.value })}
-                        aria-label="自定义到期时间"
+                        aria-label={t.customExpiryAria}
                         block={false}
                         className="mt-1.5 text-sm"
                     />
                 )}
-                <p className="m-0 mt-1 text-xs text-minor-ink">保存到期设置不会自动启用已失效或已停用的 Key。</p>
+                <p className="m-0 mt-1 text-xs text-minor-ink">{t.expiryHint}</p>
             </div>
         </div>
     );
@@ -239,8 +241,10 @@ export function QuotaExpiryFields(props: {
 
 /** 行内「额度 / 到期」摘要。 */
 function BudgetSummary({ row }: { row: KeyRow }) {
+    const t = useMessages(keysMessages);
+    const locale = useLocale();
     if (!row.meta_available) {
-        return <span className="text-minor-ink">额度信息暂不可用</span>;
+        return <span className="text-minor-ink">{t.budget.metaUnavailable}</span>;
     }
     const inactive = row.requires_reactivation || (row.upstream_status != null && row.upstream_status !== 1);
     const expired = isExpired(row.expires_at ?? null);
@@ -255,24 +259,26 @@ function BudgetSummary({ row }: { row: KeyRow }) {
             <div>
                 {row.quota_unlimited === false ? (
                     <>
-                        剩余 {formatCny(row.remainCny ?? 0).exact}
-                        {exhausted && badge('已用尽')}
+                        {t.budget.remaining}
+                        {formatCny(row.remainCny ?? 0).exact}
+                        {exhausted && badge(t.budget.exhausted)}
                     </>
                 ) : (
-                    '无限额度'
+                    t.fields.unlimited
                 )}
             </div>
             <div className="mt-0.5 text-xs text-minor-ink">
-                {formatExpiry(row.expires_at ?? null)}
-                {expired && badge('已过期')}
+                {formatExpiry(row.expires_at ?? null, locale)}
+                {expired && badge(t.budget.expired)}
             </div>
-            {inactive && <p className="m-0 mt-1 text-xs text-status-error-text">{KEY_INACTIVE_MESSAGE}</p>}
+            {inactive && <p className="m-0 mt-1 text-xs text-status-error-text">{t.quotaExpiry.keyInactive}</p>}
         </div>
     );
 }
 
-function ratioBadgeText(ratio: number | null, special = false): string | null {
-    return ratio == null ? null : `${ratio}x ${special ? '专属倍率' : '倍率'}`;
+function ratioBadgeText(ratio: number | null, special: boolean, t: KeysMessages['tier']): string | null {
+    if (ratio == null) return null;
+    return special ? t.specialRatio(ratio) : t.ratio(ratio);
 }
 
 /** Searchable group selector. Multiple groups intentionally start unselected. */
@@ -290,6 +296,7 @@ export function TierSelect({
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
     const rootRef = useRef<HTMLDivElement | null>(null);
+    const t = useMessages(keysMessages).tier;
 
     useEffect(() => {
         if (!open) return;
@@ -335,14 +342,14 @@ export function TierSelect({
                 {selected ? (
                     <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-portal-ink">{selected.display_name}</span>
-                        {ratioBadgeText(selected.ratio, selected.special) && (
+                        {ratioBadgeText(selected.ratio, !!selected.special, t) && (
                             <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                {ratioBadgeText(selected.ratio, selected.special)}
+                                {ratioBadgeText(selected.ratio, !!selected.special, t)}
                             </span>
                         )}
                     </span>
                 ) : (
-                    <span className="text-portal-subtle">选择一个档次</span>
+                    <span className="text-portal-subtle">{t.pick}</span>
                 )}
                 <span aria-hidden className="shrink-0 text-[10px] text-portal-subtle">
                     {open ? '▲' : '▼'}
@@ -355,13 +362,13 @@ export function TierSelect({
                             type="text"
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
-                            placeholder="搜索…"
+                            placeholder={t.searchPlaceholder}
                             autoFocus
                             className="w-full rounded-md border border-portal-line bg-portal-soft px-2.5 py-1.5 text-sm text-portal-ink outline-none focus:border-navy"
                         />
                     </div>
                     <ul role="listbox" className="m-0 max-h-64 list-none overflow-y-auto p-1">
-                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-portal-subtle">无匹配档次</li>}
+                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-portal-subtle">{t.noMatch}</li>}
                         {filtered.map((tier) => (
                             <li key={tier.key} role="option" aria-selected={tier.key === value}>
                                 <button
@@ -382,9 +389,9 @@ export function TierSelect({
                                             {[tier.newapi_group, tier.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </span>
-                                    {ratioBadgeText(tier.ratio, tier.special) && (
+                                    {ratioBadgeText(tier.ratio, !!tier.special, t) && (
                                         <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                            {ratioBadgeText(tier.ratio, tier.special)}
+                                            {ratioBadgeText(tier.ratio, !!tier.special, t)}
                                         </span>
                                     )}
                                 </button>
@@ -418,6 +425,7 @@ function KeyActions({
     onEdit: () => void;
     onRevoke: () => void;
 }) {
+    const t = useMessages(keysMessages).actions;
     return (
         <span className="inline-flex shrink-0 justify-end gap-1">
             <button
@@ -425,48 +433,48 @@ function KeyActions({
                 onClick={onReveal}
                 disabled={busy || revealed}
                 className={ACTION_BUTTON}
-                aria-label={revealed ? `${row.key_alias} 已显示` : `显示 ${row.key_alias}`}
-                title={revealed ? '密钥已显示' : '显示密钥'}
+                aria-label={revealed ? t.revealedAria(row.key_alias) : t.revealAria(row.key_alias)}
+                title={revealed ? t.revealedTitle : t.revealTitle}
             >
                 <Eye size={15} strokeWidth={1.8} aria-hidden="true" />
-                <span className="sr-only">显示</span>
+                <span className="sr-only">{t.reveal}</span>
             </button>
             <button
                 type="button"
                 onClick={onCopy}
                 disabled={busy}
                 className={ACTION_BUTTON}
-                aria-label={copied ? `${row.key_alias} 已复制` : `复制 ${row.key_alias}`}
-                title={copied ? '已复制' : '复制密钥'}
+                aria-label={copied ? t.copiedAria(row.key_alias) : t.copyAria(row.key_alias)}
+                title={copied ? t.copiedTitle : t.copyTitle}
             >
                 {copied ? (
                     <Check size={15} className="text-status-success-text" aria-hidden="true" />
                 ) : (
                     <Clipboard size={15} strokeWidth={1.8} aria-hidden="true" />
                 )}
-                <span className="sr-only">复制</span>
+                <span className="sr-only">{t.copy}</span>
             </button>
             <button
                 type="button"
                 onClick={onEdit}
                 disabled={busy || editing}
                 className={ACTION_BUTTON}
-                aria-label={`修改别名 ${row.key_alias}`}
-                title="修改别名"
+                aria-label={t.editAliasAria(row.key_alias)}
+                title={t.editAliasTitle}
             >
                 <Pencil size={15} strokeWidth={1.8} aria-hidden="true" />
-                <span className="sr-only">编辑</span>
+                <span className="sr-only">{t.edit}</span>
             </button>
             <button
                 type="button"
                 onClick={onRevoke}
                 disabled={busy}
                 className={`${ACTION_BUTTON} hover:border-status-error-border hover:bg-status-error-bg hover:text-status-error-text`}
-                aria-label={`撤销 ${row.key_alias}`}
-                title="撤销密钥"
+                aria-label={t.revokeAria(row.key_alias)}
+                title={t.revokeTitle}
             >
                 <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
-                <span className="sr-only">撤销</span>
+                <span className="sr-only">{t.revoke}</span>
             </button>
         </span>
     );
@@ -483,12 +491,13 @@ function AliasEditor({
     onSave: () => void;
     onCancel: () => void;
 }) {
+    const t = useMessages(keysMessages).list;
     return (
         <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
                 <input
                     type="text"
-                    aria-label="Key 别名"
+                    aria-label={t.aliasAria}
                     value={edit.alias}
                     maxLength={50}
                     disabled={edit.submitting}
@@ -512,10 +521,10 @@ function AliasEditor({
                     disabled={edit.submitting || !edit.alias.trim()}
                     loading={edit.submitting}
                 >
-                    保存
+                    {t.save}
                 </Button>
                 <Button type="button" variant="secondary" size="sm" onClick={onCancel} disabled={edit.submitting}>
-                    取消
+                    {t.cancel}
                 </Button>
             </div>
             <FormError>{edit.error}</FormError>
@@ -537,6 +546,10 @@ export function KeysList({
     const initialTier: string | null = tiers.length === 1 ? tiers[0].key : null;
     const showTierChoice = tiers.length > 1;
     const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
+    const m = useMessages(keysMessages);
+    const t = m.list;
+    const c = useMessages(commonMessages).auth;
+    const locale: Locale = useLocale();
 
     const [rows, setRows] = useState<KeyRow[]>(initialRows);
     const [reveal, setReveal] = useState<RevealMap>({});
@@ -574,13 +587,13 @@ export function KeysList({
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setGlobalError(typeof data?.error === 'string' ? data.error : `请求失败 (${r.status})`);
+                setGlobalError(typeof data?.error === 'string' ? data.error : c.requestFailed(r.status));
                 return null;
             }
             const data = (await r.json()) as { key?: string };
             return typeof data.key === 'string' ? data.key : null;
         } catch (err) {
-            setGlobalError(err instanceof Error ? err.message : '网络错误');
+            setGlobalError(err instanceof Error ? err.message : c.networkError);
             return null;
         }
     }
@@ -614,16 +627,14 @@ export function KeysList({
                 });
             }, COPIED_TOAST_MS);
         } catch {
-            setGlobalError('复制失败,浏览器拒绝了 clipboard 权限');
+            setGlobalError(t.copyFailed);
         }
         setBusyId(null);
     }
 
     async function handleRevoke(id: string) {
         if (busyId) return;
-        const warning = isOnlyKey
-            ? '这是您唯一的 key,撤销后需重新创建才能调用 API。\n确认撤销?该 key 立即失效'
-            : '确认撤销?该 key 立即失效';
+        const warning = isOnlyKey ? t.revokeConfirmOnlyKey : t.revokeConfirm;
         if (!window.confirm(warning)) return;
 
         setBusyId(id);
@@ -635,7 +646,7 @@ export function KeysList({
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setGlobalError(typeof data?.error === 'string' ? data.error : `撤销失败 (${r.status})`);
+                setGlobalError(typeof data?.error === 'string' ? data.error : t.revokeFailed(r.status));
             } else {
                 setRows((prev) => prev.filter((row) => row.id !== id));
                 setReveal((prev) => {
@@ -645,7 +656,7 @@ export function KeysList({
                 });
             }
         } catch (err) {
-            setGlobalError(err instanceof Error ? err.message : '网络错误');
+            setGlobalError(err instanceof Error ? err.message : c.networkError);
         }
         setBusyId(null);
     }
@@ -664,7 +675,7 @@ export function KeysList({
         if (!edit || edit.submitting || busyId) return;
         const alias = edit.alias.trim();
         if (!alias) {
-            setEdit((current) => current && { ...current, error: '请填写 Key 别名' });
+            setEdit((current) => current && { ...current, error: t.aliasRequired });
             return;
         }
         const current = rows.find((row) => row.id === edit.id);
@@ -685,10 +696,10 @@ export function KeysList({
                 const data = await response.json().catch(() => ({}));
                 const error =
                     response.status === 502
-                        ? '保存失败，上游暂时不可用，请稍后重试'
+                        ? t.aliasSaveFailedUpstream
                         : typeof data?.error === 'string'
                           ? data.error
-                          : `保存失败 (${response.status})`;
+                          : t.saveFailed(response.status);
                 setEdit((current) => current && { ...current, submitting: false, error });
                 return;
             }
@@ -702,7 +713,7 @@ export function KeysList({
                     current && {
                         ...current,
                         submitting: false,
-                        error: error instanceof Error ? error.message : '网络错误',
+                        error: error instanceof Error ? error.message : c.networkError,
                     },
             );
         }
@@ -729,10 +740,11 @@ export function KeysList({
 
     async function submitBudgetEdit() {
         if (!budgetEdit || budgetEdit.submitting) return;
-        const budget = buildQuotaExpiryPayload({
-            ...budgetEdit,
-            quotaUnlimited: !quotaLimitsEnabled || budgetEdit.quotaUnlimited,
-        });
+        const budget = buildQuotaExpiryPayload(
+            { ...budgetEdit, quotaUnlimited: !quotaLimitsEnabled || budgetEdit.quotaUnlimited },
+            new Date(),
+            locale,
+        );
         if (!budget.ok) {
             setBudgetEdit((prev) => (prev ? { ...prev, error: budget.error } : prev));
             return;
@@ -752,10 +764,10 @@ export function KeysList({
                 const data = await r.json().catch(() => ({}));
                 const msg =
                     r.status === 502
-                        ? '保存失败,上游暂时不可用,请稍后重试'
+                        ? t.saveFailedUpstream
                         : typeof data?.error === 'string'
                           ? data.error
-                          : `保存失败 (${r.status})`;
+                          : t.saveFailed(r.status);
                 setBudgetEdit((prev) => (prev ? { ...prev, submitting: false, error: msg } : prev));
                 return;
             }
@@ -787,7 +799,7 @@ export function KeysList({
             setBudgetEdit(null);
         } catch (err) {
             setBudgetEdit((prev) =>
-                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : '网络错误' } : prev,
+                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : c.networkError } : prev,
             );
         }
     }
@@ -797,14 +809,15 @@ export function KeysList({
         if (create.submitting) return;
         const alias = create.alias.trim();
         if (!alias || !create.tier) {
-            setCreate((prev) => ({ ...prev, error: !alias ? '请填写 Key 别名' : '请选择调用档次' }));
+            setCreate((prev) => ({ ...prev, error: !alias ? t.aliasRequired : m.tier.required }));
             return;
         }
         const tier = create.tier;
-        const budget = buildQuotaExpiryPayload({
-            ...create,
-            quotaUnlimited: !quotaLimitsEnabled || create.quotaUnlimited,
-        });
+        const budget = buildQuotaExpiryPayload(
+            { ...create, quotaUnlimited: !quotaLimitsEnabled || create.quotaUnlimited },
+            new Date(),
+            locale,
+        );
         if (!budget.ok) {
             setCreate((prev) => ({ ...prev, error: budget.error }));
             return;
@@ -827,7 +840,7 @@ export function KeysList({
                 setCreate((prev) => ({
                     ...prev,
                     submitting: false,
-                    error: typeof data?.error === 'string' ? data.error : `创建失败 (${r.status})`,
+                    error: typeof data?.error === 'string' ? data.error : t.createFailed(r.status),
                 }));
                 return;
             }
@@ -871,7 +884,7 @@ export function KeysList({
             setCreate((prev) => ({
                 ...prev,
                 submitting: false,
-                error: err instanceof Error ? err.message : '网络错误',
+                error: err instanceof Error ? err.message : c.networkError,
             }));
         }
     }
@@ -880,19 +893,19 @@ export function KeysList({
         () => (
             <thead>
                 <tr className="bg-portal-soft text-portal-muted">
-                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">别名</th>
-                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">API Key</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">{t.colAlias}</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">{t.colKey}</th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                        额度 / 到期
+                        {t.colQuota}
                     </th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
-                        创建时间
+                        {t.colCreated}
                     </th>
-                    <th className="border-b border-portal-line px-5 py-2.5 text-right text-xs font-semibold">操作</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-right text-xs font-semibold">{t.colActions}</th>
                 </tr>
             </thead>
         ),
-        [],
+        [t],
     );
 
     return (
@@ -918,9 +931,9 @@ export function KeysList({
                             <KeyRound size={18} strokeWidth={1.8} aria-hidden="true" />
                         </span>
                         <div className="min-w-0">
-                            <h2 className="m-0 text-sm font-semibold text-portal-ink">访问密钥</h2>
+                            <h2 className="m-0 text-sm font-semibold text-portal-ink">{t.sectionTitle}</h2>
                             <p className="m-0 mt-0.5 text-xs text-portal-subtle tabular-nums">
-                                已创建 {rows.length} 个
+                                {t.keyCount(rows.length)}
                             </p>
                         </div>
                     </div>
@@ -930,11 +943,11 @@ export function KeysList({
                         size="sm"
                         onClick={() => setCreate({ ...emptyCreate(initialTier), open: true })}
                         disabled={create.open || tiers.length === 0}
-                        title={tiers.length === 0 ? '当前没有可用档次,请联系管理员' : '创建新的 API Key'}
+                        title={tiers.length === 0 ? t.noTiersTitle : t.createTitle}
                         className="rounded-md"
                     >
                         <Plus size={15} strokeWidth={2} aria-hidden="true" />
-                        <span>创建新 Key</span>
+                        <span>{t.createNew}</span>
                     </Button>
                 </div>
 
@@ -946,12 +959,12 @@ export function KeysList({
                                     htmlFor="new-key-alias"
                                     className="mb-1.5 block text-xs font-medium text-portal-muted"
                                 >
-                                    密钥别名
+                                    {t.aliasLabel}
                                 </label>
                                 <input
                                     id="new-key-alias"
                                     type="text"
-                                    placeholder="例如 prod-openai / test-claude / dev-mobile"
+                                    placeholder={t.aliasPlaceholder}
                                     value={create.alias}
                                     onChange={(e) =>
                                         setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
@@ -962,9 +975,9 @@ export function KeysList({
                                     className="h-10 w-full rounded-md border border-portal-line bg-portal-panel px-3 text-sm text-portal-ink outline-none placeholder:text-portal-subtle focus:border-navy focus:ring-2 focus:ring-navy/10"
                                 />
                                 <p className="m-0 mt-1.5 text-xs text-portal-subtle">
-                                    建议采用{' '}
-                                    <code className="font-mono text-[11px] text-portal-muted">env-purpose</code>{' '}
-                                    格式，便于区分环境与用途。
+                                    {t.aliasHintBefore}
+                                    <code className="font-mono text-[11px] text-portal-muted">env-purpose</code>
+                                    {t.aliasHintAfter}
                                 </p>
                             </div>
                             <div className="flex flex-col-reverse gap-2 sm:flex-row lg:pb-6">
@@ -976,7 +989,7 @@ export function KeysList({
                                     disabled={create.submitting}
                                     className="rounded-md border-portal-line text-portal-muted"
                                 >
-                                    取消
+                                    {t.cancel}
                                 </Button>
                                 <Button
                                     type="submit"
@@ -986,14 +999,14 @@ export function KeysList({
                                     disabled={create.submitting || !create.alias.trim() || !create.tier}
                                     className="rounded-md"
                                 >
-                                    {create.submitting ? '创建中…' : '确认创建'}
+                                    {create.submitting ? t.creating : t.create}
                                 </Button>
                             </div>
                         </div>
 
                         {showTierChoice && (
                             <fieldset className="mt-4 border-0 p-0">
-                                <legend className="mb-2 text-xs font-medium text-portal-muted">调用档次</legend>
+                                <legend className="mb-2 text-xs font-medium text-portal-muted">{m.tier.legend}</legend>
                                 <TierSelect
                                     tiers={tiers}
                                     value={create.tier}
@@ -1002,7 +1015,7 @@ export function KeysList({
                                 />
                                 <p className="m-0 mt-2 text-xs text-portal-subtle">
                                     {tiers.find((t) => t.key === create.tier)?.description ??
-                                        '请选择档次。档次决定路由与倍率，创建后不可修改。'}
+                                        m.tier.hint}
                                 </p>
                             </fieldset>
                         )}
@@ -1022,7 +1035,7 @@ export function KeysList({
                 {budgetEdit && (
                     <div
                         className="border-b border-portal-line bg-portal-soft p-4 sm:p-5"
-                        aria-label="调整 Key 到期设置"
+                        aria-label={t.budgetPanelAria}
                     >
                         <QuotaExpiryFields
                             idPrefix={`edit-${budgetEdit.id}`}
@@ -1040,7 +1053,7 @@ export function KeysList({
                                 onClick={() => void submitBudgetEdit()}
                                 disabled={budgetEdit.submitting}
                             >
-                                保存
+                                {t.save}
                             </Button>
                             <Button
                                 type="button"
@@ -1049,7 +1062,7 @@ export function KeysList({
                                 onClick={cancelBudgetEdit}
                                 disabled={budgetEdit.submitting}
                             >
-                                取消
+                                {t.cancel}
                             </Button>
                         </div>
                         <FormError>{budgetEdit.error}</FormError>
@@ -1060,9 +1073,9 @@ export function KeysList({
                         <span className="flex h-11 w-11 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
                             <KeyRound size={21} strokeWidth={1.7} aria-hidden="true" />
                         </span>
-                        <h3 className="m-0 mt-4 text-base font-semibold text-portal-ink">还没有 API Key</h3>
+                        <h3 className="m-0 mt-4 text-base font-semibold text-portal-ink">{t.emptyTitle}</h3>
                         <p className="m-0 mt-1.5 max-w-sm text-sm leading-relaxed text-portal-muted">
-                            创建第一个 Key 后，即可通过兼容 OpenAI 与 Anthropic 的接口调用模型。
+                            {t.emptyBody}
                         </p>
                     </div>
                 ) : (
@@ -1097,15 +1110,15 @@ export function KeysList({
                                                     <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                         {tierLabel(row.tier)}
                                                     </span>
-                                                    {ratioBadgeText(row.effective_ratio ?? null) && (
+                                                    {ratioBadgeText(row.effective_ratio ?? null, false, m.tier) && (
                                                         <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
-                                                            {ratioBadgeText(row.effective_ratio ?? null)}
+                                                            {ratioBadgeText(row.effective_ratio ?? null, false, m.tier)}
                                                         </span>
                                                     )}
                                                 </div>
                                                 <p className="m-0 mt-1 text-[11px] text-portal-subtle">
-                                                    创建于{' '}
-                                                    {new Date(row.created_at).toLocaleString('zh-CN', {
+                                                    {t.createdAtPrefix}
+                                                    {new Date(row.created_at).toLocaleString(intlLocale(locale), {
                                                         timeZone: 'Asia/Shanghai',
                                                     })}
                                                 </p>
@@ -1133,12 +1146,12 @@ export function KeysList({
                                             </p>
                                             <p className="m-0 mt-1.5 text-xs text-portal-subtle tabular-nums">
                                                 {row.used_quota === null ? (
-                                                    '用量数据暂不可用'
+                                                    t.usageUnavailable
                                                 ) : (
                                                     <>
-                                                        累计 ¥{(row.usedCny ?? 0).toFixed(2)}
+                                                        {t.cumulative}¥{(row.usedCny ?? 0).toFixed(2)}
                                                         <span className="mx-1.5">·</span>
-                                                        最近调用 {formatLastUsed(row.last_used_at)}
+                                                        {t.lastUsed}{formatLastUsed(row.last_used_at, m.lastUsed)}
                                                     </>
                                                 )}
                                             </p>
@@ -1150,10 +1163,10 @@ export function KeysList({
                                                     type="button"
                                                     onClick={() => startBudgetEdit(row)}
                                                     disabled={busy || !!budgetEdit}
-                                                    aria-label={`调整额度与到期 ${row.key_alias}`}
+                                                    aria-label={t.adjustAria(row.key_alias)}
                                                     className="text-xs text-portal-muted hover:underline"
                                                 >
-                                                    调整
+                                                    {t.adjust}
                                                 </button>
                                             )}
                                         </div>
@@ -1207,9 +1220,9 @@ export function KeysList({
                                                         <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                             {tierLabel(row.tier)}
                                                         </span>
-                                                        {ratioBadgeText(row.effective_ratio ?? null) && (
+                                                        {ratioBadgeText(row.effective_ratio ?? null, false, m.tier) && (
                                                             <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
-                                                                {ratioBadgeText(row.effective_ratio ?? null)}
+                                                                {ratioBadgeText(row.effective_ratio ?? null, false, m.tier)}
                                                             </span>
                                                         )}
                                                     </div>
@@ -1231,12 +1244,12 @@ export function KeysList({
                                                      *  but isn't being hit. */}
                                                     <div className="mt-1.5 text-xs text-portal-subtle tabular-nums">
                                                         {row.used_quota === null ? (
-                                                            <span>用量数据暂不可用</span>
+                                                            <span>{t.usageUnavailable}</span>
                                                         ) : (
                                                             <>
-                                                                累计 ¥{(row.usedCny ?? 0).toFixed(2)}
+                                                                {t.cumulative}¥{(row.usedCny ?? 0).toFixed(2)}
                                                                 <span className="mx-1.5">·</span>
-                                                                最近调用 {formatLastUsed(row.last_used_at)}
+                                                                {t.lastUsed}{formatLastUsed(row.last_used_at, m.lastUsed)}
                                                             </>
                                                         )}
                                                     </div>
@@ -1249,10 +1262,10 @@ export function KeysList({
                                                                 type="button"
                                                                 onClick={() => startBudgetEdit(row)}
                                                                 disabled={busy || !!budgetEdit}
-                                                                aria-label={`调整额度与到期 ${row.key_alias}`}
+                                                                aria-label={t.adjustAria(row.key_alias)}
                                                                 className="text-xs text-portal-muted hover:underline"
                                                             >
-                                                                调整
+                                                                {t.adjust}
                                                             </button>
                                                         )}
                                                     </div>
@@ -1260,7 +1273,7 @@ export function KeysList({
                                                 <td
                                                     className={`${cell} ${borderClass} whitespace-nowrap text-portal-muted`}
                                                 >
-                                                    {new Date(row.created_at).toLocaleString('zh-CN', {
+                                                    {new Date(row.created_at).toLocaleString(intlLocale(locale), {
                                                         timeZone: 'Asia/Shanghai',
                                                     })}
                                                 </td>

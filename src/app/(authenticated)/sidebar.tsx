@@ -16,6 +16,10 @@ import {
     Wrench,
     X,
 } from 'lucide-react';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+
+type CommonMessages = (typeof commonMessages)['zh'];
 
 interface NavItem {
     href: string;
@@ -30,18 +34,23 @@ interface NavGroup {
     items: NavItem[];
 }
 
-const WORKSPACE_NAV: NavItem[] = [
-    { href: '/dashboard', label: '概览', icon: LayoutDashboard },
-    { href: '/logs', label: '调用日志', icon: ScrollText },
-    { href: '/keys', label: 'API Keys', icon: KeyRound },
-    { href: '/tools', label: '工具箱', icon: Wrench },
-];
+/** Labels come from the common message dict (zh / en), built per render in `Sidebar`. */
+function workspaceNav(m: CommonMessages): NavItem[] {
+    return [
+        { href: '/dashboard', label: m.nav.dashboard, icon: LayoutDashboard },
+        { href: '/logs', label: m.nav.logs, icon: ScrollText },
+        { href: '/keys', label: m.nav.keys, icon: KeyRound },
+        { href: '/tools', label: m.nav.tools, icon: Wrench },
+    ];
+}
 
-const RESOURCE_NAV: NavItem[] = [
-    { href: '/settings/storage', label: '存储设置', icon: HardDrive },
-    { href: '/workspace/models', label: '模型清单', icon: Boxes },
-    { href: '/workspace/docs', label: '文档', icon: BookOpenText },
-];
+function resourceNav(m: CommonMessages): NavItem[] {
+    return [
+        { href: '/settings/storage', label: m.nav.storage, icon: HardDrive },
+        { href: '/workspace/models', label: m.nav.models, icon: Boxes },
+        { href: '/workspace/docs', label: m.nav.docs, icon: BookOpenText },
+    ];
+}
 
 export interface SidebarProps {
     resellerStatus?: 'active' | 'suspended' | 'banned' | null;
@@ -49,9 +58,9 @@ export interface SidebarProps {
     onMobileClose?: () => void;
 }
 
-function resellerNavLabel(status: SidebarProps['resellerStatus']): string {
-    if (status === 'active' || status === 'suspended' || status === 'banned') return '代理后台';
-    return '邀请赚佣金';
+function resellerNavLabel(status: SidebarProps['resellerStatus'], m: CommonMessages): string {
+    if (status === 'active' || status === 'suspended' || status === 'banned') return m.nav.resellerConsole;
+    return m.nav.resellerJoin;
 }
 
 function isRouteActive(pathname: string, href: string): boolean {
@@ -72,16 +81,17 @@ function NavigationPanel({
     onClose?: () => void;
     mobile?: boolean;
 }) {
+    const m = useMessages(commonMessages);
     return (
         <>
             {mobile && (
                 <div className="flex h-[60px] items-center justify-between border-b border-portal-line px-5">
-                    <span className="font-display text-sm font-semibold text-portal-ink">导航</span>
+                    <span className="font-display text-sm font-semibold text-portal-ink">{m.sidebar.navigation}</span>
                     <button
                         type="button"
                         onClick={onClose}
-                        aria-label="关闭导航"
-                        title="关闭导航"
+                        aria-label={m.sidebar.close}
+                        title={m.sidebar.close}
                         className="flex h-11 w-11 items-center justify-center rounded-lg text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25"
                     >
                         <X size={19} strokeWidth={1.8} aria-hidden="true" />
@@ -89,7 +99,7 @@ function NavigationPanel({
                 </div>
             )}
 
-            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-6" aria-label="客户后台导航">
+            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-6" aria-label={m.nav.sidebarAria}>
                 <div className="space-y-7">
                     {groups.map((group) => (
                         <div key={group.label}>
@@ -139,7 +149,7 @@ function NavigationPanel({
                     className="flex h-11 items-center justify-center gap-2 rounded-lg bg-brand-accent px-4 text-sm font-semibold text-white no-underline shadow-card transition-colors duration-200 hover:bg-brand-accent-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/30"
                 >
                     <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
-                    充值
+                    {m.sidebar.topUp}
                 </Link>
             </div>
         </>
@@ -148,21 +158,22 @@ function NavigationPanel({
 
 export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClose }: SidebarProps) {
     const pathname = usePathname();
+    const m = useMessages(commonMessages);
     const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
     const groups: NavGroup[] = [
-        { label: '工作区', items: WORKSPACE_NAV },
-        { label: '资源与设置', items: RESOURCE_NAV },
+        { label: m.sidebar.groupWorkspace, items: workspaceNav(m) },
+        { label: m.sidebar.groupResources, items: resourceNav(m) },
         {
-            label: '更多服务',
+            label: m.sidebar.groupMore,
             items: [
                 {
                     href: '/reseller',
-                    label: resellerNavLabel(resellerStatus),
+                    label: resellerNavLabel(resellerStatus, m),
                     icon: UsersRound,
                     muted: resellerMuted,
                     status: resellerStatus ?? 'none',
                 },
-                { href: '/gpu', label: 'GPU 租赁', icon: Cpu },
+                { href: '/gpu', label: m.sidebar.gpu, icon: Cpu },
             ],
         },
     ];
@@ -179,13 +190,13 @@ export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClo
                         type="button"
                         className="absolute inset-0 bg-black/45"
                         onClick={onMobileClose}
-                        aria-label="关闭导航"
+                        aria-label={m.sidebar.close}
                     />
                     <aside
                         id="portal-mobile-navigation"
                         role="dialog"
                         aria-modal="true"
-                        aria-label="客户后台导航"
+                        aria-label={m.nav.sidebarAria}
                         className="absolute inset-y-0 left-0 flex w-[min(84vw,304px)] flex-col bg-portal-canvas shadow-card-strong"
                     >
                         <NavigationPanel

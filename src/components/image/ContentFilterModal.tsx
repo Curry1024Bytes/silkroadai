@@ -14,6 +14,8 @@
  */
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     open: boolean;
@@ -21,27 +23,27 @@ interface Props {
 }
 
 export function ContentFilterModal({ open, onClose }: Props) {
+    const m = useMessages(imageMessages).contentFilter;
     return (
         <Modal
             open={open}
             onClose={onClose}
-            title="内容审核未通过"
+            title={m.title}
             icon="🛡️"
             footer={
                 <Button type="button" variant="primary" size="sm" onClick={onClose}>
-                    我知道了
+                    {m.ok}
                 </Button>
             }
         >
-            <p className="m-0">您的提示词触发了内容审核,本次生成已取消。</p>
-            <p className="m-0 mt-3 text-muted-ink">请调整提示词,避免:</p>
+            <p className="m-0">{m.body}</p>
+            <p className="m-0 mt-3 text-muted-ink">{m.adjust}</p>
             <ul className="mt-1.5 mb-0 pl-5 text-muted-ink text-xs leading-relaxed">
-                <li>暴力 / 恐怖 / 血腥相关描述</li>
-                <li>色情 / 裸露 / 性暗示内容</li>
-                <li>真人脸 / 名人模仿 / 头像合成</li>
-                <li>政治敏感 / 仇恨言论</li>
+                {m.items.map((item) => (
+                    <li key={item}>{item}</li>
+                ))}
             </ul>
-            <p className="m-0 mt-3 text-status-success-text text-xs">本次未扣费。</p>
+            <p className="m-0 mt-3 text-status-success-text text-xs">{m.noCharge}</p>
         </Modal>
     );
 }

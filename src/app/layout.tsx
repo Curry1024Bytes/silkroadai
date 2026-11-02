@@ -1,8 +1,12 @@
 import type { Metadata } from 'next';
 import { Inter, Manrope } from 'next/font/google';
-import { headers } from 'next/headers';
 import './globals.css';
 import { Footer } from '@/components/Footer';
+import { htmlLang, pickMessages } from '@/lib/i18n';
+import { LocaleProvider } from '@/lib/i18n/client';
+import { getLocale } from '@/lib/i18n/server';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { BRAND_NAME } from '@/lib/public-config';
 
 /**
  * Inter loaded once at the root layout — applies to every route in the
@@ -33,35 +37,45 @@ const manrope = Manrope({
     variable: '--font-manrope',
 });
 
-export const metadata: Metadata = {
+export async function generateMetadata(): Promise<Metadata> {
     // W5 D5: was "Sub2API Recharge" (W1 sub2apipay legacy). Pages override
     // their own titles in their `metadata` exports; this is just the fallback.
-    metadataBase: new URL(process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://llmroute.club'),
-    title: 'LLmRoute',
-    description: '一个入口，连接每个模型。',
-    applicationName: 'LLmRoute',
-};
+    const m = pickMessages(commonMessages, await getLocale());
+    return {
+        metadataBase: new URL(process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://llmroute.club'),
+        title: BRAND_NAME,
+        description: m.brand.siteDescription,
+        applicationName: BRAND_NAME,
+    };
+}
 
 export default async function RootLayout({
     children,
 }: Readonly<{
     children: React.ReactNode;
 }>) {
-    const headerStore = await headers();
-    const pathname = headerStore.get('x-pathname') || '';
-    const search = headerStore.get('x-search') || '';
-    const locale = new URLSearchParams(search).get('lang')?.trim().toLowerCase() === 'en' ? 'en' : 'zh';
-    const htmlLang = locale === 'en' ? 'en' : 'zh-CN';
+    // Site locale: portal_locale cookie → Accept-Language → zh. Server components
+    // call getLocale() themselves; client islands read <LocaleProvider>. See
+    // src/lib/i18n/README.md.
+    const locale = await getLocale();
 
     // W5 D5: body is a column flex so Footer pins to bottom even on short
     // pages. The wrapper div around children takes flex: 1 so its content
     // (which often has its own min-height: 100vh) still fills the viewport.
+    // <LocaleProvider> deliberately wraps <html> rather than sitting inside
+    // <body>: with the client boundary as a direct child of <body>, Next 16 dev
+    // reported a hydration mismatch (client expected the flex wrapper where the
+    // server DOM had <main>) — wrapping the root element keeps the server/client
+    // trees aligned. Verified in-browser 2026-10-27; a context provider emits no
+    // DOM so the markup is identical either way.
     return (
-        <html lang={htmlLang} data-pathname={pathname} className={`${inter.variable} ${manrope.variable}`}>
-            <body className="antialiased" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>{children}</div>
-                <Footer />
-            </body>
-        </html>
+        <LocaleProvider locale={locale}>
+            <html lang={htmlLang(locale)} className={`${inter.variable} ${manrope.variable}`}>
+                <body className="antialiased" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>{children}</div>
+                    <Footer />
+                </body>
+            </html>
+        </LocaleProvider>
     );
 }

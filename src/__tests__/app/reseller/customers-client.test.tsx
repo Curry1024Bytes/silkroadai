@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { CustomersClient, type CustomerRow } from '@/app/(authenticated)/reseller/customers/customers-client';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 /** React SSR splits adjacent dynamic+static JSX nodes with `<!-- -->`.
  *  Strip them so substring assertions target the user-visible string. */
@@ -76,5 +77,45 @@ describe('<CustomersClient />', () => {
             />,
         );
         expect(html).toContain('已封');
+    });
+});
+
+describe('<CustomersClient /> (en)', () => {
+    it('renders English headers, chips, en-US dates and pagination', () => {
+        const html = strip(
+            renderToString(
+                <LocaleProvider locale="en">
+                    <CustomersClient
+                        rows={[baseRow, { ...baseRow, seq_no: '#002', status: 'banned' }]}
+                        pagination={{ page: 2, limit: 20, total: 45, hasMore: true }}
+                    />
+                </LocaleProvider>,
+            ),
+        );
+        expect(html).toContain('Reseller console');
+        expect(html).toContain('Customers (45)');
+        expect(html).toContain('Attributing');
+        expect(html).toContain('Banned');
+        expect(html).toContain('Attribution ends');
+        expect(html).toContain('Total top-ups');
+        // en-US date format, still rendered in Asia/Shanghai (gotcha #20)
+        expect(html).toContain('4/1/2026');
+        expect(html).toContain('Page 2 · 45 customers');
+        expect(html).toContain('← Previous');
+        expect(html).toContain('Next →');
+        expect(html).not.toContain('归因中');
+        expect(html).not.toContain('已封');
+    });
+
+    it('empty rows → English EmptyState + CTA', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <CustomersClient rows={[]} pagination={{ page: 1, limit: 20, total: 0, hasMore: false }} />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('No referred customers yet');
+        expect(html).toContain('Manage invite codes');
+        expect(html).toContain('href="/reseller/codes"');
+        expect(html).not.toContain('还没有引流客户');
     });
 });

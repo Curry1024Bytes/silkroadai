@@ -40,6 +40,8 @@ import { ContentFilterModal } from '@/components/image/ContentFilterModal';
 import { LargeCostConfirmModal } from '@/components/image/LargeCostConfirmModal';
 import { DEFAULT_IMAGE_MODEL_ID, IMAGE_MODEL_OPTIONS, PROMPT_MAX_CHARS } from '@/data/image-models';
 import type { ImageGenerationItem } from '@/components/image/types';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     /** Pre-fetched first page of history (server-rendered) so the
@@ -70,6 +72,7 @@ async function recordEvent(eventType: string, properties: Record<string, unknown
 }
 
 export function ImageStudio({ initialLatest }: Props) {
+    const m = useMessages(imageMessages);
     const [prompt, setPrompt] = useState('');
     const [modelId, setModelId] = useState(DEFAULT_IMAGE_MODEL_ID);
     const [size, setSize] = useState('1024x1024');
@@ -160,7 +163,12 @@ export function ImageStudio({ initialLatest }: Props) {
                     return;
                 }
 
-                throw new Error(payload?.message || payload?.error || `生成失败 (HTTP ${r.status})`);
+                // Prefer the locale-aware code map; the route's own `message`
+                // body is Chinese-only and stays as the fallback.
+                const code = typeof payload?.error === 'string' ? payload.error : undefined;
+                throw new Error(
+                    (code && m.errors[code]) || payload?.message || payload?.error || m.studio.genFailedHttp(r.status),
+                );
             }
 
             const json = (await r.json()) as {
@@ -191,7 +199,7 @@ export function ImageStudio({ initialLatest }: Props) {
             refreshHistory();
         } catch (err) {
             setGenState('error');
-            setGenError(err instanceof Error ? err.message : '生成失败');
+            setGenError(err instanceof Error ? err.message : m.studio.genFailed);
         }
     }
 
@@ -264,15 +272,15 @@ export function ImageStudio({ initialLatest }: Props) {
             {/* Top row: model selector + size + count */}
             <div className="flex flex-wrap items-end gap-4">
                 <div className="flex-1 min-w-[260px]">
-                    <span className="block text-xs text-muted-ink mb-1.5">模型</span>
+                    <span className="block text-xs text-muted-ink mb-1.5">{m.studio.model}</span>
                     <ModelSelector value={modelId} onChange={setModelId} disabled={genState === 'loading'} />
                 </div>
                 <div>
-                    <span className="block text-xs text-muted-ink mb-1.5">尺寸</span>
+                    <span className="block text-xs text-muted-ink mb-1.5">{m.studio.size}</span>
                     <SizeSelector value={size} onChange={setSize} disabled={genState === 'loading'} />
                 </div>
                 <div>
-                    <span className="block text-xs text-muted-ink mb-1.5">数量</span>
+                    <span className="block text-xs text-muted-ink mb-1.5">{m.studio.count}</span>
                     <CountSelector value={count} onChange={setCount} disabled={genState === 'loading'} />
                 </div>
             </div>
@@ -302,9 +310,7 @@ export function ImageStudio({ initialLatest }: Props) {
                         // PR-T2 504 fix — gpt-image-2 sub2api/Codex
                         // queue parks requests at 30-60s. Surface the
                         // expected wait so the customer doesn't bail.
-                        slowModelHint={
-                            modelId === 'gpt-image-2' ? 'GPT image-2 生成时间约 30-60 秒,请耐心等待' : undefined
-                        }
+                        slowModelHint={modelId === 'gpt-image-2' ? m.studio.slowHintGptImage : undefined}
                     />
                 </div>
             </div>

@@ -4,6 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowUpRight, Check, Code2, Copy } from 'lucide-react';
 import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL } from '@/lib/public-config';
+import { useMessages } from '@/lib/i18n/client';
+import { keysMessages } from '@/lib/i18n/messages/keys';
 
 /**
  * Unified bottom "调用示例" panel for /keys (W7 D4 PR-R Item C).
@@ -95,6 +97,7 @@ const TABS: TabDef[] = [
 export function KeysSnippetsPanel() {
     const [active, setActive] = useState<TabId>('curl');
     const [copied, setCopied] = useState(false);
+    const m = useMessages(keysMessages).snippets;
 
     const tab = TABS.find((t) => t.id === active) ?? TABS[0];
 
@@ -120,26 +123,26 @@ export function KeysSnippetsPanel() {
                 </span>
                 <div className="min-w-0">
                     <h2 id="keys-snippets-heading" className="m-0 text-sm font-semibold text-portal-ink">
-                        调用示例
+                        {m.heading}
                     </h2>
                     <p className="m-0 mt-1 text-xs leading-relaxed text-portal-muted">
-                        复制代码后，将{' '}
+                        {m.hintBefore}
                         <code className="rounded bg-portal-soft px-1.5 py-0.5 font-mono text-[11px] text-portal-ink">
                             {PLACEHOLDER}
-                        </code>{' '}
-                        替换为上方复制的密钥。
+                        </code>
+                        {m.hintAfter}
                     </p>
                 </div>
             </header>
 
             <div className="grid grid-cols-1 border-b border-portal-line bg-portal-soft sm:grid-cols-2 sm:divide-x sm:divide-portal-line">
-                <BaseUrlChip label="OpenAI 兼容 Base URL" value={OPENAI_BASE} />
-                <BaseUrlChip label="Anthropic 兼容 Base URL" value={ANTHROPIC_BASE} />
+                <BaseUrlChip label={m.openaiBase} value={OPENAI_BASE} />
+                <BaseUrlChip label={m.anthropicBase} value={ANTHROPIC_BASE} />
             </div>
 
             <div
                 role="tablist"
-                aria-label="代码示例语言"
+                aria-label={m.tablistAria}
                 className="flex gap-1 border-b border-portal-line px-4 pt-3 sm:px-5"
             >
                 {TABS.map((t) => {
@@ -180,7 +183,7 @@ export function KeysSnippetsPanel() {
                 <button
                     type="button"
                     onClick={handleCopy}
-                    aria-label={`复制 ${tab.label} 示例代码`}
+                    aria-label={m.copyAria(tab.label)}
                     className={[
                         'absolute right-3 top-3 z-10 inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium',
                         'transition-colors duration-150 ease-brand',
@@ -190,7 +193,7 @@ export function KeysSnippetsPanel() {
                     ].join(' ')}
                 >
                     {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-                    <span>{copied ? '已复制' : '复制'}</span>
+                    <span>{copied ? m.copied : m.copy}</span>
                 </button>
                 <pre className="m-0 min-h-[210px] overflow-x-auto bg-navy-strong px-4 py-5 pr-24 text-xs leading-relaxed sm:px-5">
                     <code
@@ -204,7 +207,7 @@ export function KeysSnippetsPanel() {
 
             <footer className="flex flex-wrap gap-x-5 gap-y-2 border-t border-portal-line px-4 py-3 text-xs text-portal-muted sm:px-5">
                 <span>
-                    模型示例{' '}
+                    {m.modelExample}{' '}
                     <Link
                         href="/workspace/models"
                         className="inline-flex items-center gap-0.5 font-medium text-portal-ink hover:text-portal-gold"
@@ -218,7 +221,7 @@ export function KeysSnippetsPanel() {
                         href="/workspace/docs"
                         className="inline-flex items-center gap-0.5 font-medium text-portal-ink hover:text-portal-gold"
                     >
-                        完整集成指南
+                        {m.fullGuide}
                         <ArrowUpRight size={12} aria-hidden="true" />
                     </Link>
                 </span>

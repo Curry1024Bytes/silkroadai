@@ -17,32 +17,33 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import DocsPage from '@/app/docs/page';
+import { DocsContent } from '@/app/docs/docs-content';
 import WorkspaceDocsPage from '@/app/(authenticated)/workspace/docs/page';
 
 describe('/docs page — header + chrome', () => {
-    it('renders the brand <Logo /> and main heading 集成文档', () => {
-        const html = renderToString(<DocsPage />);
+    it('renders the brand <Logo /> and main heading 集成文档', async () => {
+        const html = renderToString(await DocsPage());
         expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toContain('集成文档');
     });
 
-    it('exposes both Anthropic + OpenAI base URLs in the 通用配置 card', () => {
-        const html = renderToString(<DocsPage />);
+    it('exposes both Anthropic + OpenAI base URLs in the 通用配置 card', async () => {
+        const html = renderToString(await DocsPage());
         expect(html).toContain('https://api.llmroute.club/v1');
         expect(html).toContain('https://api.llmroute.club');
         expect(html).toContain('OpenAI 兼容 Base URL');
         expect(html).toContain('Anthropic 兼容 Base URL');
     });
 
-    it('links to /portal/register, /keys, /models from the chrome', () => {
-        const html = renderToString(<DocsPage />);
+    it('links to /portal/register, /keys, /models from the chrome', async () => {
+        const html = renderToString(await DocsPage());
         expect(html).toMatch(/href="\/portal\/register"/);
         expect(html).toMatch(/href="\/keys"/);
         expect(html).toMatch(/href="\/models"/);
     });
 
-    it('renders the ← 返回 affordance above the h1 (back-to-previous-page)', () => {
-        const html = renderToString(<DocsPage />);
+    it('renders the ← 返回 affordance above the h1 (back-to-previous-page)', async () => {
+        const html = renderToString(await DocsPage());
         // Now a <BackButton> (browser back) instead of a fixed href="/" link.
         expect(html).toContain('返回');
         expect(html).toMatch(/<button[^>]*>[\s\S]*返回/);
@@ -50,8 +51,8 @@ describe('/docs page — header + chrome', () => {
 });
 
 describe('/workspace/docs page — authenticated chrome', () => {
-    it('renders embedded docs without the public header and keeps model links in the workspace', () => {
-        const html = renderToString(<WorkspaceDocsPage />);
+    it('renders embedded docs without the public header and keeps model links in the workspace', async () => {
+        const html = renderToString(await WorkspaceDocsPage());
         expect(html).toContain('DOCUMENTATION');
         expect(html).not.toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).not.toContain('<span aria-hidden="true">←</span><span>返回</span>');
@@ -60,8 +61,8 @@ describe('/workspace/docs page — authenticated chrome', () => {
 });
 
 describe('/docs page — 6 agent sections', () => {
-    it('all 8 anchor sections render with the right IDs (toc consistency)', () => {
-        const html = renderToString(<DocsPage />);
+    it('all 8 anchor sections render with the right IDs (toc consistency)', async () => {
+        const html = renderToString(await DocsPage());
         // PR-S inserted a Gemini section (anchor=gemini) between node-sdk
         // and errors. Errors stays last; section count = 8.
         for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'gemini', 'errors']) {
@@ -69,15 +70,15 @@ describe('/docs page — 6 agent sections', () => {
         }
     });
 
-    it('TOC list links to all 8 anchors via #', () => {
-        const html = renderToString(<DocsPage />);
+    it('TOC list links to all 8 anchors via #', async () => {
+        const html = renderToString(await DocsPage());
         for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'gemini', 'errors']) {
             expect(html, `TOC #${id} link present`).toMatch(new RegExp(`href="#${id}"`));
         }
     });
 
-    it('every agent section links to its official docs URL', () => {
-        const html = renderToString(<DocsPage />);
+    it('every agent section links to its official docs URL', async () => {
+        const html = renderToString(await DocsPage());
         // Each URL is one we WebFetched + verified during pre-build research.
         // If any of these break, search engines + customers may follow stale
         // links; the test surfaces the breakage at PR time.
@@ -96,8 +97,8 @@ describe('/docs page — 6 agent sections', () => {
 });
 
 describe('/docs page — code snippets ground-truthed', () => {
-    it('Claude Code section names ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN env vars', () => {
-        const html = renderToString(<DocsPage />);
+    it('Claude Code section names ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN env vars', async () => {
+        const html = renderToString(await DocsPage());
         // Both env vars verified against the official Claude Code docs
         // during pre-build research. Verbatim-quoted env var names are
         // the API contract we depend on.
@@ -105,8 +106,8 @@ describe('/docs page — code snippets ground-truthed', () => {
         expect(html).toContain('ANTHROPIC_AUTH_TOKEN');
     });
 
-    it('Python SDK snippet uses base_url (snake_case) + api_key', () => {
-        const html = renderToString(<DocsPage />);
+    it('Python SDK snippet uses base_url (snake_case) + api_key', async () => {
+        const html = renderToString(await DocsPage());
         // Verified against github.com/openai/openai-python during pre-build
         // research — the Python SDK constructor uses snake_case `base_url`
         // and `api_key`.
@@ -116,8 +117,8 @@ describe('/docs page — code snippets ground-truthed', () => {
         expect(html).toContain('from openai import OpenAI');
     });
 
-    it('Node SDK snippet uses baseURL (camelCase) + apiKey', () => {
-        const html = renderToString(<DocsPage />);
+    it('Node SDK snippet uses baseURL (camelCase) + apiKey', async () => {
+        const html = renderToString(await DocsPage());
         // Verified against github.com/openai/openai-node — the Node SDK
         // constructor uses camelCase `baseURL` + `apiKey`.
         expect(html).toContain('baseURL:');
@@ -128,16 +129,16 @@ describe('/docs page — code snippets ground-truthed', () => {
         expect(html).toMatch(/import OpenAI from\s*(?:'|&#x27;)openai(?:'|&#x27;);/);
     });
 
-    it('sample models reflect W7 SKUs (claude-sonnet-4-6 + gpt-5.4)', () => {
-        const html = renderToString(<DocsPage />);
+    it('sample models reflect W7 SKUs (claude-sonnet-4-6 + gpt-5.4)', async () => {
+        const html = renderToString(await DocsPage());
         expect(html).toContain('claude-sonnet-4-6');
         expect(html).toContain('gpt-5.4');
     });
 });
 
 describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
-    it('renders the 常见错误码 heading and Portal error codes', () => {
-        const html = renderToString(<DocsPage />);
+    it('renders the 常见错误码 heading and Portal error codes', async () => {
+        const html = renderToString(await DocsPage());
         expect(html).toContain('常见错误码');
         // Keep the LLmRoute image/API contract codes.
         expect(html).toContain('invalid_api_key');
@@ -145,16 +146,16 @@ describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
         expect(html).toContain('moderation_blocked');
     });
 
-    it('links insufficient_user_quota to the recharge surface (/balance + /pay)', () => {
-        const html = renderToString(<DocsPage />);
+    it('links insufficient_user_quota to the recharge surface (/balance + /pay)', async () => {
+        const html = renderToString(await DocsPage());
         // Customer who hits the quota error should be one click from
         // either checking their balance or recharging.
         expect(html).toMatch(/href="\/balance"/);
         expect(html).toMatch(/href="\/pay"/);
     });
 
-    it('explains that body error.code is the source of truth (not HTTP status)', () => {
-        const html = renderToString(<DocsPage />);
+    it('explains that body error.code is the source of truth (not HTTP status)', async () => {
+        const html = renderToString(await DocsPage());
         // Critical hint — the W7 D4 PR-H Tier B doc fallback exists
         // precisely because we haven't rewritten HTTP 403 → 402 yet.
         // Customers must read body.error.code to disambiguate.
@@ -165,7 +166,7 @@ describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
 describe('/docs page — page-level metadata', () => {
     it('exposes a Chinese title + description in the metadata export', async () => {
         const mod = await import('@/app/docs/page');
-        const meta = mod.metadata;
+        const meta = await mod.generateMetadata();
         expect(meta.title).toContain('集成文档');
         expect(typeof meta.description).toBe('string');
         expect((meta.description as string).length).toBeGreaterThan(20);
@@ -173,9 +174,9 @@ describe('/docs page — page-level metadata', () => {
 });
 
 describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / key 自查)', () => {
-    const html = renderToString(<DocsPage />);
+    const html = renderToString(<DocsContent />);
 
-    it('第 09 章追加流式契约:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集', () => {
+    it('第 09 章追加流式契约:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集', async () => {
         expect(html).toContain('keep-alive');
         expect(html).toContain('upstream_stream_interrupted');
         expect(html).toContain('finish_reason');
@@ -183,7 +184,7 @@ describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / k
         expect(html).toContain('content_filter');
     });
 
-    it('第 18 章 模型目录:anchor + silkroadai 字段 + 标记头 + 档次价格语义', () => {
+    it('第 18 章 模型目录:anchor + silkroadai 字段 + 标记头 + 档次价格语义', async () => {
         expect(html).toContain('id="api-models-catalog"');
         expect(html).toContain('silkroadai');
         expect(html).toContain('X-Silkroadai-Enriched');
@@ -191,7 +192,7 @@ describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / k
         expect(html).toContain('context_window');
     });
 
-    it('第 19 章 Key 自查:anchor + 账户级余额语义 + stale + recent_used_cny', () => {
+    it('第 19 章 Key 自查:anchor + 账户级余额语义 + stale + recent_used_cny', async () => {
         expect(html).toContain('id="api-key-inspect"');
         expect(html).toContain('GET /v1/key');
         expect(html).toContain('account_balance');
@@ -200,13 +201,13 @@ describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / k
         expect(html).toContain('tier_display_name');
     });
 
-    it('第 10 章速查表登记两个新端点(带章节指引)', () => {
+    it('第 10 章速查表登记两个新端点(带章节指引)', async () => {
         expect(html).toContain('GET /v1/models');
         expect(html).toContain('见第 18 章');
         expect(html).toContain('见第 19 章');
     });
 
-    it('TOC 含两个新章节入口', () => {
+    it('TOC 含两个新章节入口', async () => {
         expect(html).toContain('#api-models-catalog');
         expect(html).toContain('#api-key-inspect');
         expect(html).toContain('程序化价格发现');
@@ -215,9 +216,9 @@ describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / k
 });
 
 describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼容)', () => {
-    const html = renderToString(<DocsPage />);
+    const html = renderToString(<DocsContent />);
 
-    it('anchor + TOC 入口 + 第 10 章速查表登记', () => {
+    it('anchor + TOC 入口 + 第 10 章速查表登记', async () => {
         expect(html).toMatch(/<section[^>]*id="api-batch"/);
         expect(html).toContain('#api-batch');
         expect(html).toContain('批量生图');
@@ -226,7 +227,7 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
         expect(html).toContain('见第 22 章');
     });
 
-    it('四步流程 + 全部管理端点在场', () => {
+    it('四步流程 + 全部管理端点在场', async () => {
         expect(html).toContain('POST /v1/files');
         expect(html).toContain('POST /v1/batches');
         expect(html).toContain('/content');
@@ -236,7 +237,7 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
         expect(html).toContain('error_file_id');
     });
 
-    it('JSONL 行格式四字段 + 示例模型(避开 default 组无渠道的 2.5)', () => {
+    it('JSONL 行格式四字段 + 示例模型(避开 default 组无渠道的 2.5)', async () => {
         expect(html).toContain('custom_id');
         // 示例只用 default 组有渠道的两个模型(2.5 在第 12 章出现属正常,不在本章示例里)
         expect(html).toContain('gemini-3.1-flash-image-preview');
@@ -245,7 +246,7 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
         expect(html).toContain('/v1/images/edits');
     });
 
-    it('限制表:20MB / 1000 行 / 5 批 / 24h / b64_json 改写 / 同步价', () => {
+    it('限制表:20MB / 1000 行 / 5 批 / 24h / b64_json 改写 / 同步价', async () => {
         expect(html).toContain('20MB');
         expect(html).toContain('1000 行');
         expect(html).toContain('completion_window');
@@ -253,7 +254,7 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
         expect(html).toContain('5 折');
     });
 
-    it('状态机 + 常见错误码', () => {
+    it('状态机 + 常见错误码', async () => {
         for (const s of ['validating', 'in_progress', 'expired', 'cancelled']) {
             expect(html, `status ${s}`).toContain(s);
         }
@@ -265,14 +266,14 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
 });
 
 describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_images,#548/#550 占位动图)', () => {
-    const html = renderToString(<DocsPage />);
+    const html = renderToString(<DocsContent />);
 
-    it('参数表有 stream / partial_images 两行', () => {
+    it('参数表有 stream / partial_images 两行', async () => {
         expect(html).toContain('partial_images');
         expect(html).toContain('Images streaming');
     });
 
-    it('事件表三件 + keep-alive,说明占位动图不是渐进渲染、不计费、n=1', () => {
+    it('事件表三件 + keep-alive,说明占位动图不是渐进渲染、不计费、n=1', async () => {
         for (const s of [
             'image_generation.partial_image',
             'image_generation.completed',
@@ -287,7 +288,7 @@ describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_imag
             expect(html, s).toContain(s);
     });
 
-    it('curl -N 与 Python SDK 流式示例', () => {
+    it('curl -N 与 Python SDK 流式示例', async () => {
         expect(html).toContain('curl -N');
         expect(html).toContain('stream=True');
         expect(html).toContain('partial_images=2');
@@ -295,16 +296,16 @@ describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_imag
 });
 
 describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', () => {
-    const html = renderToString(<DocsPage />);
+    const html = renderToString(<DocsContent />);
 
-    it('章节与目录锚点都在,Base URL 是 /api/v3', () => {
+    it('章节与目录锚点都在,Base URL 是 /api/v3', async () => {
         expect(html).toMatch(/<section[^>]*id="ark-native-video"/);
         expect(html).toMatch(/href="#ark-native-video"/);
         expect(html).toContain('https://api.llmroute.club/api/v3');
         expect(html).toContain('/contents/generations/tasks');
     });
 
-    it('列出四个对客模型名,不出现上游模型名', () => {
+    it('列出四个对客模型名,不出现上游模型名', async () => {
         for (const m of [
             'doubao-seedance-2-5-260628',
             'doubao-seedance-2-0-260128',
@@ -315,7 +316,7 @@ describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', 
         expect(html).not.toContain('artsdance');
     });
 
-    it('写明与官方的差异:task_ 任务号、不支持 callback_url、签名链接过期', () => {
+    it('写明与官方的差异:task_ 任务号、不支持 callback_url、签名链接过期', async () => {
         expect(html).toContain('task_xxx');
         expect(html).toContain('callback_url');
         expect(html).toContain('24 小时后过期');

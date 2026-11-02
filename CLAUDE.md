@@ -488,6 +488,8 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 
 ## 编码规范
 
+- 用户可见文案统一通过 `src/lib/i18n/messages/` 提供中英文；保留 LLmRoute 公共配置、协议字段与路由语义。
+
 - **TypeScript strict** — 不允许 `any`,用 `unknown` + zod 校验
 - **错误处理** — 自定义 Error 类带 status code,别 throw 字符串
 - **API route** — 入口先 zod parse,出口 NextResponse.json

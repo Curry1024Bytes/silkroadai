@@ -15,6 +15,8 @@
 import Link from 'next/link';
 import useSWR from 'swr';
 import type { QuotaSnapshotJson } from './types';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 const QUOTA_KEY = '/api/portal/balance/quota';
 
@@ -32,6 +34,7 @@ interface Props {
 }
 
 export function CostPreview({ pricePerImageUsd, count }: Props) {
+    const m = useMessages(imageMessages).cost;
     const { data, error } = useSWR<QuotaSnapshotJson>(QUOTA_KEY, fetchJson, {
         refreshInterval: 30_000,
         revalidateOnFocus: true,
@@ -45,24 +48,26 @@ export function CostPreview({ pricePerImageUsd, count }: Props) {
     return (
         <p className="m-0 text-xs text-minor-ink tabular-nums leading-tight">
             <span>
-                本次约 <span className="text-navy font-medium">¥{costCny.toFixed(2)}</span>
+                {m.approx} <span className="text-navy font-medium">¥{costCny.toFixed(2)}</span>
             </span>
             {' · '}
             {error ? (
-                <span className="text-status-error-text">余额读取失败</span>
+                <span className="text-status-error-text">{m.balanceFailed}</span>
             ) : remainCny === undefined ? (
-                <span className="text-minor-ink">读取余额中…</span>
+                <span className="text-minor-ink">{m.loadingBalance}</span>
             ) : (
                 <>
-                    <span>余额 ¥{remainCny.toFixed(2)}</span>
+                    <span>
+                        {m.balance} ¥{remainCny.toFixed(2)}
+                    </span>
                     {insufficient ? (
                         <>
-                            <span className="text-status-error-text font-medium">{' · 余额不足'}</span>{' '}
+                            <span className="text-status-error-text font-medium">{m.insufficient}</span>{' '}
                             <Link
                                 href="/pay"
                                 className="text-brand-accent font-medium hover:underline whitespace-nowrap"
                             >
-                                立即充值 →
+                                {m.topUp}
                             </Link>
                         </>
                     ) : null}
