@@ -52,6 +52,7 @@ export default async function EnterpriseStoragePage() {
                 小时,请及时下载或转存)。你可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3 / 自建
                 S3 兼容),配置生效后成片将直接上传到你的
                 bucket、返回你自己域名下的永久链接,数据完全归属你。未配置或任何故障时自动回退上游直链,不影响出片。
+                配置后新上传的素材也会同步一份到你的 bucket 并显示你的地址;生成时平台仍保留一份供上游读取。
             </p>
             <StorageSettingsForm
                 initialConfig={initialConfig}

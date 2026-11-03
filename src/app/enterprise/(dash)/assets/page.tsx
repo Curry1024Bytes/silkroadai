@@ -1,8 +1,10 @@
 /**
  * P3 素材库页:server 拉素材+素材组 → client island(上传/分组/改名/删除/复制 id)。
- * 素材存我们 R2;生成请求里直接写 asset-…/group-… id 即可引用(接入说明见页内)。
+ * 素材存我们 R2(配了自定义 OSS 的客户双写一份,页面展示副本 URL);
+ * 生成请求里直接写 asset-…/group-… id 即可引用(接入说明见页内)。
  */
 import { prisma } from '@/lib/db';
+import { assetDisplayUrl } from '@/lib/enterprise/assets';
 import { getEnterpriseSessionUser } from '@/lib/enterprise/session';
 import { AssetsManager } from './assets-manager';
 
@@ -28,7 +30,7 @@ export default async function EnterpriseAssetsPage() {
                 name: a.name,
                 asset_type: a.asset_type,
                 group_id: a.group_id,
-                url: a.public_url,
+                url: assetDisplayUrl(a),
                 bytes: a.bytes,
                 created_at: a.created_at.toISOString(),
             }))}

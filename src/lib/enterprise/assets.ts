@@ -11,6 +11,8 @@ import 'server-only';
 import { randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { uploadImage, deleteImage } from '@/lib/r2/client';
+import { deleteFromCustomerOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
+import { getOssConfig } from '@/lib/oss/store';
 import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 
 /** 配额(env 可调):素材数 / 总字节 / 单文件字节。 */
@@ -451,7 +453,32 @@ export interface StoreAssetInput {
     sourceUrl?: string | null;
 }
 
-/** 字节 → R2 + 落库(两套表面共用)。groupId 传入时校验归属。 */
+/** 对客展示的素材 URL:有客户 OSS 副本用副本,否则平台直链。生成引用不走这里(恒用 public_url)。 */
+export function assetDisplayUrl(a: { public_url: string; customer_url: string | null }): string {
+    return a.customer_url ?? a.public_url;
+}
+
+/**
+ * 素材双写到客户自定义 OSS(同一 key):客户看到自己的地址,而上游生成仍拉平台直链 ——
+ * 客户 bucket 未必公开可读,生成不能依赖它。未配置 / status≠active / 任何失败 → null,回退平台直链。
+ */
+async function maybeStoreAssetToCustomerOss(
+    userId: string,
+    key: string,
+    bytes: Buffer,
+    mime: string,
+): Promise<string | null> {
+    try {
+        const config = await getOssConfig(userId);
+        if (!config || config.status !== 'active') return null;
+        return await uploadToCustomerOss(config, bytes, key, mime);
+    } catch (e) {
+        console.warn('[enterprise-assets] customer OSS upload failed', { key, err: String(e).slice(0, 160) });
+        return null;
+    }
+}
+
+/** 字节 → R2(+ 客户 OSS 副本)+ 落库(两套表面共用)。groupId 传入时校验归属。 */
 export async function storeAsset(input: StoreAssetInput) {
     let { bytes, mime } = input;
     // 图片素材入库前归一:bmp → png / heif 品牌回写。素材库的唯一用途是喂生成,上游对这两族按字节拒收
@@ -477,6 +504,7 @@ export async function storeAsset(input: StoreAssetInput) {
     const ext = EXT_BY_MIME[mime.toLowerCase().split(';')[0]] ?? 'bin';
     const key = `enterprise-assets/${input.userId}/${id}.${ext}`;
     const publicUrl = await uploadImage(key, bytes, mime);
+    const customerUrl = await maybeStoreAssetToCustomerOss(input.userId, key, bytes, mime);
     return prisma.enterpriseAsset.create({
         data: {
             id,
@@ -487,6 +515,7 @@ export async function storeAsset(input: StoreAssetInput) {
             description: input.description ?? null,
             r2_key: key,
             public_url: publicUrl,
+            customer_url: customerUrl,
             mime,
             bytes: bytes.length,
             source_url: input.sourceUrl ?? null,
@@ -524,15 +553,27 @@ export async function fetchAssetFromUrl(
     return { bytes: buf, mime };
 }
 
-/** 删素材:行 + R2(R2 失败不阻断 —— 行删了引用即失效,残字节可后续清)。 */
+/** 删客户 OSS 副本。配置已换桶(前缀对不上)→ 副本不在当前配置下,不动;失败不阻断。 */
+async function deleteCustomerCopy(userId: string, key: string, customerUrl: string): Promise<void> {
+    const config = await getOssConfig(userId);
+    if (!config || customerUrl !== ossPublicUrl(config, key)) return;
+    await deleteFromCustomerOss(config, key);
+}
+
+/** 删素材:行 + R2 + 客户 OSS 副本(存储失败不阻断 —— 行删了引用即失效,残字节可后续清)。 */
 export async function deleteAsset(userId: string, assetId: string): Promise<boolean> {
     const row = await prisma.enterpriseAsset.findFirst({
         where: { id: assetId, user_id: userId },
-        select: { id: true, r2_key: true },
+        select: { id: true, r2_key: true, customer_url: true },
     });
     if (!row) return false;
     await prisma.enterpriseAsset.delete({ where: { id: row.id } });
     deleteImage(row.r2_key).catch((e) => console.warn('[enterprise-assets] R2 delete failed', row.r2_key, e));
+    if (row.customer_url) {
+        deleteCustomerCopy(userId, row.r2_key, row.customer_url).catch((e) =>
+            console.warn('[enterprise-assets] customer OSS delete failed', row.r2_key, e),
+        );
+    }
     return true;
 }
 

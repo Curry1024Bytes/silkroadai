@@ -3,7 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, uploadImage, deleteImage } = vi.hoisted(() => ({
+const { db, uploadImage, deleteImage, getOssConfig, uploadToCustomerOss, deleteFromCustomerOss } = vi.hoisted(() => ({
     db: {
         enterpriseAsset: {
             count: vi.fn(),
@@ -17,13 +17,23 @@ const { db, uploadImage, deleteImage } = vi.hoisted(() => ({
     },
     uploadImage: vi.fn(),
     deleteImage: vi.fn(),
+    getOssConfig: vi.fn(),
+    uploadToCustomerOss: vi.fn(),
+    deleteFromCustomerOss: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/r2/client', () => ({ uploadImage, deleteImage }));
+vi.mock('@/lib/oss/store', () => ({ getOssConfig }));
+vi.mock('@/lib/oss/client', () => ({
+    uploadToCustomerOss,
+    deleteFromCustomerOss,
+    ossPublicUrl: (c: { public_url_prefix: string }, key: string) => `${c.public_url_prefix}/${key}`,
+}));
 
 import {
     AssetError,
     assertSafeExternalUrl,
+    assetDisplayUrl,
     newAssetId,
     storeAsset,
     deleteAsset,
@@ -37,6 +47,7 @@ beforeEach(() => {
     db.enterpriseAsset.count.mockResolvedValue(0);
     db.enterpriseAsset.aggregate.mockResolvedValue({ _sum: { bytes: 0 } });
     uploadImage.mockResolvedValue('https://images.silkroadai.io/enterprise-assets/u1/x.png');
+    getOssConfig.mockResolvedValue(null);
 });
 
 describe('newAssetId', () => {
@@ -246,6 +257,91 @@ describe('storeAsset', () => {
             }),
         ).rejects.toMatchObject({ code: 'GroupNotFound' });
         expect(uploadImage).not.toHaveBeenCalled();
+    });
+});
+
+describe('素材双写客户 OSS', () => {
+    const OSS = { status: 'active', public_url_prefix: 'https://cdn.customer.test' };
+    const echoCreate = () =>
+        db.enterpriseAsset.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve(data),
+        );
+    const store = async () =>
+        (await storeAsset({
+            userId: 'u1',
+            assetType: 'image',
+            name: '猫',
+            bytes: OK_PNG,
+            mime: 'image/png',
+        })) as unknown as Record<string, unknown>;
+
+    it('未配置 → 只传平台,customer_url=null,展示平台 URL', async () => {
+        echoCreate();
+        const row = await store();
+        expect(uploadToCustomerOss).not.toHaveBeenCalled();
+        expect(row.customer_url).toBeNull();
+        expect(assetDisplayUrl(row as { public_url: string; customer_url: string | null })).toBe(row.public_url);
+    });
+
+    it('已配置 → 同 key 双写,public_url 仍是平台,展示客户 URL', async () => {
+        echoCreate();
+        getOssConfig.mockResolvedValue(OSS);
+        uploadToCustomerOss.mockResolvedValue('https://cdn.customer.test/enterprise-assets/u1/x.png');
+        const row = await store();
+        expect(uploadImage).toHaveBeenCalledTimes(1);
+        expect(uploadToCustomerOss).toHaveBeenCalledWith(OSS, expect.any(Buffer), row.r2_key, 'image/png');
+        expect(row.public_url).toBe('https://images.silkroadai.io/enterprise-assets/u1/x.png');
+        expect(assetDisplayUrl(row as { public_url: string; customer_url: string | null })).toBe(
+            'https://cdn.customer.test/enterprise-assets/u1/x.png',
+        );
+    });
+
+    it('status≠active → 不写客户 OSS', async () => {
+        echoCreate();
+        getOssConfig.mockResolvedValue({ ...OSS, status: 'disabled' });
+        const row = await store();
+        expect(uploadToCustomerOss).not.toHaveBeenCalled();
+        expect(row.customer_url).toBeNull();
+    });
+
+    it('客户 OSS 上传失败 / 读配置失败 → 回退平台,不影响入库', async () => {
+        echoCreate();
+        getOssConfig.mockResolvedValue(OSS);
+        uploadToCustomerOss.mockRejectedValue(new Error('AccessDenied'));
+        expect((await store()).customer_url).toBeNull();
+        getOssConfig.mockRejectedValue(new Error('db down'));
+        expect((await store()).customer_url).toBeNull();
+        expect(db.enterpriseAsset.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('生成引用恒注入平台 public_url(上游不依赖客户 bucket)', async () => {
+        const id = newAssetId('asset');
+        db.enterpriseAsset.findMany.mockResolvedValue([
+            { id, public_url: 'https://images.silkroadai.io/a.png', customer_url: 'https://cdn.customer.test/a.png' },
+        ]);
+        const out = await resolveAssetRefs({ image: id }, 'u1');
+        expect(out.image).toBe('https://images.silkroadai.io/a.png');
+    });
+
+    it('删素材:客户副本同删;配置已换桶则不动;失败不阻断', async () => {
+        const key = 'enterprise-assets/u1/a.png';
+        db.enterpriseAsset.delete.mockResolvedValue({});
+        deleteImage.mockResolvedValue(undefined);
+        db.enterpriseAsset.findFirst.mockResolvedValue({
+            id: 'asset-1',
+            r2_key: key,
+            customer_url: `${OSS.public_url_prefix}/${key}`,
+        });
+        getOssConfig.mockResolvedValue(OSS);
+        deleteFromCustomerOss.mockRejectedValue(new Error('AccessDenied'));
+        expect(await deleteAsset('u1', 'asset-1')).toBe(true);
+        await vi.waitFor(() => expect(deleteFromCustomerOss).toHaveBeenCalledWith(OSS, key));
+
+        deleteFromCustomerOss.mockClear();
+        getOssConfig.mockResolvedValue({ ...OSS, public_url_prefix: 'https://other.test' });
+        expect(await deleteAsset('u1', 'asset-1')).toBe(true);
+        await new Promise((r) => setTimeout(r));
+        expect(deleteFromCustomerOss).not.toHaveBeenCalled();
     });
 });
 

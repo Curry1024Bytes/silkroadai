@@ -82,6 +82,11 @@ export async function objectExistsInOss(config: OssConfigLike, key: string): Pro
     }
 }
 
+/** 删客户 bucket 里的对象。失败 throw,调用方决定是否阻断。 */
+export async function deleteFromCustomerOss(config: OssConfigLike, key: string): Promise<void> {
+    await getS3ClientForConfig(config).send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+}
+
 /** 测试连接:put 一个临时对象再删掉。失败返回 {ok:false, message},不 throw。 */
 export async function testOssConnection(config: OssConfigLike): Promise<{ ok: boolean; message?: string }> {
     try {

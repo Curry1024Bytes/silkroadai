@@ -9,6 +9,7 @@ import {
     fetchAssetFromUrl,
     newAssetId,
     storeAsset,
+    assetDisplayUrl,
     type AssetType,
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
@@ -158,6 +159,7 @@ function assetResult(a: {
     asset_type: string;
     group_id: string | null;
     public_url: string;
+    customer_url: string | null;
     bytes: number;
     mime: string | null;
     created_at: Date;
@@ -170,7 +172,7 @@ function assetResult(a: {
         GroupId: a.group_id ?? undefined,
         // 火山官方 Status 枚举 Title-case;平台校验在上传时同步完成,入库即 Active
         Status: 'Active',
-        URL: a.public_url,
+        URL: assetDisplayUrl(a),
         Bytes: a.bytes,
         MimeType: a.mime ?? undefined,
         CreatedAt: a.created_at.toISOString(),

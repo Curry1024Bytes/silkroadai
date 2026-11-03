@@ -1367,19 +1367,20 @@ model EnterpriseAssetGroup {
 }
 
 model EnterpriseAsset {
-  id          String   @id // "asset-YYYYMMDDHHMMSS-xxxxxx"
-  user_id     String   @db.Uuid
-  group_id    String? // 所属素材组(可空;删组只解除引用不删素材)
-  asset_type  String // image | video | audio
-  name        String
-  description String?
-  r2_key      String // enterprise-assets/{user_id}/{asset_id}.{ext}
-  public_url  String // R2 公网直链(生成引用时注入的就是它)
-  mime        String?
-  bytes       Int      @default(0)
-  source_url  String? // CreateAsset 注册时的原始 URL(dashboard 上传的为 null)
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id           String   @id // "asset-YYYYMMDDHHMMSS-xxxxxx"
+  user_id      String   @db.Uuid
+  group_id     String? // 所属素材组(可空;删组只解除引用不删素材)
+  asset_type   String // image | video | audio
+  name         String
+  description  String?
+  r2_key       String // enterprise-assets/{user_id}/{asset_id}.{ext}
+  public_url   String // R2 公网直链(生成引用时注入的就是它)
+  customer_url String? // 客户自定义 OSS 副本的公网 URL(对客展示优先;未配置/上传失败为 null)
+  mime         String?
+  bytes        Int      @default(0)
+  source_url   String? // CreateAsset 注册时的原始 URL(dashboard 上传的为 null)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   @@index([user_id, created_at])
   @@index([group_id])

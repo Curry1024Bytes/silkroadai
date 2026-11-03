@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireEnterpriseUser } from '@/lib/enterprise/session';
-import { AssetError, assetLimits, storeAsset, type AssetType } from '@/lib/enterprise/assets';
+import { AssetError, assetDisplayUrl, assetLimits, storeAsset, type AssetType } from '@/lib/enterprise/assets';
 
 export const runtime = 'nodejs';
 
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
             name: a.name,
             asset_type: a.asset_type,
             group_id: a.group_id,
-            url: a.public_url,
+            url: assetDisplayUrl(a),
             bytes: a.bytes,
             created_at: a.created_at.toISOString(),
         })),
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
             name: row.name,
             asset_type: row.asset_type,
             group_id: row.group_id,
-            url: row.public_url,
+            url: assetDisplayUrl(row),
             bytes: row.bytes,
             created_at: row.created_at.toISOString(),
         });
