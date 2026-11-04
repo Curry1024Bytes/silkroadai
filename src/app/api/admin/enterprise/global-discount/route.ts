@@ -55,6 +55,8 @@ const schema = z.object({
 
 type Window = NonNullable<z.infer<typeof schema>['schedule_windows']>[number];
 
+const ALL_WEEKDAYS = [1, 2, 3, 4, 5, 6, 7];
+
 function validLocalDate(value: string | null | undefined): boolean {
     if (value == null) return true;
     const [year, month, day] = value.split('-').map(Number);
@@ -183,24 +185,44 @@ export async function POST(request: NextRequest) {
     if (schedule_weekdays && new Set(schedule_weekdays).size !== schedule_weekdays.length) {
         return NextResponse.json({ error: 'invalid_input', detail: '生效星期不能重复' }, { status: 400 });
     }
-    const effectiveWeekdays = schedule_weekdays ?? [1, 2, 3, 4, 5, 6, 7];
-    if (
-        schedule_windows &&
-        schedule_windows.length > 0 &&
-        effectiveWeekdays.length === 0 &&
-        schedule_windows.some((w) => !w.weekdays)
-    ) {
-        return NextResponse.json({ error: 'invalid_input', detail: '时间窗口至少需要一个生效星期' }, { status: 400 });
-    }
-    if (schedule_windows) {
-        const windowsError = validWindows(schedule_windows, effectiveWeekdays);
-        if (windowsError) return NextResponse.json({ error: 'invalid_input', detail: windowsError }, { status: 400 });
-    }
 
     const expiresAt = expires_at ? new Date(expires_at) : null;
     const effectiveFrom = effective_from ? new Date(effective_from) : null;
     if (discount != null && effectiveFrom && expiresAt && effectiveFrom.getTime() >= expiresAt.getTime()) {
         return NextResponse.json({ error: 'invalid_input', detail: '生效时间必须早于失效时间' }, { status: 400 });
+    }
+    const existing = await prisma.enterpriseGlobalDiscount.findUnique({
+        where: { region_variant: { region, variant } },
+    });
+
+    const existingWindows =
+        Array.isArray(existing?.schedule_windows) && existing.schedule_windows.length > 0
+            ? (existing.schedule_windows as Window[])
+            : null;
+    const resultingWindows =
+        schedule_windows === undefined ? existingWindows : schedule_windows.length > 0 ? schedule_windows : null;
+    let resultingWeekdays: number[] | null = null;
+    if (resultingWindows) {
+        if (schedule_weekdays === undefined) {
+            resultingWeekdays =
+                Array.isArray(existing?.schedule_weekdays) && existing.schedule_weekdays.length > 0
+                    ? (existing.schedule_weekdays as number[])
+                    : ALL_WEEKDAYS;
+        } else {
+            resultingWeekdays = schedule_weekdays;
+        }
+        if (resultingWeekdays.length === 0) {
+            return NextResponse.json(
+                { error: 'invalid_input', detail: '存在时间窗口时至少需要一个顶层生效星期' },
+                { status: 400 },
+            );
+        }
+    } else if (schedule_weekdays !== undefined && schedule_weekdays.length > 0) {
+        return NextResponse.json({ error: 'invalid_input', detail: '生效星期必须与时间窗口一起设置' }, { status: 400 });
+    }
+    if (resultingWindows && (schedule_windows !== undefined || schedule_weekdays !== undefined)) {
+        const windowsError = validWindows(resultingWindows, resultingWeekdays ?? ALL_WEEKDAYS);
+        if (windowsError) return NextResponse.json({ error: 'invalid_input', detail: windowsError }, { status: 400 });
     }
     if (expected_version === undefined) {
         return NextResponse.json(
@@ -208,10 +230,6 @@ export async function POST(request: NextRequest) {
             { status: 409 },
         );
     }
-
-    const existing = await prisma.enterpriseGlobalDiscount.findUnique({
-        where: { region_variant: { region, variant } },
-    });
     if (discount == null) {
         if (!existing && expected_version === 0) {
             return NextResponse.json({ ok: true, region, variant, discount: null, cleared: true });
@@ -243,16 +261,16 @@ export async function POST(request: NextRequest) {
             effective_from: effective_from === undefined ? existing.effective_from : effectiveFrom,
             schedule_timezone: schedule_timezone ?? existing.schedule_timezone,
             schedule_weekdays:
-                schedule_weekdays === undefined
+                schedule_windows === undefined && schedule_weekdays === undefined
                     ? (existing.schedule_weekdays ?? Prisma.DbNull)
-                    : schedule_weekdays.length
-                      ? schedule_weekdays
+                    : resultingWeekdays?.length
+                      ? resultingWeekdays
                       : Prisma.DbNull,
             schedule_windows:
-                schedule_windows === undefined
+                schedule_windows === undefined && schedule_weekdays === undefined
                     ? (existing.schedule_windows ?? Prisma.DbNull)
-                    : schedule_windows.length
-                      ? (schedule_windows as Prisma.InputJsonValue)
+                    : resultingWindows
+                      ? (resultingWindows as Prisma.InputJsonValue)
                       : Prisma.DbNull,
             note: note === undefined ? existing.note : note,
             version: { increment: 1 },
@@ -275,10 +293,8 @@ export async function POST(request: NextRequest) {
                     expires_at: expiresAt,
                     effective_from: effectiveFrom,
                     schedule_timezone: schedule_timezone ?? 'Asia/Shanghai',
-                    schedule_weekdays: schedule_weekdays?.length ? schedule_weekdays : Prisma.DbNull,
-                    schedule_windows: schedule_windows?.length
-                        ? (schedule_windows as Prisma.InputJsonValue)
-                        : Prisma.DbNull,
+                    schedule_weekdays: resultingWeekdays?.length ? resultingWeekdays : Prisma.DbNull,
+                    schedule_windows: resultingWindows ? (resultingWindows as Prisma.InputJsonValue) : Prisma.DbNull,
                     note,
                     created_by: admin.user?.id ?? null,
                 },

@@ -129,6 +129,88 @@ describe('POST /api/admin/enterprise/global-discount', () => {
         );
     });
 
+    it('创建日历窗口时省略顶层星期默认保存周一至周日', async () => {
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
+            id: 'rule-1',
+            version: 1,
+            region: 'cn',
+            variant: 'fast',
+            discount: '0.6',
+            expires_at: null,
+            effective_from: null,
+            schedule_timezone: 'Asia/Shanghai',
+            schedule_weekdays: [1, 2, 3, 4, 5, 6, 7],
+            schedule_windows: [{ start: '09:00', end: '10:00', discount: 0.5 }],
+            note: null,
+            created_at: new Date(),
+        });
+        const res = await POST(
+            req({
+                region: 'cn',
+                variant: 'fast',
+                discount: 0.6,
+                expected_version: 0,
+                schedule_windows: [{ start: '09:00', end: '10:00', discount: 0.5 }],
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(db.enterpriseGlobalDiscount.create).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ schedule_weekdays: [1, 2, 3, 4, 5, 6, 7] }),
+            }),
+        );
+    });
+
+    it('更新已有窗口时省略顶层星期保留已有星期', async () => {
+        const existing = {
+            id: 'rule-1',
+            version: 4,
+            region: 'cn',
+            variant: 'fast',
+            discount: '0.6',
+            expires_at: null,
+            effective_from: null,
+            schedule_timezone: 'Asia/Shanghai',
+            schedule_weekdays: [2, 4],
+            schedule_windows: [{ start: '09:00', end: '10:00', discount: 0.5 }],
+            note: null,
+        };
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValue(existing);
+        const res = await POST(
+            req({
+                region: 'cn',
+                variant: 'fast',
+                discount: 0.7,
+                expected_version: 4,
+                schedule_windows: [{ start: '11:00', end: '12:00', discount: 0.4 }],
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(db.enterpriseGlobalDiscount.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    schedule_weekdays: [2, 4],
+                    schedule_windows: [{ start: '11:00', end: '12:00', discount: 0.4 }],
+                }),
+            }),
+        );
+    });
+
+    it('显式清空顶层星期但保留窗口时拒绝保存', async () => {
+        const res = await POST(
+            req({
+                region: 'cn',
+                variant: 'fast',
+                discount: 0.7,
+                expected_version: 0,
+                schedule_weekdays: [],
+                schedule_windows: [{ start: '09:00', end: '10:00', discount: 0.4, weekdays: [1] }],
+            }),
+        );
+        expect(res.status).toBe(400);
+        expect(db.enterpriseGlobalDiscount.create).not.toHaveBeenCalled();
+    });
+
     it('更新时省略日历字段保留已有规则', async () => {
         const existing = {
             id: 'rule-1',
