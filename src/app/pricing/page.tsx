@@ -339,7 +339,9 @@ function VendorPriceSection({ block, m, locale }: { block: VendorBlock; m: Prici
                                         )}
                                         <td className="py-2.5 pr-4 text-muted-ink">
                                             {row.tierLabel}
-                                            {row.special && <span className="ml-2 text-xs">{m.table.specialBadge}</span>}
+                                            {row.special && (
+                                                <span className="ml-2 text-xs">{m.table.specialBadge}</span>
+                                            )}
                                             {row.billingDetails && (
                                                 <span className="block mt-1 text-xs">
                                                     {row.billingDetails.mode !== 'tiered_token'
@@ -406,9 +408,7 @@ function TieredPriceTable({
     );
     return (
         <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
-            <p className="m-0 mb-2 text-xs">
-                {uniform ? t.introUniform : t.introTiered}
-            </p>
+            <p className="m-0 mb-2 text-xs">{uniform ? t.introUniform : t.introTiered}</p>
             <table className="w-full text-xs" aria-label={t.aria(tierLabel, uniform)}>
                 <thead>
                     <tr className="text-left">

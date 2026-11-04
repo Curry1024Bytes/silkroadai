@@ -181,7 +181,9 @@ export function refundKindOf(log: SettlementRefundLog): RefundKind | null {
 
 /** 失败退款配上预扣行时,预扣行的说明(预扣行标「失败」、金额 ¥0)。 */
 export const FAILED_VIDEO_REFUND_NOTE = logsMessages.zh.refunds.failed;
-export function failedVideoRefundNote(locale: Locale = 'zh') { return pickMessages(logsMessages, locale).refunds.failed; }
+export function failedVideoRefundNote(locale: Locale = 'zh') {
+    return pickMessages(logsMessages, locale).refunds.failed;
+}
 
 /** 失败退款找不到预扣行时(在别的页、日期范围外或导出批次外),单独退款行的说明。 */
 export function unmatchedFailureRefundContent(refund: string, locale: Locale = 'zh'): string {
@@ -198,7 +200,10 @@ export function settlementRefundContent(
     const refund = formatQuota(Math.abs(log.quota));
     const details = parseSettlementRefundDetails(log);
     if (details && details.preConsumedQuota !== null && details.actualQuota !== null) {
-        return m.settlementNote(refund) + m.amounts(formatQuota(details.preConsumedQuota), formatQuota(details.actualQuota));
+        return (
+            m.settlementNote(refund) +
+            m.amounts(formatQuota(details.preConsumedQuota), formatQuota(details.actualQuota))
+        );
     }
     return m.settlementNote(refund);
 }

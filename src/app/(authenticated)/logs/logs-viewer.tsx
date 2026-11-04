@@ -172,7 +172,8 @@ export function LogsViewer() {
                 <div className="p-4 sm:p-5">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.start}<input
+                            {copy.filters.start}
+                            <input
                                 type="datetime-local"
                                 className={INPUT}
                                 value={filters.start}
@@ -180,7 +181,8 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.end}<input
+                            {copy.filters.end}
+                            <input
                                 type="datetime-local"
                                 className={INPUT}
                                 value={filters.end}
@@ -188,7 +190,8 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.table.colRequestId}<input
+                            {copy.table.colRequestId}
+                            <input
                                 className={INPUT}
                                 placeholder={copy.filters.requestIdPlaceholder}
                                 value={filters.requestId}
@@ -196,7 +199,8 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.token}<input
+                            {copy.filters.token}
+                            <input
                                 className={INPUT}
                                 placeholder={copy.filters.tokenPlaceholder}
                                 value={filters.token}
@@ -204,7 +208,8 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.model}<input
+                            {copy.filters.model}
+                            <input
                                 className={INPUT}
                                 placeholder={copy.filters.modelPlaceholder}
                                 value={filters.model}
@@ -212,7 +217,8 @@ export function LogsViewer() {
                             />
                         </label>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.channel}<input
+                            {copy.filters.channel}
+                            <input
                                 className={INPUT}
                                 placeholder={copy.filters.channelPlaceholder}
                                 inputMode="numeric"
@@ -233,7 +239,8 @@ export function LogsViewer() {
                             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-portal-line bg-portal-panel px-4 text-sm font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20"
                         >
                             <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-                            {copy.filters.exportCsv}</button>
+                            {copy.filters.exportCsv}
+                        </button>
                         <button
                             type="button"
                             onClick={onSearch}
@@ -268,7 +275,8 @@ export function LogsViewer() {
                     className="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-sm text-portal-muted shadow-portal"
                 >
                     <LoaderCircle size={18} className="animate-spin text-portal-gold" aria-hidden="true" />
-                    {copy.viewer.loading}</div>
+                    {copy.viewer.loading}
+                </div>
             ) : rows.length === 0 && !loading ? (
                 <div className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-center shadow-portal">
                     <span className="flex h-10 w-10 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
@@ -317,7 +325,8 @@ export function LogsViewer() {
             {/* 分页(服务端)*/}
             <div className="flex items-center justify-between gap-3 text-xs text-portal-muted">
                 <span className="tabular-nums">
-                    {copy.pager.page(page)}{loading ? copy.pager.loading : ''}
+                    {copy.pager.page(page)}
+                    {loading ? copy.pager.loading : ''}
                 </span>
                 <div className="flex gap-2">
                     <button
@@ -327,14 +336,16 @@ export function LogsViewer() {
                         className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
                         <ChevronLeft size={14} aria-hidden="true" />
-                        {copy.pager.prev}</button>
+                        {copy.pager.prev}
+                    </button>
                     <button
                         type="button"
                         onClick={() => goToPage(page + 1)}
                         disabled={!hasMore || loading}
                         className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
-                        {copy.pager.next}<ChevronRight size={14} aria-hidden="true" />
+                        {copy.pager.next}
+                        <ChevronRight size={14} aria-hidden="true" />
                     </button>
                 </div>
             </div>
@@ -452,7 +463,8 @@ function LogRowItem({
                             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-error-border bg-status-error-bg px-2 text-xs font-medium text-status-error-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error-text/20"
                         >
                             <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
-                            {copy.table.failed}{isOpen ? (
+                            {copy.table.failed}
+                            {isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
                                 <ChevronDown size={12} aria-hidden="true" />
@@ -461,7 +473,8 @@ function LogRowItem({
                     ) : (
                         <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            {copy.table.success}</span>
+                            {copy.table.success}
+                        </span>
                     )}
                 </td>
             </tr>

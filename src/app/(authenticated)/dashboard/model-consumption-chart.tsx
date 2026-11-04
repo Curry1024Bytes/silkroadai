@@ -102,7 +102,8 @@ export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsu
     if (byDay.length === 0 || models.length === 0) {
         return (
             <div className="flex h-[260px] items-center justify-center rounded-md border border-dashed border-portal-line bg-portal-soft px-6 text-center text-sm text-portal-subtle sm:h-[300px]">
-                {copy.chart.empty}</div>
+                {copy.chart.empty}
+            </div>
         );
     }
 

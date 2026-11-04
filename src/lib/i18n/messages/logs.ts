@@ -11,13 +11,22 @@ export const logsMessages = defineMessages(
         heading: '调用日志',
         subtitle: '按时间、Request ID、密钥、模型或渠道定位每一次调用，失败记录可展开查看详情。',
         refunds: {
-            settlement: { chip: '结算退款', heading: '结算说明' }, failure: { chip: '失败退款', heading: '退款说明' },
+            settlement: { chip: '结算退款', heading: '结算说明' },
+            failure: { chip: '失败退款', heading: '退款说明' },
             failed: '视频任务未生成成功,已自动退还本次预扣费用(未实际扣费)。',
-            unmatched: (amount: string) => `视频任务未生成成功，已自动退还预扣的 ${amount}。对应的预扣记录不在当前列表中（可能在其他页或所选日期范围之外）。`,
+            unmatched: (amount: string) =>
+                `视频任务未生成成功，已自动退还预扣的 ${amount}。对应的预扣记录不在当前列表中（可能在其他页或所选日期范围之外）。`,
             settlementNote: (amount: string) => `按实际用量结算，退还多扣的 ${amount}`,
             amounts: (pre: string, actual: string) => `（预扣 ${pre}，实际 ${actual}）`,
         },
-        viewer: { filters: '筛选条件', range: '默认查询最近 7 天', failed: '日志加载失败', loading: '正在加载调用记录…', empty: '暂无调用记录', hint: '请调整时间范围或筛选条件后重试' },
+        viewer: {
+            filters: '筛选条件',
+            range: '默认查询最近 7 天',
+            failed: '日志加载失败',
+            loading: '正在加载调用记录…',
+            empty: '暂无调用记录',
+            hint: '请调整时间范围或筛选条件后重试',
+        },
         filters: {
             start: '起始时间',
             end: '结束时间',
@@ -77,13 +86,22 @@ export const logsMessages = defineMessages(
         subtitle:
             'Search every request by date range, Request ID, API key, model or channel; expand a failed request to see the details.',
         refunds: {
-            settlement: { chip: 'Settlement refund', heading: 'Settlement details' }, failure: { chip: 'Failure refund', heading: 'Refund details' },
+            settlement: { chip: 'Settlement refund', heading: 'Settlement details' },
+            failure: { chip: 'Failure refund', heading: 'Refund details' },
             failed: 'The video task did not complete; the pre-authorised charge was refunded automatically (nothing was billed).',
-            unmatched: (amount: string) => `The video task did not complete. The pre-charge of ${amount} was refunded automatically. Its charge record is outside this list (on another page or outside the selected date range).`,
+            unmatched: (amount: string) =>
+                `The video task did not complete. The pre-charge of ${amount} was refunded automatically. Its charge record is outside this list (on another page or outside the selected date range).`,
             settlementNote: (amount: string) => `Settled by actual usage; refunded the excess ${amount}`,
             amounts: (pre: string, actual: string) => ` (pre-charge ${pre}, actual ${actual})`,
         },
-        viewer: { filters: 'Filters', range: 'Last 7 days by default', failed: 'Unable to load logs', loading: 'Loading request logs…', empty: 'No request logs', hint: 'Adjust the date range or filters and try again' },
+        viewer: {
+            filters: 'Filters',
+            range: 'Last 7 days by default',
+            failed: 'Unable to load logs',
+            loading: 'Loading request logs…',
+            empty: 'No request logs',
+            hint: 'Adjust the date range or filters and try again',
+        },
         filters: {
             start: 'From',
             end: 'To',

@@ -115,9 +115,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                             <th className={HEAD}>Key</th>
                             <th className={HEAD}>Request ID</th>
                             <th className={`${HEAD} text-right`}>{copy.colDuration}</th>
-                            <th className={`${HEAD} text-right`}>
-                                {copy.colTokens}
-                            </th>
+                            <th className={`${HEAD} text-right`}>{copy.colTokens}</th>
                             <th className={`${HEAD} text-right`}>{copy.colCost}</th>
                             <th className={`${HEAD} text-center`}>{copy.colResult}</th>
                         </tr>

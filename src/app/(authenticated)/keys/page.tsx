@@ -27,7 +27,9 @@ import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
 export const dynamic = 'force-dynamic';
-export async function generateMetadata() { return { title: pickMessages(keysMessages, await getLocale()).pageTitle }; }
+export async function generateMetadata() {
+    return { title: pickMessages(keysMessages, await getLocale()).pageTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -162,9 +164,7 @@ export default async function KeysPage() {
             <div>
                 <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">ACCESS</p>
                 <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">API Keys</h1>
-                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                    {m.subtitle}
-                </p>
+                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">{m.subtitle}</p>
             </div>
             <KeysList initialRows={rows} tiers={tiers} quotaLimitsEnabled={keyQuotaLimitsEnabled()} />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the

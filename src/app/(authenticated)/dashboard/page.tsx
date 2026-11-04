@@ -45,10 +45,11 @@ import { BalanceAlertForm } from './balance-alert-form';
 import { BalanceNotices, loadBalanceData, loadUsageData, StatCardSkeletons, UsageBodySkeleton } from './sections';
 
 export const dynamic = 'force-dynamic';
-export async function generateMetadata() { return { title: pickMessages(dashboardMessages, await getLocale()).pageTitle }; }
+export async function generateMetadata() {
+    return { title: pickMessages(dashboardMessages, await getLocale()).pageTitle };
+}
 
 const HISTORY_LIMIT = 10;
-
 
 async function getSessionUser() {
     const h = await headers();
@@ -170,9 +171,13 @@ export default async function DashboardPage({
                                     strokeWidth={1.8}
                                     aria-hidden="true"
                                 />
-                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">{m.recharge.heading}</h2>
+                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">
+                                    {m.recharge.heading}
+                                </h2>
                             </div>
-                            <p className="m-0 mt-1 text-xs text-portal-subtle">{m.portal.latest} {HISTORY_LIMIT} {m.portal.historyTail}</p>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">
+                                {m.portal.latest} {HISTORY_LIMIT} {m.portal.historyTail}
+                            </p>
                         </div>
                         <HistoryIcon
                             size={17}
@@ -187,7 +192,9 @@ export default async function DashboardPage({
                             title={m.recharge.emptyTitle}
                             body={
                                 <>
-                                    {m.portal.firstBefore}<code className="mx-1 font-mono text-xs">{m.portal.topUp}</code>{m.portal.firstAfter}
+                                    {m.portal.firstBefore}
+                                    <code className="mx-1 font-mono text-xs">{m.portal.topUp}</code>
+                                    {m.portal.firstAfter}
                                 </>
                             }
                             className="min-h-[210px] py-8"
@@ -221,7 +228,8 @@ export default async function DashboardPage({
                                                     ¥{Number(row.amount).toFixed(2)}
                                                 </td>
                                                 <td className={cell}>
-                                                    {(m.rechargeSources as Record<string,string>)[row.source] ?? row.source}
+                                                    {(m.rechargeSources as Record<string, string>)[row.source] ??
+                                                        row.source}
                                                 </td>
                                                 <td className={`${cell} font-mono text-xs text-portal-muted`}>
                                                     {row.order_id ? row.order_id.slice(0, 8) : '—'}

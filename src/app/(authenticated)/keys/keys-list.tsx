@@ -799,7 +799,9 @@ export function KeysList({
             setBudgetEdit(null);
         } catch (err) {
             setBudgetEdit((prev) =>
-                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : c.networkError } : prev,
+                prev
+                    ? { ...prev, submitting: false, error: err instanceof Error ? err.message : c.networkError }
+                    : prev,
             );
         }
     }
@@ -893,15 +895,21 @@ export function KeysList({
         () => (
             <thead>
                 <tr className="bg-portal-soft text-portal-muted">
-                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">{t.colAlias}</th>
-                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">{t.colKey}</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                        {t.colAlias}
+                    </th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                        {t.colKey}
+                    </th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
                         {t.colQuota}
                     </th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
                         {t.colCreated}
                     </th>
-                    <th className="border-b border-portal-line px-5 py-2.5 text-right text-xs font-semibold">{t.colActions}</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-right text-xs font-semibold">
+                        {t.colActions}
+                    </th>
                 </tr>
             </thead>
         ),
@@ -1014,8 +1022,7 @@ export function KeysList({
                                     disabled={create.submitting}
                                 />
                                 <p className="m-0 mt-2 text-xs text-portal-subtle">
-                                    {tiers.find((t) => t.key === create.tier)?.description ??
-                                        m.tier.hint}
+                                    {tiers.find((t) => t.key === create.tier)?.description ?? m.tier.hint}
                                 </p>
                             </fieldset>
                         )}
@@ -1074,9 +1081,7 @@ export function KeysList({
                             <KeyRound size={21} strokeWidth={1.7} aria-hidden="true" />
                         </span>
                         <h3 className="m-0 mt-4 text-base font-semibold text-portal-ink">{t.emptyTitle}</h3>
-                        <p className="m-0 mt-1.5 max-w-sm text-sm leading-relaxed text-portal-muted">
-                            {t.emptyBody}
-                        </p>
+                        <p className="m-0 mt-1.5 max-w-sm text-sm leading-relaxed text-portal-muted">{t.emptyBody}</p>
                     </div>
                 ) : (
                     <>
@@ -1151,7 +1156,8 @@ export function KeysList({
                                                     <>
                                                         {t.cumulative}¥{(row.usedCny ?? 0).toFixed(2)}
                                                         <span className="mx-1.5">·</span>
-                                                        {t.lastUsed}{formatLastUsed(row.last_used_at, m.lastUsed)}
+                                                        {t.lastUsed}
+                                                        {formatLastUsed(row.last_used_at, m.lastUsed)}
                                                     </>
                                                 )}
                                             </p>
@@ -1222,7 +1228,11 @@ export function KeysList({
                                                         </span>
                                                         {ratioBadgeText(row.effective_ratio ?? null, false, m.tier) && (
                                                             <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
-                                                                {ratioBadgeText(row.effective_ratio ?? null, false, m.tier)}
+                                                                {ratioBadgeText(
+                                                                    row.effective_ratio ?? null,
+                                                                    false,
+                                                                    m.tier,
+                                                                )}
                                                             </span>
                                                         )}
                                                     </div>
@@ -1249,7 +1259,8 @@ export function KeysList({
                                                             <>
                                                                 {t.cumulative}¥{(row.usedCny ?? 0).toFixed(2)}
                                                                 <span className="mx-1.5">·</span>
-                                                                {t.lastUsed}{formatLastUsed(row.last_used_at, m.lastUsed)}
+                                                                {t.lastUsed}
+                                                                {formatLastUsed(row.last_used_at, m.lastUsed)}
                                                             </>
                                                         )}
                                                     </div>

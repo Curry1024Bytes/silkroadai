@@ -29,7 +29,10 @@ export function callResult(type: number, refundKind: RefundKind | null = null): 
 }
 
 /** 退款行的结果标签与展开说明的标题(明细表与调用记录页共用)。 */
-export function refundLabel(result: 'settlement_refund' | 'failure_refund', locale: Locale = 'zh'): { chip: string; heading: string } {
+export function refundLabel(
+    result: 'settlement_refund' | 'failure_refund',
+    locale: Locale = 'zh',
+): { chip: string; heading: string } {
     const m = pickMessages(logsMessages, locale).refunds;
     return result === 'settlement_refund' ? m.settlement : m.failure;
 }

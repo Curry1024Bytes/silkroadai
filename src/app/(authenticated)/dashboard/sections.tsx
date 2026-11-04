@@ -145,7 +145,11 @@ function toCallRow(log: NewApiUsageLog, refundKind: RefundKind | null = null, lo
 function settlementRefundRow(log: NewApiUsageLog, locale: Locale): CallRow {
     const row = toCallRow(log, 'settlement', locale);
     row.costCny = -quotaToCny(log.quota);
-    row.content = settlementRefundContent(log, (quota) => formatSignedCny(quotaToCny(quota), { preciseSmall: true }), locale);
+    row.content = settlementRefundContent(
+        log,
+        (quota) => formatSignedCny(quotaToCny(quota), { preciseSmall: true }),
+        locale,
+    );
     return row;
 }
 

@@ -555,7 +555,8 @@ describe('<KeysList /> English locale', () => {
     it('QuotaExpiryFields labels + presets in English', () => {
         const html = en(
             <QuotaExpiryFields
-                quotaLimitsEnabled idPrefix="t"
+                quotaLimitsEnabled
+                idPrefix="t"
                 value={{ quotaUnlimited: false, quotaCny: '', expiryPreset: 'never', expiryCustom: '' }}
                 onChange={() => {}}
             />,

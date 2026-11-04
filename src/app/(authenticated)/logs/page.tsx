@@ -4,7 +4,9 @@ import { pickMessages } from '@/lib/i18n';
 import { logsMessages } from '@/lib/i18n/messages/logs';
 import { LogsViewer } from './logs-viewer';
 
-export async function generateMetadata(): Promise<Metadata> { return { title: pickMessages(logsMessages, await getLocale()).pageTitle }; }
+export async function generateMetadata(): Promise<Metadata> {
+    return { title: pickMessages(logsMessages, await getLocale()).pageTitle };
+}
 
 /**
  * 客户「调用日志」页 —— 全功能日志(日期范围 + Request ID / 令牌 / 模型 / 渠道 搜索 + 分页)。
@@ -18,9 +20,7 @@ export default async function LogsPage() {
             <div>
                 <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">ACTIVITY</p>
                 <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">{m.heading}</h1>
-                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                    {m.subtitle}
-                </p>
+                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">{m.subtitle}</p>
             </div>
             <LogsViewer />
         </section>

@@ -88,14 +88,14 @@ operator 已确认采用第 6 节推荐方案：
 
 三方语义审计按文件类别完成：
 
-| 文件类别 | dev 基线语义 | 上游语义 | 最终选择 |
-| --- | --- | --- | --- |
-| dashboard / portal-sections / call-detail / usage loader | LLmRoute 账户卡、热门模型、调用明细、视频退款与固定金额格式 | 旧结构的 i18n 文案与语言上下文 | 保留 dev 结构和退款/计量行为，接入 dashboard messages 与 locale-aware formatting |
-| logs viewer / `/api/portal/logs` / export | 过滤、脱敏、失败配对、结算/失败退款分类 | 全站英文过滤器、状态、脱敏文案 | 保留 dev refundKind/配对/CSV 语义，接入 logs messages；CSV 仍中文 |
-| keys / pricing / models | 动态拓扑、专属倍率、Key 额度/到期、LLmRoute URL | 上游旧版页面结构与英文 messages | 保留 dev 数据与路由结构，接入对应 messages；不采用上游旧硬编码价格或公共 URL |
-| auth / pay / reseller / storage / tools / image | LLmRoute 品牌、客户路由、现有功能入口 | 上游中英文页面文案与 metadata | 保留 dev 行为和链接，采用双语消息并替换上游品牌/客服 |
-| docs / legal / admin / enterprise | docs-content、法律和控制台现有结构 | 上游公共文档外壳及语言提示 | 保留 docs-content 与 LLmRoute URL；正文/法律/管理端范围仍按报告规定不翻译 |
-| tests | dev 既有行为断言 | #574 新增英文回归 | 保留上游回归场景；仅将旧品牌、已删除 GPU、workspace 路由和 dev 结构差异改为当前契约 |
+| 文件类别                                                 | dev 基线语义                                                | 上游语义                        | 最终选择                                                                            |
+| -------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
+| dashboard / portal-sections / call-detail / usage loader | LLmRoute 账户卡、热门模型、调用明细、视频退款与固定金额格式 | 旧结构的 i18n 文案与语言上下文  | 保留 dev 结构和退款/计量行为，接入 dashboard messages 与 locale-aware formatting    |
+| logs viewer / `/api/portal/logs` / export                | 过滤、脱敏、失败配对、结算/失败退款分类                     | 全站英文过滤器、状态、脱敏文案  | 保留 dev refundKind/配对/CSV 语义，接入 logs messages；CSV 仍中文                   |
+| keys / pricing / models                                  | 动态拓扑、专属倍率、Key 额度/到期、LLmRoute URL             | 上游旧版页面结构与英文 messages | 保留 dev 数据与路由结构，接入对应 messages；不采用上游旧硬编码价格或公共 URL        |
+| auth / pay / reseller / storage / tools / image          | LLmRoute 品牌、客户路由、现有功能入口                       | 上游中英文页面文案与 metadata   | 保留 dev 行为和链接，采用双语消息并替换上游品牌/客服                                |
+| docs / legal / admin / enterprise                        | docs-content、法律和控制台现有结构                          | 上游公共文档外壳及语言提示      | 保留 docs-content 与 LLmRoute URL；正文/法律/管理端范围仍按报告规定不翻译           |
+| tests                                                    | dev 既有行为断言                                            | #574 新增英文回归               | 保留上游回归场景；仅将旧品牌、已删除 GPU、workspace 路由和 dev 结构差异改为当前契约 |
 
 验证结果：
 

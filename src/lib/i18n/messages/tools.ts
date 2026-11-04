@@ -280,7 +280,8 @@ export const toolsMessages = defineMessages(
             taskLabel: 'Image task: ',
             taskDone: 'Done. After a page refresh, enter the same API key to fetch the result again.',
             taskFailedHint: 'The task failed — details below.',
-            taskPolling: 'Generating — the page checks for the result automatically. Do not resubmit during a brief network drop.',
+            taskPolling:
+                'Generating — the page checks for the result automatically. Do not resubmit during a brief network drop.',
             taskNeedKey: 'Enter the API key you submitted with to keep checking your last task.',
             clearTask: 'Remove the saved task from this device',
             submitting: 'Submitting…',

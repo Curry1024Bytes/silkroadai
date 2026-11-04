@@ -81,8 +81,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                 <p className="m-0 mt-1 text-xs text-portal-subtle">{copy.portal.protection}</p>
             </div>
             <div className="px-5 py-5 sm:px-6">
-                <p className="m-0 mb-5 text-sm leading-relaxed text-portal-muted">
-                    {copy.alert.hint}</p>
+                <p className="m-0 mb-5 text-sm leading-relaxed text-portal-muted">{copy.alert.hint}</p>
                 <div className="flex items-end gap-2.5 flex-wrap">
                     <div>
                         <Label htmlFor="balance-alert-threshold">{copy.alert.thresholdLabel}</Label>
@@ -119,7 +118,8 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                                 'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
                             ].join(' ')}
                         >
-                            {copy.alert.disabled}</span>
+                            {copy.alert.disabled}
+                        </span>
                     )}
                     {status === 'saved' && persisted > 0 && (
                         <span className="text-xs text-status-success-text">已保存 ✓ 当前阈值 ¥{persisted}</span>

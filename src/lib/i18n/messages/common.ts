@@ -11,7 +11,16 @@ export const commonMessages = defineMessages(
             tagline: 'One route. Every model.',
             siteDescription: 'One route. Every model.',
         },
-        sidebar: { navigation: '导航', close: '关闭导航', groupWorkspace: '工作区', groupResources: '资源与设置', groupMore: '更多服务', gpu: 'GPU 租赁', topUp: '充值', mobileAria: '移动导航' },
+        sidebar: {
+            navigation: '导航',
+            close: '关闭导航',
+            groupWorkspace: '工作区',
+            groupResources: '资源与设置',
+            groupMore: '更多服务',
+            gpu: 'GPU 租赁',
+            topUp: '充值',
+            mobileAria: '移动导航',
+        },
         shell: { skip: '跳到主要内容', open: '打开导航', workspace: '工作台' },
         locale: {
             switcherLabel: '语言',
@@ -19,7 +28,8 @@ export const commonMessages = defineMessages(
             en: 'EN',
         },
         nav: {
-            home: '首页', back: '返回',
+            home: '首页',
+            back: '返回',
             backHome: '返回首页',
             backToSite: `返回 ${BRAND_NAME}`,
             console: '进入控制台',
@@ -40,7 +50,8 @@ export const commonMessages = defineMessages(
             footerAria: '页脚导航',
         },
         footer: {
-            wechat: '微信', terms: '服务条款',
+            wechat: '微信',
+            terms: '服务条款',
             privacy: '隐私政策',
             refund: '退款政策',
             supportWechat: '客服:微信',
@@ -50,7 +61,9 @@ export const commonMessages = defineMessages(
             email: '邮箱',
         },
         auth: {
-            logout: '退出', logoutLabel: '退出登录', loggingOutLabel: '正在退出登录',
+            logout: '退出',
+            logoutLabel: '退出登录',
+            loggingOutLabel: '正在退出登录',
             loggingOut: '退出中…',
             unverified: '邮箱未验证,部分功能受限。',
             verificationSent: '验证邮件已发送,请查收 ✓',
@@ -81,15 +94,13 @@ export const commonMessages = defineMessages(
         },
         docs: {
             pageTitle: `集成文档 — ${BRAND_NAME}`,
-            pageDescription:
-                `${BRAND_NAME} 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex(CLI / IDE 插件 / 桌面 app)、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。`,
+            pageDescription: `${BRAND_NAME} 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex(CLI / IDE 插件 / 桌面 app)、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。`,
             languageNotice:
                 'Integration docs are currently in Chinese. Base URLs, model names and code samples are language-independent — an English edition is in progress.',
         },
         models: {
             pageTitle: `模型广场 — ${BRAND_NAME}`,
-            pageDescription:
-                `${BRAND_NAME} 当前接入的全部模型:按供应商 / 分组 / 类型 / 标签筛选,对比价格、端点与近 24 小时可用性。`,
+            pageDescription: `${BRAND_NAME} 当前接入的全部模型:按供应商 / 分组 / 类型 / 标签筛选,对比价格、端点与近 24 小时可用性。`,
         },
     },
     {
@@ -97,7 +108,16 @@ export const commonMessages = defineMessages(
             tagline: 'One route. Every model.',
             siteDescription: 'One route. Every model.',
         },
-        sidebar: { navigation: 'Navigation', close: 'Close navigation', groupWorkspace: 'Workspace', groupResources: 'Resources & settings', groupMore: 'More services', gpu: 'GPU rental', topUp: 'Top up', mobileAria: 'Mobile navigation' },
+        sidebar: {
+            navigation: 'Navigation',
+            close: 'Close navigation',
+            groupWorkspace: 'Workspace',
+            groupResources: 'Resources & settings',
+            groupMore: 'More services',
+            gpu: 'GPU rental',
+            topUp: 'Top up',
+            mobileAria: 'Mobile navigation',
+        },
         shell: { skip: 'Skip to main content', open: 'Open navigation', workspace: 'Workspace' },
         locale: {
             switcherLabel: 'Language',
@@ -105,7 +125,8 @@ export const commonMessages = defineMessages(
             en: 'EN',
         },
         nav: {
-            home: 'Home', back: 'Back',
+            home: 'Home',
+            back: 'Back',
             backHome: 'Back to home',
             backToSite: `Back to ${BRAND_NAME}`,
             console: 'Open console',
@@ -126,7 +147,8 @@ export const commonMessages = defineMessages(
             footerAria: 'Footer navigation',
         },
         footer: {
-            wechat: 'WeChat', terms: 'Terms of Service',
+            wechat: 'WeChat',
+            terms: 'Terms of Service',
             privacy: 'Privacy Policy',
             refund: 'Refund Policy',
             supportWechat: 'Support: WeChat',
@@ -136,7 +158,9 @@ export const commonMessages = defineMessages(
             email: 'Email',
         },
         auth: {
-            logout: 'Log out', logoutLabel: 'Log out', loggingOutLabel: 'Logging out',
+            logout: 'Log out',
+            logoutLabel: 'Log out',
+            loggingOutLabel: 'Logging out',
             loggingOut: 'Logging out…',
             unverified: 'Email not verified — some features are limited.',
             verificationSent: 'Verification email sent, please check your inbox ✓',
@@ -167,15 +191,13 @@ export const commonMessages = defineMessages(
         },
         docs: {
             pageTitle: `Integration Docs — ${BRAND_NAME}`,
-            pageDescription:
-                `Connect Cursor, Cline, Continue, Claude Code, OpenAI Codex (CLI / IDE / desktop) and the Python / Node SDKs to ${BRAND_NAME}. OpenAI- and Anthropic-compatible — set up in 5 minutes.`,
+            pageDescription: `Connect Cursor, Cline, Continue, Claude Code, OpenAI Codex (CLI / IDE / desktop) and the Python / Node SDKs to ${BRAND_NAME}. OpenAI- and Anthropic-compatible — set up in 5 minutes.`,
             languageNotice:
                 'Integration docs are currently in Chinese. Base URLs, model names and code samples are language-independent — an English edition is in progress.',
         },
         models: {
             pageTitle: `Model Plaza — ${BRAND_NAME}`,
-            pageDescription:
-                `Every model available on ${BRAND_NAME}: filter by vendor, group, type and tag; compare prices, endpoints and 24-hour availability.`,
+            pageDescription: `Every model available on ${BRAND_NAME}: filter by vendor, group, type and tag; compare prices, endpoints and 24-hour availability.`,
         },
     },
 );

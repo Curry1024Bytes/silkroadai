@@ -15,7 +15,10 @@ import {
     Wrench,
 } from 'lucide-react';
 
-export async function generateMetadata(): Promise<Metadata> { const m = pickMessages(toolsMessages, await getLocale()).index; return { title: m.metaTitle, description: m.metaDescription }; }
+export async function generateMetadata(): Promise<Metadata> {
+    const m = pickMessages(toolsMessages, await getLocale()).index;
+    return { title: m.metaTitle, description: m.metaDescription };
+}
 
 interface ToolItem {
     icon: LucideIcon;
@@ -27,56 +30,53 @@ interface ToolItem {
 
 export default async function ToolsIndexPage() {
     const m = pickMessages(toolsMessages, await getLocale()).index;
-const ONLINE_TOOLS: ToolItem[] = [
-    {
-        icon: Clapperboard,
-        title: m.seedance.title,
-        description: m.seedance.description,
-        href: '/tools/seedance',
-        action: m.seedance.action,
-    },
-    {
-        icon: MessageSquareText,
-        title: m.chat.title,
-        description: m.chat.description,
-        href: '/tools/chat',
-        action: m.chat.action,
-    },
-    {
-        icon: ImageIcon,
-        title: m.image.title,
-        description: m.image.description,
-        href: '/tools/image',
-        action: m.image.action,
-    },
-];
+    const ONLINE_TOOLS: ToolItem[] = [
+        {
+            icon: Clapperboard,
+            title: m.seedance.title,
+            description: m.seedance.description,
+            href: '/tools/seedance',
+            action: m.seedance.action,
+        },
+        {
+            icon: MessageSquareText,
+            title: m.chat.title,
+            description: m.chat.description,
+            href: '/tools/chat',
+            action: m.chat.action,
+        },
+        {
+            icon: ImageIcon,
+            title: m.image.title,
+            description: m.image.description,
+            href: '/tools/image',
+            action: m.image.action,
+        },
+    ];
 
-const INTEGRATIONS: ToolItem[] = [
-    {
-        icon: TerminalSquare,
-        title: m.codex.title,
-        description: m.codex.description,
-        href: '/workspace/docs#codex-cli',
-        action: m.viewGuide,
-    },
-    {
-        icon: Bot,
-        title: m.claudeCode.title,
-        description: m.claudeCode.description,
-        href: '/workspace/docs#claude-code',
-        action: m.viewGuide,
-    },
-];
-
+    const INTEGRATIONS: ToolItem[] = [
+        {
+            icon: TerminalSquare,
+            title: m.codex.title,
+            description: m.codex.description,
+            href: '/workspace/docs#codex-cli',
+            action: m.viewGuide,
+        },
+        {
+            icon: Bot,
+            title: m.claudeCode.title,
+            description: m.claudeCode.description,
+            href: '/workspace/docs#claude-code',
+            action: m.viewGuide,
+        },
+    ];
 
     return (
         <section className="space-y-8">
             <div>
                 <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">TOOLKIT</p>
                 <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">{m.title}</h1>
-                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                    {m.intro}
-                </p>
+                <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">{m.intro}</p>
             </div>
 
             <section aria-labelledby="online-tools-heading">

@@ -50,8 +50,6 @@ function MetricCell({
     );
 }
 
-
-
 export async function PortalBalance({ data, locale = 'zh' }: { data: Promise<BalanceData>; locale?: Locale }) {
     const m = pickMessages(dashboardMessages, locale);
     const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
@@ -97,7 +95,15 @@ export async function PortalBalance({ data, locale = 'zh' }: { data: Promise<Bal
         </article>
     );
 }
-export async function PortalUsageStats({ data, periodLabel, locale = 'zh' }: { data: Promise<UsageData>; periodLabel: string; locale?: Locale }) {
+export async function PortalUsageStats({
+    data,
+    periodLabel,
+    locale = 'zh',
+}: {
+    data: Promise<UsageData>;
+    periodLabel: string;
+    locale?: Locale;
+}) {
     const m = pickMessages(dashboardMessages, locale);
     const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
     const { agg } = await data;
@@ -129,7 +135,12 @@ export async function PortalUsageStats({ data, periodLabel, locale = 'zh' }: { d
                 value={calls ? <CompactValue value={calls} /> : NO_DATA}
                 detail={
                     <>
-                        {calls?.compact && <>{calls.exact}{m.cards.requestsSep}</>}
+                        {calls?.compact && (
+                            <>
+                                {calls.exact}
+                                {m.cards.requestsSep}
+                            </>
+                        )}
                         {periodLabel}
                     </>
                 }
@@ -150,7 +161,15 @@ export async function PortalUsageStats({ data, periodLabel, locale = 'zh' }: { d
         </div>
     );
 }
-export async function PortalUsageBody({ data, periodLabel, locale = 'zh' }: { data: Promise<UsageData>; periodLabel: string; locale?: Locale }) {
+export async function PortalUsageBody({
+    data,
+    periodLabel,
+    locale = 'zh',
+}: {
+    data: Promise<UsageData>;
+    periodLabel: string;
+    locale?: Locale;
+}) {
     const m = pickMessages(dashboardMessages, locale);
     const NO_DATA = <span className="text-base font-medium text-portal-subtle">{m.cards.noData}</span>;
     const { agg, usageErr, calls } = await data;
@@ -197,8 +216,12 @@ export async function PortalUsageBody({ data, periodLabel, locale = 'zh' }: { da
                 <aside className="rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-3">
                         <div>
-                            <h2 className="m-0 font-display text-base font-semibold text-portal-ink">{m.portal.topModels}</h2>
-                            <p className="m-0 mt-1 text-xs text-portal-subtle">{m.portal.topHint} · {periodLabel}</p>
+                            <h2 className="m-0 font-display text-base font-semibold text-portal-ink">
+                                {m.portal.topModels}
+                            </h2>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">
+                                {m.portal.topHint} · {periodLabel}
+                            </p>
                         </div>
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
                             <Activity size={17} strokeWidth={1.8} aria-hidden="true" />
