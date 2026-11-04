@@ -15,6 +15,7 @@
 import 'server-only';
 import { toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 import { fetchSvcinfArkTaskId, isSvcinfTaskId, type SvcinfConfig } from './svcinf-client';
+import { fetchKuaiziVendorTaskId, isKuaiziTaskId, type KuaiziConfig } from './kuaizi-adapter';
 
 export class DraftTaskError extends Error {}
 
@@ -87,6 +88,45 @@ export async function resolveDraftTaskArkId(
     }
     if (!r.arkId) {
         console.warn(`[${log}] draft task has no ark id in metadata`, { clientDraftId, upstreamId });
+        return { ok: false, status: 502, code: 'upstream_error', message: '样片任务缺少上游任务号,无法出正片' };
+    }
+    return { ok: true, arkId: r.arkId };
+}
+
+/**
+ * 筷子线的同一件事(2026-11-04 换回筷子):客户样片号 → 筷子受理号(kz-cgt-)→ 轮询体 `vendor_task_id`(方舟真号)。
+ * 映射到 svcinf(mvt-)的样片不能在筷子出正片(两家账号不同,方舟侧任务不互通)→ 400 指引重出样片。
+ */
+export async function resolveDraftTaskArkIdKuaizi(
+    cfg: KuaiziConfig,
+    clientDraftId: string,
+    log: string,
+): Promise<DraftTaskResolve> {
+    const { upstreamId } = await toUpstreamTask(clientDraftId);
+    if (!isKuaiziTaskId(upstreamId)) {
+        return {
+            ok: false,
+            status: 400,
+            code: 'invalid_request',
+            message: isSvcinfTaskId(upstreamId)
+                ? `样片任务 ${clientDraftId} 建在上一代渠道线上,当前线无法据此出正片 —— 请重新生成样片(draft:true)后再出正片`
+                : `draft_task.id ${clientDraftId} 不是可出正片的样片任务(需 doubao-seedance-2-5 且 draft:true 生成)`,
+        };
+    }
+    const r = await fetchKuaiziVendorTaskId(cfg, upstreamId, log);
+    if (!r.ok) {
+        return { ok: false, status: 502, code: 'upstream_unreachable', message: '样片任务查询失败,请稍后重试' };
+    }
+    if (r.status !== 'completed') {
+        return {
+            ok: false,
+            status: 400,
+            code: 'invalid_request',
+            message: `样片任务 ${clientDraftId} 尚未完成(当前 ${r.status || 'unknown'}),完成后再出正片`,
+        };
+    }
+    if (!r.arkId) {
+        console.warn(`[${log}] kuaizi draft task has no ark vendor id`, { clientDraftId, upstreamId });
         return { ok: false, status: 502, code: 'upstream_error', message: '样片任务缺少上游任务号,无法出正片' };
     }
     return { ok: true, arkId: r.arkId };

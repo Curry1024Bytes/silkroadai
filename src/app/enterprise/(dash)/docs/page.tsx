@@ -680,11 +680,6 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
             </Section>
 
             <Section id="realperson" title="6. 火山渠道 · 真人视觉认证">
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    <b>服务暂停中(2026-09-22 起)</b> —— 真人活体认证暂不可用,两个 Action 会返回{' '}
-                    <Code>503 ServiceUnavailable</Code>;含真人人脸的参考素材当前会被上游拒绝。恢复时间另行通知,
-                    以下内容保留供恢复后参考。
-                </div>
                 <p>
                     在 AIGC 视频里使用<b>真人的脸</b>时,火山要求先由本人完成一次<b>活体认证授权</b>(合规,无法绕过)。
                     火山渠道专属,采用 AK/SK 签名(Action 形态),两步:

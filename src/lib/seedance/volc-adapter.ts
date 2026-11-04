@@ -1,5 +1,10 @@
 /**
- * 「火山」渠道视频适配器 —— 上游 = service-inference.ai `/v2` doubao-sd-max 线(2026-09-22 换上游)。
+ * 「火山」渠道视频适配器 —— 对 proxy 的门面(submit / poll / cancel + 档位表),上游按 provider 分发:
+ *   2026-11-04 起缺省 **筷子**(kuaizi-adapter.ts,operator 决定换回);env `ENTERPRISE_VOLC_PROVIDER=svcinf`
+ *   切回 service-inference.ai `/v2`(svcinf-client.ts)。轮询按映射表上游号前缀分流,两家历史任务都能查。
+ *   下面这段头注是 service-inference.ai 线(2026-09-22 ~ 11-04)的实测记录,仍然有效,保留。
+ *
+ * 上游 = service-inference.ai `/v2` doubao-sd-max 线(2026-09-22 换上游)。
  *
  * 历史:volc 渠道先后走过 new-api 形 provider(727 系)→ 筷子开放平台(2026-08-17,kuaizi-adapter.ts,
  * 已删)。与筷子合作终止后换到 service-inference.ai:
@@ -46,12 +51,29 @@ import { rememberVolcId, toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 import {
     SVCINF_DEFAULT_BASE,
     SVCINF_KEY_PREFIX,
+    isSvcinfTaskId,
     makeArkTaskId,
     pollSvcinfTask,
     submitSvcinfTask,
+    type SvcinfApiVersion,
     type SvcinfConfig,
 } from './svcinf-client';
-import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId, rewriteDraftTaskId } from './draft-task';
+import {
+    getKuaiziConfig,
+    isKuaiziKey,
+    KUAIZI_KEY_PREFIX,
+    KUAIZI_TASK_ID_PREFIX,
+    pollKuaiziTask,
+    submitKuaiziTask,
+    type KuaiziConfig,
+} from './kuaizi-adapter';
+import {
+    DraftTaskError,
+    extractDraftTaskRef,
+    resolveDraftTaskArkId,
+    resolveDraftTaskArkIdKuaizi,
+    rewriteDraftTaskId,
+} from './draft-task';
 
 // 提交/轮询信封、错误拆包、失败原因脱敏 → svcinf-client.ts(cn 2.5 480p 单档也用同一上游,2026-09-22 抽出)。
 export { unwrapUpstreamError } from './svcinf-client';
@@ -67,7 +89,19 @@ function err(status: number, code: string, message: string, category?: string) {
     );
 }
 
-/** 火山渠道走 `/v2`(直传 URL 素材经 preparing 自动上传 + 支持预传句柄)。 */
+/**
+ * 火山渠道【提交】走哪家上游(2026-11-04 起 env 可选):
+ *  - `kuaizi`(缺省):筷子 AI 开放平台(kuaizi-adapter.ts)—— operator 2026-11-04 决定换回。
+ *  - `svcinf`:service-inference.ai /v2(svcinf-client.ts)—— 2026-09-22 ~ 11-04 用的那家,代码保留。
+ * 【轮询】不看这个开关,按 volc_id_map 里上游号前缀分流(kz-cgt- → 筷子;mvt- → svcinf),所以两家的
+ * 历史任务都能查、切换时在途任务不会孤儿化(2026-09-27 切 svcinf v1→v2 时吃过这个亏)。
+ */
+export type VolcProvider = 'kuaizi' | 'svcinf';
+export function volcProvider(): VolcProvider {
+    return process.env.ENTERPRISE_VOLC_PROVIDER?.trim().toLowerCase() === 'svcinf' ? 'svcinf' : 'kuaizi';
+}
+
+/** service-inference.ai 线配置(/v2:直传 URL 素材经 preparing 自动上传 + 支持预传句柄)。 */
 export function getVolcUpstreamConfig(overrideKey?: string): SvcinfConfig | null {
     const key = overrideKey || process.env.ENTERPRISE_VOLC_UPSTREAM_KEY;
     if (!key) return null;
@@ -78,9 +112,27 @@ export function getVolcUpstreamConfig(overrideKey?: string): SvcinfConfig | null
     };
 }
 
-/** 客户 upstream key 行里存的是真实上游 key 还是占位符?(占位 = 走平台 env key) */
+/** 客户 upstream key 行里存的是真实上游 key 还是占位符?(占位 = 走平台 env key)
+ *  两家的 key 形态都认(kz- 筷子 / sk-inf- svcinf);真正用哪把由对应 provider 自己按前缀挑(见 keyFor)。 */
 export function customerVolcUpstreamKey(upstreamKey: string | undefined | null): string | undefined {
-    return upstreamKey?.startsWith(SVCINF_KEY_PREFIX) ? upstreamKey : undefined;
+    if (!upstreamKey) return undefined;
+    return upstreamKey.startsWith(KUAIZI_KEY_PREFIX) || upstreamKey.startsWith(SVCINF_KEY_PREFIX)
+        ? upstreamKey
+        : undefined;
+}
+
+/** 客户自带 key 只在形态与该 provider 匹配时才用,否则回落平台 env key。 */
+function keyFor(provider: VolcProvider, customerKey?: string): string | undefined {
+    if (!customerKey) return undefined;
+    if (provider === 'kuaizi') return isKuaiziKey(customerKey) ? customerKey : undefined;
+    return customerKey.startsWith(SVCINF_KEY_PREFIX) ? customerKey : undefined;
+}
+
+/** 对客 cgt-X → 筷子 kz-cgt-X:映射表查不到的远古任务(2026-08 筷子第一期)兜底还原。 */
+function undisguiseKuaiziId(clientId: string): string {
+    return clientId.startsWith('cgt-') && !clientId.startsWith(KUAIZI_TASK_ID_PREFIX)
+        ? KUAIZI_TASK_ID_PREFIX + clientId.slice('cgt-'.length)
+        : clientId;
 }
 
 /** 火山官方输出宽高比枚举(上游同集);非法值回落 16:9(v1 面宽松语义,ark 面 proxy 已前置 400)。 */
@@ -223,11 +275,16 @@ export interface VolcSubmitOptions {
  * 返回归一形 {id, task_id, model, status} 供 proxy.handleSubmit 记账 —— id 已是 cgt- 形。
  */
 export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcSubmitOptions): Promise<NextResponse> {
-    const cfg = getVolcUpstreamConfig(opts.upstreamKey);
-    if (!cfg) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
+    const provider = volcProvider();
+    const svcCfg: SvcinfConfig | null =
+        provider === 'svcinf' ? getVolcUpstreamConfig(keyFor('svcinf', opts.upstreamKey)) : null;
+    const kzCfg: KuaiziConfig | null =
+        provider === 'kuaizi' ? getKuaiziConfig(keyFor('kuaizi', opts.upstreamKey)) : null;
+    if (!svcCfg && !kzCfg) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
 
     const spec = VOLC_MODELS[opts.clientModel];
-    const upstreamModel = upstreamModelName(opts.clientModel);
+    // 筷子收火山方舟官方 Model ID;service-inference.ai 收套餐形态(-max)。
+    const upstreamModel = provider === 'kuaizi' ? spec?.upstream : upstreamModelName(opts.clientModel);
     if (!spec || !upstreamModel) return err(400, 'model_not_found', `unknown model: ${opts.clientModel}`);
     // 兜底(主闸在 proxy 的 resolveEnterpriseModel):下架档位不打上游,避免白花钱。
     if (isVolcModelWithdrawn(opts.clientModel)) return err(400, 'model_unavailable', WITHDRAWN_VOLC_HINT);
@@ -243,7 +300,10 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
         throw e;
     }
     if (draftRef) {
-        const r = await resolveDraftTaskArkId(cfg, draftRef.id, LOG);
+        // 样片在哪家建的就去哪家取方舟真号(按映射表上游号前缀判,与提交 provider 无关)。
+        const r = kzCfg
+            ? await resolveDraftTaskArkIdKuaizi(kzCfg, draftRef.id, LOG)
+            : await resolveDraftTaskArkId(svcCfg as SvcinfConfig, draftRef.id, LOG);
         if (!r.ok) return err(r.status, r.code, r.message);
         content = rewriteDraftTaskId(content, r.arkId);
     }
@@ -301,14 +361,24 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
     }
     if (extras.length) console.log('[volc-adapter] 透传客户额外字段', { fields: extras });
 
-    const r = await submitSvcinfTask(cfg, upstreamBody, { log: LOG, errType: ERR_TYPE, model: opts.clientModel });
-    if (!r.ok) return r.res;
-    const taskId = r.taskId;
-    // 对客 id = 我们【即时自造】的火山方舟形任务号;上游受理号(mvt-…)是唯一可轮询句柄,
-    // 存映射供轮询换回去打上游。方舟真号在轮询响应 metadata.id 里,只落日志供内部对账。
+    const tag = { log: LOG, errType: ERR_TYPE, model: opts.clientModel };
+    let taskId: string;
+    // svcinf 要记 API 版本(/v1 与 /v2 任务互不可见,轮询按创建版本打);筷子无此概念。
+    let apiVersion: SvcinfApiVersion | undefined;
+    if (kzCfg) {
+        const r = await submitKuaiziTask(kzCfg, upstreamBody, tag);
+        if (!r.ok) return r.res;
+        taskId = r.taskId;
+    } else {
+        const r = await submitSvcinfTask(svcCfg as SvcinfConfig, upstreamBody, tag);
+        if (!r.ok) return r.res;
+        taskId = r.taskId;
+        apiVersion = r.api;
+    }
+    // 对客 id = 我们【即时自造】的火山方舟形任务号;上游受理号(kz-cgt-… / mvt-…)是唯一可轮询句柄,
+    // 存映射供轮询按前缀分流换回去打上游。方舟真号(vendor_task_id / metadata.id)只落日志供内部对账。
     const clientTaskId = makeArkTaskId();
-    // 记下所用 API 版本(/v1 与 /v2 任务互不可见,轮询按创建版本打)。
-    await rememberVolcId(clientTaskId, taskId, 'task', undefined, r.api);
+    await rememberVolcId(clientTaskId, taskId, 'task', undefined, apiVersion);
     return NextResponse.json(
         {
             id: clientTaskId,
@@ -328,20 +398,22 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
  * (宽进 —— 上游本来就 404,由报错分支如实返回)。
  */
 export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<NextResponse> {
-    const cfg = getVolcUpstreamConfig(upstreamKey);
-    if (!cfg) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
     const mapped = await toUpstreamTask(id);
-    // 火山渠道自上线起恒 /v2(cfg.api 固定),存量无版本行也一定是 /v2 建的 → 钉死版本,404 不回退 /v1 白打一次。
-    return pollSvcinfTask(
-        cfg,
-        id,
-        mapped.upstreamId,
-        { log: LOG, errType: ERR_TYPE },
-        { apiVersion: mapped.apiVersion ?? cfg.api },
-    );
+    const tag = { log: LOG, errType: ERR_TYPE };
+    // 按上游号前缀分流(不看提交 provider 开关):mvt- = service-inference.ai 建的;其余 = 筷子
+    // (kz-cgt-;映射表查不到的远古任务按 cgt-X → kz-cgt-X 兜底)。
+    if (isSvcinfTaskId(mapped.upstreamId)) {
+        const cfg = getVolcUpstreamConfig(keyFor('svcinf', upstreamKey));
+        if (!cfg) return err(503, 'temporarily_unavailable', '火山渠道(service-inference.ai 线)未配置,请联系服务方');
+        // svcinf 线自上线起恒 /v2(cfg.api 固定),存量无版本行也一定是 /v2 建的 → 钉死版本,404 不回退 /v1 白打一次。
+        return pollSvcinfTask(cfg, id, mapped.upstreamId, tag, { apiVersion: mapped.apiVersion ?? cfg.api });
+    }
+    const kz = getKuaiziConfig(keyFor('kuaizi', upstreamKey));
+    if (!kz) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
+    return pollKuaiziTask(kz, id, undisguiseKuaiziId(mapped.upstreamId), tag);
 }
 
-/** 取消任务:上游【无取消/删除端点】(文档只有建/查/列三条)。
+/** 取消任务:两家上游都【无取消/删除端点】。
  *  返回 null = 不支持 —— proxy 侧 best-effort,不阻断客户删除本地任务记录。 */
 export async function cancelVolcVideo(_id: string): Promise<Response | null> {
     return null;

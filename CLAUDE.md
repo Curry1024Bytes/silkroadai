@@ -279,6 +279,15 @@ silkroadai/
     - **部署实录(server1 seedance-portal×3,operator 指定不动 server2)**:temp-DB `mig_check_promax` 从零回放 74 条 migration ✓ → prod `migrate deploy`(ADD COLUMN 可空;存量 41,237 条 task 映射行 api_version=NULL 走 404 回退)→ `.env.bak-promax-svcinf-20261015` + 追加 `SEEDANCE_SVCINF_PROMAX_KEY` → `git pull` 到 `12ac618` + build 三镜像 → 逐个 `up -d --no-deps` 滚动(健康探针用 `/v1/models` 200,**不是 401** —— 该端点公开)。新 key `GET /v1/models` 实测返回恰好四个 `-max` 名,与代码缺省一致,无需模型名 env。
     - **真金 smoke(throwaway `smoke-promax-svcinf-20261015@…`,测后已软删)**:promax fast 传 1080p → 400 门仍在;`seedance-2-0-promax` 720p 5s t2v → `cgt-20261015134837-2kygt`(映射 `mvt-5e85…` / `api_version=v2`),180s completed,成片 `ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com`(BytePlus 真方舟),usage 108,900 → **扣 ¥7.4052 = 108900/1e6×68 精确**(discount 1),余额 12 → 4.5948,重复轮询不二次扣费;响应无 `mvt-` 泄露。**客户 promax 行仍需存在**(proxy 以它判 region 开通;行里的 artsmcp key 不再发给上游)。待 operator:`SEEDANCE_INTL_BASE_URL`/artsmcp key 退役时机(global 区仍用);新上游成本(USD/token,pro 480p/720p 5.81e-6 ≈ ¥41.8/M @7.2)vs 挂牌 ¥68 的毛利自行复核。
 
+### 企业门户「火山」渠道换回筷子(2026-11-04,provider 开关)
+
+- [x] 分支 `feat/volc-back-to-kuaizi` — operator 2026-11-04 决定 volc 线换回筷子(key 复核两面都有效,老素材组还在)。**不删 svcinf 代码,做成 provider 开关**:`ENTERPRISE_VOLC_PROVIDER`(缺省 `kuaizi`,置 `svcinf` 切回 service-inference.ai)只管【提交】;【轮询 / 取消 / 样片真号】按 `volc_id_map` 上游号前缀分流(`kz-cgt-` → 筷子,`mvt-` → svcinf,查不到映射的远古 `cgt-X` 按 `kz-cgt-X` 兜底)→ 两家历史任务都能查,切换不会孤儿化在途任务(09-27 切 svcinf v1→v2 的教训)。
+    - 新 `src/lib/seedance/kuaizi-adapter.ts`(从 `02426af` 取回并对齐新结构):`submitKuaiziTask` / `pollKuaiziTask` / `fetchKuaiziVendorTaskId`,归一形与 svcinf-client 一致(含 2026-09 官方新字段透出位);`volc-adapter.ts` 仍是 proxy 门面,筷子收方舟官方 Model ID(不带 `-max`),svcinf 收 `-max`。客户自带 key 两家形态都认(`kz-` / `sk-inf-`),只在与 provider 匹配时用。样片出正片在筷子线取 `vendor_task_id` 当方舟真号(`resolveDraftTaskArkIdKuaizi`);svcinf 时代的样片在筷子线出正片 → 400 指引重出。
+    - **素材库维持平台库(方案 A,operator 拍板)**:切换以来 volc 客户已在平台库建 407 素材 / 30 天 3869 次调用;生成时 `asset://` → R2 直链发筷子,筷子透传方舟。筷子私域素材库(`kuaizi-assets.ts`)**不**取回。
+    - **真人活体恢复**:代码一直在,生产置 `ENTERPRISE_REALPERSON_ENABLED=1`(走 `ENTERPRISE_KUAIZI_KEY`);docs 页「暂停」横幅撤掉。09-22 后仍有 7 次客户调用。
+    - ⚠️ 筷子时代 fast/mini 曾漂到非方舟渠道(`vendor_task_id` 返 `tsk-`),轮询日志仍打 `ark:` 标志;复发时用 `ENTERPRISE_VOLC_WITHDRAWN_MODELS` 下架,不必发版。
+    - 部署面:server1 seedance-portal×3 + `deploy-enterprise-replicas.sh`(server2×2 / server3×2),三台 env 都要有 `ENTERPRISE_KUAIZI_KEY`。
+
 ### 企业门户「火山」渠道换上游 → service-inference.ai(2026-09-22,筷子合作终止)
 
 - [x] 分支 `feat/enterprise-volc-svcinf`(worktree `silkroadai-volc-svcinf`)— volc region 上游从筷子换成 **service-inference.ai `/v2` doubao-sd-max 线**(`POST /v2/video/generate` / `GET /v2/video/tasks/{id}`,Bearer `sk-inf-v1-…`)。真金实测四档(pro/fast/mini/2.5)**全落真火山方舟**(`task.metadata` 即方舟原生任务体,`id: cgt-…`、成片 ark-acg-cn-beijing TOS 直链、token 数与筷子逐字一致 fast 480p 4s=40594)→ **fast/mini 恢复在售**(下架改 env `ENTERPRISE_VOLC_WITHDRAWN_MODELS`);fast/mini 仅 480p/720p(1080p 实测 400)。**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。

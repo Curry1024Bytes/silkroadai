@@ -15,9 +15,14 @@ import {
 import { rememberVolcId, toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 
 // 映射表只是翻译层,单测里 stub 掉 —— 本文件验的是适配器契约,不是持久化。
+// 2026-11-04 起轮询按上游号前缀分流(mvt- → svcinf;其余 → 筷子):本文件验 svcinf 线,
+// 缺省把对客号映射成 mvt- 形;需要别的映射的用例自行 mockResolvedValue。
 vi.mock('@/lib/enterprise/volc-id-map', () => ({
     rememberVolcId: vi.fn(async () => {}),
-    toUpstreamTask: vi.fn(async (id: string) => ({ upstreamId: id, apiVersion: null })),
+    toUpstreamTask: vi.fn(async (id: string) => ({
+        upstreamId: id.startsWith('mvt-') ? id : `mvt-${id}`,
+        apiVersion: null,
+    })),
 }));
 
 const BASE = 'http://svcinf.test';
@@ -30,6 +35,8 @@ beforeEach(() => {
     process.env.ENTERPRISE_VOLC_UPSTREAM_KEY = KEY;
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    // 2026-11-04 起缺省 provider 是筷子;本文件验的是 service-inference.ai 线,显式切过去。
+    vi.stubEnv('ENTERPRISE_VOLC_PROVIDER', 'svcinf');
 });
 afterEach(() => {
     delete process.env.ENTERPRISE_VOLC_UPSTREAM_BASE_URL;
@@ -288,11 +295,18 @@ describe('submitVolcVideo', () => {
         });
     });
 
-    it('customerVolcUpstreamKey:sk-inf- 前缀才算客户真 key,占位符 / 旧筷子 kz- key 一律 undefined(回落 env)', () => {
+    it('customerVolcUpstreamKey:sk-inf- / kz- 两家 key 形态都认,占位符一律 undefined(回落 env)', () => {
         expect(customerVolcUpstreamKey('sk-inf-v1-real')).toBe('sk-inf-v1-real');
-        for (const v of ['kz-old-kuaizi-key', 'platform-env-key', 'placeholder-volc', '', null, undefined]) {
+        expect(customerVolcUpstreamKey('kz-customer-own')).toBe('kz-customer-own');
+        for (const v of ['platform-env-key', 'placeholder-volc', '', null, undefined]) {
             expect(customerVolcUpstreamKey(v)).toBeUndefined();
         }
+    });
+
+    it('svcinf provider 下客户的 kz- key 不会被当成 svcinf key(回落平台 sk-inf env key)', async () => {
+        const fetchMock = mockSubmit();
+        await submitVolcVideo({ prompt: 'x' }, opts({ upstreamKey: 'kz-customer-own' }));
+        expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${KEY}` });
     });
 
     it('写映射表:自造对客号 → 上游 mvt- 受理号(轮询时换回打上游)', async () => {
