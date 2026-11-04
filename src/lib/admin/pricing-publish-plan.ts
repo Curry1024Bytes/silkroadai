@@ -2,7 +2,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { CHAT_FX, IMAGE_FX, computeRatios } from '@/lib/newapi/pricing-sync';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
-import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
+import { readSyncPrice, syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
 import { ChannelGroupTopology, type UpstreamMapLike } from '@/lib/channel-group-topology';
 import { canonicalSync } from './newapi-sync-plan';
 import type { SyncChannel } from './newapi-sync-source';
@@ -295,17 +295,17 @@ export function buildPublishPlan(
         throw new PricingPublishError('pricing_group_invalid', '该档次的 new-api 分组倍率缺失或无效。');
     }
     const modes = dictionary(source.options['billing_setting.billing_mode'], 'billing_setting.billing_mode');
-    const discounts = optionalBillingDictionary(source, 'billing_setting.scheduled_discount');
     const resolution = optionalBillingDictionary(source, 'ImageResolutionPrice');
-    const discount = discounts[name];
+    // Preserve the legacy validation contract: a missing optional key is acceptable,
+    // but an explicitly present malformed scheduled-discount value must fail early.
+    optionalBillingDictionary(source, 'billing_setting.scheduled_discount');
     if (
         (modes[name] != null && modes[name] !== '' && modes[name] !== 'standard' && modes[name] !== 'ratio') ||
-        Object.hasOwn(resolution, name) ||
-        (discount && typeof discount === 'object' && 'enabled' in discount && discount.enabled === true)
+        Object.hasOwn(resolution, name)
     ) {
         throw new PricingPublishError(
             'pricing_special_rule',
-            '该模型存在阶梯、分辨率或定时折扣规则，无法用普通目录价完整表达，请先在 new-api 核对。',
+            '该模型存在阶梯或分辨率规则，无法用普通目录价完整表达，请先在 new-api 核对。',
         );
     }
     let target: PublishPlan['target'];
@@ -402,6 +402,7 @@ export function buildPublishPlan(
             )[0];
             const calculated = readSyncPrice(
                 {
+                    ...syncPricesFromOptions(source.options),
                     modelRatio: next.ModelRatio,
                     completionRatio: next.CompletionRatio,
                     modelPrice: next.ModelPrice,
@@ -425,6 +426,9 @@ export function buildPublishPlan(
                       }
                     : null,
                 after: calculated.price,
+                ...(calculated.price.billing_details
+                    ? { after_billing_details: calculated.price.billing_details }
+                    : {}),
                 cost_cny_per_1m:
                     linked.id === input.model_id && tier === input.tier
                         ? input.cost_cny_per_1m

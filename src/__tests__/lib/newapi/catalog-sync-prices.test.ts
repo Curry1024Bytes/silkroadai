@@ -53,6 +53,38 @@ describe('readSyncPrice from global new-api options', () => {
         });
     });
 
+    it('keeps a scheduled discount on ordinary per-request prices', () => {
+        const result = readSyncPrice(
+            fixture({
+                modelPrice: { 'gpt-5.4': 0.12 },
+                scheduledDiscount: {
+                    'gpt-5.4': {
+                        enabled: true,
+                        start: '23:00',
+                        end: '07:00',
+                        discount: 0.36,
+                    },
+                },
+            }),
+            'gpt-5.4',
+            '企业级',
+        );
+        expect(result.price).toMatchObject({
+            per_image_cny: rounded(0.12 * IMAGE_FX * 1.5),
+            billing_details: {
+                mode: 'media',
+                unit: 'cny_per_request',
+                default_price: rounded(0.12 * IMAGE_FX * 1.5),
+                scheduled_discount: {
+                    start: '23:00',
+                    end: '07:00',
+                    timezone: 'Asia/Shanghai',
+                    multiplier: 0.36,
+                },
+            },
+        });
+    });
+
     it('does not require token ratios for a valid fixed request price', () => {
         const result = readSyncPrice(
             fixture({ modelPrice: { 'gpt-image-2': 0.25 }, modelRatio: null, completionRatio: '{bad' }),

@@ -13,14 +13,42 @@ const resolution = z
     .min(1)
     .max(64)
     .regex(/^[\w.-]+$/);
-const discount = z
+const clock = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+const weekdays = z
+    .array(z.number().int().min(1).max(7))
+    .max(7)
+    .superRefine((values, context) => {
+        if (new Set(values).size !== values.length) context.addIssue({ code: 'custom', message: 'Duplicate weekdays' });
+    });
+const discountWindow = z
     .object({
-        start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
-        end: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+        start: clock,
+        end: clock,
         timezone: z.literal('Asia/Shanghai'),
         multiplier: rate.max(1),
+        weekdays: weekdays.optional(),
+        priority: z.number().int().finite().optional(),
     })
-    .strict();
+    .strict()
+    .refine((value) => value.start !== value.end, { message: 'Discount window cannot be empty' });
+const discount = z
+    .object({
+        start: clock.optional(),
+        end: clock.optional(),
+        timezone: z.literal('Asia/Shanghai').optional(),
+        multiplier: rate.max(1).optional(),
+        windows: z.array(discountWindow).min(1).max(64).optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+        const legacy = value.start !== undefined || value.end !== undefined || value.multiplier !== undefined;
+        if (legacy && (value.start === undefined || value.end === undefined || value.multiplier === undefined))
+            context.addIssue({ code: 'custom', message: 'Incomplete legacy discount window' });
+        if (legacy && value.timezone === undefined)
+            context.addIssue({ code: 'custom', message: 'Legacy discount timezone is required' });
+        if (!legacy && !value.windows?.length)
+            context.addIssue({ code: 'custom', message: 'Discount windows are required' });
+    });
 const mediaSchema = z
     .object({
         version: z.literal(1),
@@ -46,6 +74,7 @@ const componentSchema = z
                 image_cache_read: rate.nullable(),
             })
             .strict(),
+        scheduled_discount: discount.optional(),
     })
     .strict();
 
@@ -79,6 +108,33 @@ export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: nu
     return details;
 }
 
+export function catalogScheduledDiscountLines(value: NonNullable<z.infer<typeof discount>>, en = false): string[] {
+    const windows = value.windows ?? [
+        {
+            start: value.start!,
+            end: value.end!,
+            timezone: value.timezone!,
+            multiplier: value.multiplier!,
+        },
+    ];
+    return windows.map((window) => {
+        const days = window.weekdays?.length
+            ? ` ${window.weekdays
+                  .map((day) =>
+                      en
+                          ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][day - 1]
+                          : ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][day - 1],
+                  )
+                  .join(en ? ', ' : '、')}`
+            : '';
+        const priority =
+            window.priority === undefined ? '' : en ? ` priority ${window.priority}` : ` 优先级 ${window.priority}`;
+        return en
+            ? `Scheduled ${window.start}–${window.end} (Asia/Shanghai)${days}${priority}: rates × ${window.multiplier}`
+            : `分时 ${window.start}–${window.end}（北京时间）${days}${priority}：以上价格 × ${window.multiplier}`;
+    });
+}
+
 export function catalogDetailLines(
     details: Exclude<CatalogBillingDetails, TieredPricingDetails>,
     en = false,
@@ -91,13 +147,16 @@ export function catalogDetailLines(
             image_input: en ? 'Image input' : '图片输入',
             image_cache_read: en ? 'Image cache read' : '图片缓存读取',
         };
-        return Object.entries(details.rates).flatMap(([key, value]) =>
-            value === null
-                ? []
-                : [
-                      `${labels[key as keyof typeof labels]} ¥${formatTieredPrice(value)} / ${en ? 'million tokens' : '百万 token'}`,
-                  ],
-        );
+        return [
+            ...Object.entries(details.rates).flatMap(([key, value]) =>
+                value === null
+                    ? []
+                    : [
+                          `${labels[key as keyof typeof labels]} ¥${formatTieredPrice(value)} / ${en ? 'million tokens' : '百万 token'}`,
+                      ],
+            ),
+            ...(details.scheduled_discount ? catalogScheduledDiscountLines(details.scheduled_discount, en) : []),
+        ];
     }
     const unit =
         details.unit === 'cny_per_image'
@@ -116,13 +175,6 @@ export function catalogDetailLines(
         ...(details.default_price === null ? [] : [`${en ? 'Default' : '默认'}：${price(details.default_price)}`]),
         ...Object.entries(details.resolution_prices).map(([key, value]) => `${key}：${price(value)}`),
     ];
-    if (details.scheduled_discount) {
-        const d = details.scheduled_discount;
-        lines.push(
-            en
-                ? `Daily ${d.start}–${d.end} (Asia/Shanghai): above rates × ${d.multiplier}`
-                : `每日 ${d.start}–${d.end}（北京时间）：以上价格 × ${d.multiplier}`,
-        );
-    }
+    if (details.scheduled_discount) lines.push(...catalogScheduledDiscountLines(details.scheduled_discount, en));
     return lines;
 }

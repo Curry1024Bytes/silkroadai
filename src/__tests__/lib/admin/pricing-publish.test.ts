@@ -79,6 +79,7 @@ type GroupRow = Omit<PublishState['groups'][number], 'updated_at'> & { updated_a
 type PriceRow = Omit<PublishState['prices'][number], 'effective_from'> & {
     effective_from: Date;
     created_by?: string | null;
+    billing_details?: unknown;
 };
 interface Store {
     models: ModelRow[];
@@ -898,6 +899,35 @@ describe('pricing plan invariants', () => {
         await queued();
         expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
         expect(mocks.put).toHaveBeenCalledTimes(2);
+    });
+    it('allows ordinary token publication while preserving an active scheduled discount in the catalog', async () => {
+        live['billing_setting.scheduled_discount'] = {
+            'gpt-test': {
+                enabled: true,
+                start: '23:00',
+                end: '07:00',
+                discount: 0.36,
+            },
+        };
+        const preview = await previewPricingPublish(input(), ADMIN);
+        expect(preview.rows).toHaveLength(3);
+        expect(preview.rows[0].after_billing_details).toMatchObject({
+            mode: 'tiered_token',
+            scheduled_discount: {
+                start: '23:00',
+                end: '07:00',
+                timezone: 'Asia/Shanghai',
+                multiplier: 0.36,
+            },
+        });
+        await enqueuePricingPublish(input(), preview.preview_token, ADMIN);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(
+            store.prices.slice(3).every((row) => {
+                const details = row.billing_details as { scheduled_discount?: unknown } | null | undefined;
+                return Boolean(details?.scheduled_discount);
+            }),
+        ).toBe(true);
     });
     it.each([null, 'null', 'malformed', []])(
         'still rejects invalid present optional configuration %j',

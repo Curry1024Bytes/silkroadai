@@ -16,7 +16,7 @@ const {
     pollVideoWithKey,
     cancelVideoWithKey,
     cancelVolcVideo,
-    estimateEnterpriseCostCny,
+    getEnterprisePricingSnapshot,
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
     db: {
@@ -38,7 +38,7 @@ const {
     pollVideoWithKey: vi.fn(),
     cancelVideoWithKey: vi.fn(),
     cancelVolcVideo: vi.fn(),
-    estimateEnterpriseCostCny: vi.fn(),
+    getEnterprisePricingSnapshot: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
@@ -56,7 +56,7 @@ vi.mock('@/lib/seedance/volc-adapter', async (importOriginal) => {
 });
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
-    return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
+    return { ...mod, getEnterprisePricingSnapshot, chargeEnterpriseVideoTask };
 });
 const { resolveAssetRefs } = vi.hoisted(() => ({ resolveAssetRefs: vi.fn() }));
 vi.mock('../assets', async (importOriginal) => {
@@ -100,7 +100,14 @@ beforeEach(() => {
     __resetPollCache();
     resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
-    estimateEnterpriseCostCny.mockResolvedValue(4.26);
+    getEnterprisePricingSnapshot.mockResolvedValue({
+        costCny: 4.26,
+        discount: 1,
+        source: 'customer',
+        rule: { type: 'customer' },
+        timezone: 'Asia/Shanghai',
+        evaluatedAt: '2026-01-01T00:00:00.000Z',
+    });
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
     db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });

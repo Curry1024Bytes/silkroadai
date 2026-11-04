@@ -241,13 +241,9 @@ function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): 
             group: row.group,
             before: row.before,
             after: row.after,
-            ...(plan.version === 3 ||
-            plan.version === 4 ||
-            plan.version === 5 ||
-            plan.version === 6 ||
-            plan.version === 7
-                ? { before_details: row.before_details, after_details: row.after_details }
-                : {}),
+            ...(row.after_billing_details !== undefined ? { after_billing_details: row.after_billing_details } : {}),
+            ...(row.before_details !== undefined ? { before_details: row.before_details } : {}),
+            ...(row.after_details !== undefined ? { after_details: row.after_details } : {}),
         })),
         warnings: plan.warnings,
         ...(plan.version !== 1
@@ -1193,15 +1189,11 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             model_id: row.model_id,
                             tier: row.tier,
                             ...row.after,
-                            ...(plan.version === 3 ||
-                            plan.version === 4 ||
-                            plan.version === 5 ||
-                            plan.version === 6 ||
-                            plan.version === 7
-                                ? row.after_details
-                                    ? { billing_details: row.after_details as unknown as Prisma.InputJsonValue }
-                                    : {}
-                                : {}),
+                            ...('after_billing_details' in row && row.after_billing_details
+                                ? { billing_details: row.after_billing_details as Prisma.InputJsonValue }
+                                : row.after_details
+                                  ? { billing_details: row.after_details as unknown as Prisma.InputJsonValue }
+                                  : {}),
                             cost_cny_per_1m: row.cost_cny_per_1m,
                             effective_from: now,
                             created_by: job.requested_by,

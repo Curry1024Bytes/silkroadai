@@ -117,6 +117,46 @@ describe('catalog card price summary', () => {
         });
     });
 
+    it('marks scheduled discounts on token tariffs without applying a time-dependent quote', () => {
+        const summary = catalogPriceSummary(
+            price({
+                version: 1,
+                mode: 'tiered_token',
+                unit: 'cny_per_million_tokens',
+                semantics: 'whole_request',
+                tiers: [
+                    {
+                        name: 'base',
+                        min_input_tokens: null,
+                        max_input_tokens: null,
+                        min_inclusive: false,
+                        max_inclusive: false,
+                        rates: { input: 1, output: 2, cache_read: null, cache_write: null, cache_write_1h: null },
+                    },
+                ],
+                scheduled_discount: {
+                    windows: [
+                        {
+                            start: '00:00',
+                            end: '06:00',
+                            timezone: 'Asia/Shanghai',
+                            multiplier: 0.36,
+                            weekdays: [1, 2, 3, 4, 5],
+                        },
+                    ],
+                },
+            }),
+            'chat',
+        );
+        expect(summary).toMatchObject({
+            rates: [
+                { label: '输入', amount: 1 },
+                { label: '输出', amount: 2 },
+            ],
+            note: '分时优惠与完整规格见详情',
+        });
+    });
+
     it('keeps image component pricing in token units with an explicit image-input qualification', () => {
         const summary = catalogPriceSummary(
             price({

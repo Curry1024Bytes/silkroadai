@@ -123,8 +123,18 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
             const existing = await tx.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
             if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
 
-            // CatalogPrice 随 onDelete: Cascade 一并删除。new-api 渠道的 model_ratio 不动
-            // (删 portal 目录条目不应改上游计费 —— 如需下架,改 enabled / 调价)。
+            const [costRule, price] = await Promise.all([
+                tx.pricingCostRule.findFirst({ where: { model_id: existing.id }, select: { id: true } }),
+                tx.catalogPrice.findFirst({ where: { model_id: existing.id }, select: { id: true } }),
+            ]);
+            if (costRule || price) {
+                return NextResponse.json(
+                    { error: 'model_has_pricing_history', message: '模型已有成本或售价历史，不能删除；请停用模型。' },
+                    { status: 409 },
+                );
+            }
+
+            // new-api 渠道的 model_ratio 不动 (删除 Portal 草稿目录不应改上游计费)。
             await tx.catalogModel.delete({ where: { id: existing.id } });
             return NextResponse.json({ success: true });
         });

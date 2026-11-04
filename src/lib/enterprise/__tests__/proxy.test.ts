@@ -12,7 +12,7 @@ const {
     pollVideoWithKey,
     submitVolcVideo,
     pollVolcVideo,
-    estimateEnterpriseCostCny,
+    getEnterprisePricingSnapshot,
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
     db: {
@@ -26,7 +26,7 @@ const {
     pollVideoWithKey: vi.fn(),
     submitVolcVideo: vi.fn(),
     pollVolcVideo: vi.fn(),
-    estimateEnterpriseCostCny: vi.fn(),
+    getEnterprisePricingSnapshot: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
@@ -50,7 +50,7 @@ vi.mock('@/lib/seedance/volc-adapter', async (importOriginal) => {
 });
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
-    return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
+    return { ...mod, getEnterprisePricingSnapshot, chargeEnterpriseVideoTask };
 });
 const { resolveAssetRefs } = vi.hoisted(() => ({ resolveAssetRefs: vi.fn() }));
 vi.mock('../assets', async (importOriginal) => {
@@ -59,6 +59,10 @@ vi.mock('../assets', async (importOriginal) => {
 });
 const { fireTaskCallback } = vi.hoisted(() => ({ fireTaskCallback: vi.fn() }));
 vi.mock('../callback', async (original) => ({ ...(await original<typeof import('../callback')>()), fireTaskCallback }));
+vi.mock('../video-probe', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../video-probe')>();
+    return { ...mod, probeVideoMeta: vi.fn(async () => null) };
+});
 import { AssetError } from '../assets';
 
 import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
@@ -81,7 +85,14 @@ beforeEach(() => {
     __resetPollCache();
     resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
-    estimateEnterpriseCostCny.mockResolvedValue(4.26);
+    getEnterprisePricingSnapshot.mockResolvedValue({
+        costCny: 4.26,
+        discount: 1,
+        source: 'customer',
+        rule: { type: 'customer' },
+        timezone: 'Asia/Shanghai',
+        evaluatedAt: '2026-01-01T00:00:00.000Z',
+    });
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
     db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
@@ -629,7 +640,6 @@ describe('提交', () => {
 
     it('余额不足 → 402,不打上游', async () => {
         db.account.findUnique.mockResolvedValue({ balance_cny: '1.00' });
-        estimateEnterpriseCostCny.mockResolvedValue(4.26);
         const res = await handleEnterpriseV1(req('POST', '/v1/video/generations', goodBody), '/video/generations');
         expect(res.status).toBe(402);
         expect(submitVideoWithKey).not.toHaveBeenCalled();
@@ -2301,7 +2311,7 @@ describe('duration 内联指令 + 成片真值回显(2026-09-29)', () => {
             content: text('森林里雾气缓缓流动 --duration 25'),
         });
         expect(res.status).toBe(200);
-        expect(estimateEnterpriseCostCny).toHaveBeenCalledWith('u1', '720p', 25, false, '2.5', 'cn');
+        expect(getEnterprisePricingSnapshot).toHaveBeenCalledWith('u1', expect.any(Number), '720p', false, '2.5', 'cn');
         expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
             data: expect.objectContaining({ duration: 25 }),
         });

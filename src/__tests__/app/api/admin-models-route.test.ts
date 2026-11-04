@@ -15,6 +15,8 @@ const mockFindFirst = vi.fn();
 const mockCreate = vi.fn();
 const mockUpdate = vi.fn();
 const mockDelete = vi.fn();
+const mockFindCostRule = vi.fn();
+const mockFindPrice = vi.fn();
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
 vi.mock('@/lib/admin-auth', () => ({
@@ -30,6 +32,8 @@ vi.mock('@/lib/db', () => ({
             update: (...a: unknown[]) => mockUpdate(...a),
             delete: (...a: unknown[]) => mockDelete(...a),
         },
+        pricingCostRule: { findFirst: (...a: unknown[]) => mockFindCostRule(...a) },
+        catalogPrice: { findFirst: (...a: unknown[]) => mockFindPrice(...a) },
         channelGroup: { findMany: (...a: unknown[]) => mockGroupFindMany(...a) },
         $transaction: async (fn: (tx: unknown) => unknown) =>
             fn({
@@ -40,6 +44,8 @@ vi.mock('@/lib/db', () => ({
                     update: (...a: unknown[]) => mockUpdate(...a),
                     delete: (...a: unknown[]) => mockDelete(...a),
                 },
+                pricingCostRule: { findFirst: (...a: unknown[]) => mockFindCostRule(...a) },
+                catalogPrice: { findFirst: (...a: unknown[]) => mockFindPrice(...a) },
                 channelGroup: { findMany: (...a: unknown[]) => mockGroupFindMany(...a) },
             }),
     },
@@ -85,6 +91,8 @@ beforeEach(() => {
     mockFindFirst.mockResolvedValue(null);
     mockCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'm1', ...data }));
     mockUpdate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'm1', ...data }));
+    mockFindCostRule.mockResolvedValue(null);
+    mockFindPrice.mockResolvedValue(null);
 });
 
 describe('GET /api/admin/models', () => {
@@ -215,6 +223,29 @@ describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
         const res = await DELETE(req('DELETE', undefined, 'https://x/api/admin/models/m1'), { params: params() });
         expect(res.status).toBe(200);
         expect(mockDelete).toHaveBeenCalled();
+    });
+
+    it('DELETE preserves cost history by refusing to remove a model that has cost rules', async () => {
+        mockFindFirst.mockResolvedValue({ id: 'm1' });
+        mockFindCostRule.mockResolvedValue({ id: 'cost-rule-1' });
+
+        const res = await DELETE(req('DELETE', undefined, 'https://x/api/admin/models/m1'), { params: params() });
+
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ error: 'model_has_pricing_history' });
+        expect(mockFindCostRule).toHaveBeenCalledWith({ where: { model_id: 'm1' }, select: { id: true } });
+        expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it('DELETE preserves published price history by refusing to remove a priced model', async () => {
+        mockFindFirst.mockResolvedValue({ id: 'm1' });
+        mockFindPrice.mockResolvedValue({ id: 'price-1' });
+
+        const res = await DELETE(req('DELETE', undefined, 'https://x/api/admin/models/m1'), { params: params() });
+
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ error: 'model_has_pricing_history' });
+        expect(mockDelete).not.toHaveBeenCalled();
     });
 });
 

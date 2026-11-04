@@ -3,6 +3,41 @@ import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 
 const rate = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const boundary = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable();
+const scheduledDiscountWindow = z
+    .object({
+        start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+        end: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+        timezone: z.literal('Asia/Shanghai'),
+        multiplier: rate.max(1),
+        weekdays: z.array(z.number().int().min(1).max(7)).max(7).optional(),
+        priority: z.number().int().finite().optional(),
+    })
+    .strict()
+    .refine((value) => value.start !== value.end);
+const scheduledDiscount = z
+    .object({
+        start: z
+            .string()
+            .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+            .optional(),
+        end: z
+            .string()
+            .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+            .optional(),
+        timezone: z.literal('Asia/Shanghai').optional(),
+        multiplier: rate.max(1).optional(),
+        windows: z.array(scheduledDiscountWindow).min(1).max(64).optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+        const legacy = value.start !== undefined || value.end !== undefined || value.multiplier !== undefined;
+        if (legacy && (value.start === undefined || value.end === undefined || value.multiplier === undefined))
+            context.addIssue({ code: 'custom', message: 'Incomplete legacy discount window' });
+        if (legacy && value.timezone === undefined)
+            context.addIssue({ code: 'custom', message: 'Legacy discount timezone is required' });
+        if (!legacy && !value.windows?.length)
+            context.addIssue({ code: 'custom', message: 'Discount windows are required' });
+    });
 const detailsSchema = z
     .object({
         version: z.literal(1),
@@ -32,6 +67,7 @@ const detailsSchema = z
             )
             .min(1)
             .max(32),
+        scheduled_discount: scheduledDiscount.optional(),
     })
     .strict()
     .superRefine((value, context) => {

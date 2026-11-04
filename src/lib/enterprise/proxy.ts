@@ -46,7 +46,7 @@ import { DraftTaskError, extractDraftTaskRef } from '@/lib/seedance/draft-task';
 import { uploadImage } from '@/lib/r2/client';
 import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { randomUUID } from 'crypto';
-import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
+import { ENTERPRISE_TIER, getEnterprisePricingSnapshot, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import {
     normalizeArkModel,
@@ -807,25 +807,40 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
     const estDuration = duration === -1 ? maxDur : duration;
 
     // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。
+    // 同时冻结本次提交的折扣倍率；完成时只使用快照，避免跨时段任务变价。
+    let pricingSnapshot: Awaited<ReturnType<typeof getEnterprisePricingSnapshot>>;
+    let estimatedCostCny: number;
+    try {
+        pricingSnapshot = await getEnterprisePricingSnapshot(
+            cust.userId,
+            estimateTokens(map.resolution, estDuration),
+            map.resolution,
+            hasVideo,
+            map.variant,
+            map.region ?? 'cn',
+        );
+        estimatedCostCny = hasVideo ? +(pricingSnapshot.costCny * 1.5).toFixed(6) : pricingSnapshot.costCny;
+    } catch (e) {
+        console.error('[enterprise-proxy] pricing snapshot unavailable; refusing upstream submission', {
+            user_id: cust.userId,
+            model,
+            error: e instanceof Error ? e.message : String(e),
+        });
+        return errJson(503, 'pricing_unavailable', 'pricing is temporarily unavailable; please retry');
+    }
+
+    // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。
     try {
         const account = await prisma.account.findUnique({
             where: { user_id: cust.userId },
             select: { balance_cny: true },
         });
         const balance = account ? Number(account.balance_cny) : 0;
-        const est = await estimateEnterpriseCostCny(
-            cust.userId,
-            map.resolution,
-            estDuration,
-            hasVideo,
-            map.variant,
-            map.region ?? 'cn',
-        );
-        if (balance < est) {
+        if (balance < estimatedCostCny) {
             return errJson(
                 402,
                 'insufficient_balance',
-                `余额不足(需约 ¥${est.toFixed(2)},当前 ¥${balance.toFixed(2)})`,
+                `余额不足(需约 ¥${estimatedCostCny.toFixed(2)},当前 ¥${balance.toFixed(2)})`,
             );
         }
     } catch (e) {
@@ -914,6 +929,10 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                 // 样片模式(2026-10-08):draft 布尔原样落库;正片落客户样片号供查询回显 draft_task_id
                 draft: typeof body.draft === 'boolean' ? body.draft : null,
                 draft_task_id: draftRef?.id ?? null,
+                pricing_discount: pricingSnapshot.discount,
+                pricing_source: pricingSnapshot.source,
+                pricing_rule: pricingSnapshot.rule as Prisma.InputJsonValue,
+                pricing_timezone: pricingSnapshot.timezone,
             },
         });
     } catch (e) {

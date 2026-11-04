@@ -48,7 +48,7 @@ export function catalogPriceSummary(price: TierPricing | null, type: TypeName): 
                 { label: '输出', amount: details.rates.output },
             ],
             condition: '图片输入另计，完整价格见详情',
-            note: null,
+            note: details.scheduled_discount ? '分时优惠与完整规格见详情' : null,
         };
     }
     if (details?.mode === 'tiered_token') {
@@ -60,7 +60,11 @@ export function catalogPriceSummary(price: TierPricing | null, type: TypeName): 
                 { label: '输出', amount: first.rates.output },
             ],
             condition: isUniformPricingDetails(details) ? null : tieredPricingConditionLabel(first),
-            note: isUniformPricingDetails(details) ? null : '其他输入长度价格见详情',
+            note: details.scheduled_discount
+                ? '分时优惠与完整规格见详情'
+                : isUniformPricingDetails(details)
+                  ? null
+                  : '其他输入长度价格见详情',
         };
     }
     if (price.per_image_cny !== null) {

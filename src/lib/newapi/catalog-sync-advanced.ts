@@ -16,6 +16,36 @@ export function syncDictionary(raw: unknown, name: string): Record<string, unkno
 }
 const own = (dict: Record<string, unknown>, key: string) => (Object.hasOwn(dict, key) ? dict[key] : undefined);
 
+/** Convert new-api's model-scoped discount config to the catalog's display contract. */
+export function catalogScheduledDiscount(raw: unknown, model: string): Record<string, unknown> | null {
+    const discount = own(syncDictionary(raw, 'scheduled_discount'), model);
+    if (discount === undefined) return null;
+    const d = syncDictionary(discount, 'scheduled_discount');
+    if (typeof d.enabled !== 'boolean') throw new Error('限时折扣配置无效');
+    if (!d.enabled) return null;
+    if (Array.isArray(d.windows) && d.windows.length > 0) {
+        return {
+            windows: d.windows.map((window) => {
+                const value = syncDictionary(window, 'scheduled_discount.windows');
+                return {
+                    start: value.start,
+                    end: value.end,
+                    timezone: 'Asia/Shanghai',
+                    multiplier: value.discount,
+                    ...(value.weekdays === undefined ? {} : { weekdays: value.weekdays }),
+                    ...(value.priority === undefined ? {} : { priority: value.priority }),
+                };
+            }),
+        };
+    }
+    return {
+        start: d.start,
+        end: d.end,
+        timezone: 'Asia/Shanghai',
+        multiplier: d.discount,
+    };
+}
+
 /** The supported image expression is a complete linear tier, never executable code or a partial match. */
 function componentExpression(expression: string): CatalogBillingDetails {
     if (/\bcc(?:1h)?\b/.test(expression)) throw new Error('图片表达式包含不支持的缓存写入项');
@@ -50,7 +80,9 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
             throw new Error('模型配置了渠道专属表达式，目录暂不能表示多个不同计费规则');
         if (
             mode !== undefined &&
-            !['ratio', 'tiered_expr', 'image_resolution', 'per-second', 'per-request'].includes(String(mode))
+            !['standard', 'ratio', 'tiered_expr', 'image_resolution', 'per-second', 'per-request'].includes(
+                String(mode),
+            )
         )
             throw new Error(`暂不支持的计费方式：${String(mode)}`);
         let details: CatalogBillingDetails;
@@ -100,25 +132,11 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
             })!;
             basis = taskMode === 'per-second' ? 'second' : 'request';
         } else {
-            if (discount && typeof discount === 'object' && 'enabled' in discount && discount.enabled === true)
-                throw new Error('此计费方式的限时折扣暂不能同步');
             return null;
         }
         if (discount !== undefined) {
-            const d = syncDictionary(discount, 'scheduled_discount');
-            if (typeof d.enabled !== 'boolean') throw new Error('限时折扣配置无效');
-            if (d.enabled) {
-                if (details.mode !== 'media') throw new Error('此计费方式的限时折扣暂不能同步');
-                details = parseCatalogBillingDetails({
-                    ...details,
-                    scheduled_discount: {
-                        start: d.start,
-                        end: d.end,
-                        timezone: 'Asia/Shanghai',
-                        multiplier: d.discount,
-                    },
-                })!;
-            }
+            const scheduled = catalogScheduledDiscount(raw.scheduledDiscount, model);
+            if (scheduled) details = parseCatalogBillingDetails({ ...details, scheduled_discount: scheduled })!;
         }
         if (!Number.isFinite(IMAGE_FX) || IMAGE_FX <= 0) throw new Error('价格换算配置无效');
         details = scaleCatalogBillingDetails(details, groupRatio * IMAGE_FX);

@@ -41,13 +41,29 @@ function taskState(model: string, hasVideo: boolean) {
         has_video: hasVideo,
         tokens: null as bigint | null,
         billed: false,
+        cost_cny: null as number | null,
+        billed_at: null as Date | null,
     };
     db.seedanceVideoTask.findUnique.mockImplementation(async () => ({ ...task }));
-    db.seedanceVideoTask.updateMany.mockImplementation(async () => {
-        if (task.billed) return { count: 0 };
-        task.billed = true;
-        return { count: 1 };
-    });
+    db.seedanceVideoTask.updateMany.mockImplementation(
+        async ({
+            where,
+            data,
+        }: {
+            where: { billed: boolean; billed_at?: Date; cost_cny?: number };
+            data: Partial<typeof task>;
+        }) => {
+            if (task.billed !== where.billed) return { count: 0 };
+            if (where.billed_at && task.billed_at?.getTime() !== where.billed_at.getTime()) return { count: 0 };
+            if (where.cost_cny != null && task.cost_cny !== where.cost_cny) return { count: 0 };
+            Object.assign(task, data);
+            if (data.billed === true && data.billed_at) {
+                task.billed_at = data.billed_at;
+                task.cost_cny = data.cost_cny ?? null;
+            }
+            return { count: 1 };
+        },
+    );
     return task;
 }
 
@@ -108,7 +124,7 @@ describe('Seedance 2.5 1080p repricing at delayed settlement', () => {
         expect(addQuota).not.toHaveBeenCalled();
     });
 
-    it('a delayed ledger failure keeps the claim and prevents a second debit', async () => {
+    it('a delayed ledger failure releases the claim for a later retry', async () => {
         const task = taskState('seedance-2-5', false);
         task.tokens = BigInt(1_000_000);
         ledger.mockImplementation(async () => {
@@ -118,9 +134,17 @@ describe('Seedance 2.5 1080p repricing at delayed settlement', () => {
         const first = chargeEnterpriseVideoTask(task.id);
         await vi.advanceTimersByTimeAsync(30_000);
         expect(await first).toEqual({ outcome: 'deduct_failed', costCny: 69.3 });
-        vi.advanceTimersByTime(3_600_000);
-        expect(await chargeEnterpriseVideoTask(task.id)).toEqual({ outcome: 'already_billed' });
-        expect(ledger).toHaveBeenCalledTimes(1);
-        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledTimes(1);
+        expect(task.billed).toBe(false);
+        // Repricing between attempts must not change the amount already claimed for this task.
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.5' });
+        ledger.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        expect(await chargeEnterpriseVideoTask(task.id)).toEqual({ outcome: 'charged', costCny: 69.3 });
+        expect(ledger).toHaveBeenCalledTimes(2);
+        expect(ledger).toHaveBeenNthCalledWith(
+            2,
+            'u1',
+            expect.objectContaining({ amount_cny: -69.3, kind: 'charge', ref: task.id }),
+        );
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledTimes(3);
     });
 });

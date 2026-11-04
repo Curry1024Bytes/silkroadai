@@ -1,6 +1,6 @@
 import 'server-only';
 import { CHAT_FX, IMAGE_FX, retailFromRatios } from './pricing-sync';
-import { advancedSyncPrice, syncDictionary } from './catalog-sync-advanced';
+import { advancedSyncPrice, catalogScheduledDiscount, syncDictionary } from './catalog-sync-advanced';
 import {
     parseCatalogBillingDetails,
     scaleCatalogBillingDetails,
@@ -130,11 +130,34 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
         if (!validCatalogAmount(amount, modelPrice.value > 0 && groupRatio.value > 0)) {
             return unavailable('按次价格超出目录可保存的范围或精度', basis);
         }
-        return {
-            price: { input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: amount },
-            reason: null,
-            basis,
-        };
+        try {
+            const scheduledDiscount = catalogScheduledDiscount(raw.scheduledDiscount, model);
+            const billingDetails = scheduledDiscount
+                ? parseCatalogBillingDetails({
+                      version: 1,
+                      mode: 'media',
+                      unit: 'cny_per_request',
+                      default_price: amount,
+                      resolution_prices: {},
+                      scheduled_discount: scheduledDiscount,
+                  })
+                : null;
+            return {
+                price: {
+                    input_cny_per_1m: null,
+                    output_cny_per_1m: null,
+                    per_image_cny: amount,
+                    ...(billingDetails ? { billing_details: billingDetails } : {}),
+                },
+                reason: null,
+                basis,
+            };
+        } catch (error) {
+            return unavailable(
+                error instanceof Error ? `计时折扣无法同步：${error.message}` : '计时折扣无法同步',
+                basis,
+            );
+        }
     }
 
     const modelRatios = parseDictionary(raw.modelRatio, 'ModelRatio');
@@ -166,8 +189,9 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
         };
         const cacheRead = optionalRate(cache),
             cacheWrite = optionalRate(create);
+        const scheduledDiscount = catalogScheduledDiscount(raw.scheduledDiscount, model);
         const details =
-            cacheRead === null && cacheWrite === null
+            cacheRead === null && cacheWrite === null && scheduledDiscount === null
                 ? null
                 : scaleCatalogBillingDetails(
                       parseCatalogBillingDetails({
@@ -191,6 +215,7 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
                                   },
                               },
                           ],
+                          ...(scheduledDiscount ? { scheduled_discount: scheduledDiscount } : {}),
                       })!,
                       groupRatio.value,
                   );

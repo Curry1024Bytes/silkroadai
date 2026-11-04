@@ -19,6 +19,25 @@ export interface PricingPublishInput extends PricingPublishAmounts {
     cache_write_1h_cny_per_1m?: number;
 }
 
+/** Recurring customer-price multiplier copied from new-api billing settings. */
+export interface ScheduledDiscountWindowDetails {
+    start: string;
+    end: string;
+    timezone: 'Asia/Shanghai';
+    multiplier: number;
+    weekdays?: number[];
+    priority?: number;
+}
+
+export interface ScheduledDiscountDetails {
+    /** Legacy single-window representation retained for existing catalog rows. */
+    start?: string;
+    end?: string;
+    timezone?: 'Asia/Shanghai';
+    multiplier?: number;
+    windows?: ScheduledDiscountWindowDetails[];
+}
+
 export interface TieredPricingDetails {
     version: 1;
     mode: 'tiered_token';
@@ -38,6 +57,7 @@ export interface TieredPricingDetails {
             cache_write_1h: number | null;
         };
     }>;
+    scheduled_discount?: ScheduledDiscountDetails;
 }
 
 export interface PricingPublishPreviewRow {
@@ -49,6 +69,8 @@ export interface PricingPublishPreviewRow {
     after: PricingPublishAmounts;
     before_details?: TieredPricingDetails | null;
     after_details?: TieredPricingDetails;
+    /** Structured billing metadata for ordinary publications, including media rules. */
+    after_billing_details?: unknown;
 }
 
 export interface PricingPublishPreview {

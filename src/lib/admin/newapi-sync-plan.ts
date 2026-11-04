@@ -6,6 +6,7 @@ import { syncModelModality } from '@/lib/newapi/catalog-sync-advanced';
 import {
     parseCatalogBillingDetails,
     catalogDetailLines,
+    catalogScheduledDiscountLines,
     type CatalogBillingDetails,
 } from '@/lib/models/catalog-pricing-details';
 import { tieredPricingConditionLabel } from '@/lib/models/tiered-pricing-details';
@@ -104,16 +105,19 @@ const priceLines = (price: PriceValues | null): string[] => {
     if (price?.billing_details) {
         const details = price.billing_details;
         if (details.mode !== 'tiered_token') return catalogDetailLines(details);
-        return details.tiers.flatMap((tier) => [
-            tieredPricingConditionLabel(tier),
-            ...Object.entries(tier.rates).flatMap(([key, value]) =>
-                value === null
-                    ? []
-                    : [
-                          `${({ input: '输入', output: '输出', cache_read: '缓存读取', cache_write: '缓存写入', cache_write_1h: '缓存写入 1 小时' } as Record<string, string>)[key]} ¥${value} / 百万 token`,
-                      ],
-            ),
-        ]);
+        return [
+            ...details.tiers.flatMap((tier) => [
+                tieredPricingConditionLabel(tier),
+                ...Object.entries(tier.rates).flatMap(([key, value]) =>
+                    value === null
+                        ? []
+                        : [
+                              `${({ input: '输入', output: '输出', cache_read: '缓存读取', cache_write: '缓存写入', cache_write_1h: '缓存写入 1 小时' } as Record<string, string>)[key]} ¥${value} / 百万 token`,
+                          ],
+                ),
+            ]),
+            ...(details.scheduled_discount ? catalogScheduledDiscountLines(details.scheduled_discount) : []),
+        ];
     }
     return !price
         ? ['未设置目录价格']

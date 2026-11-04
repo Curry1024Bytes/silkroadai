@@ -938,7 +938,7 @@ model CatalogPrice {
   output_cny_per_1m Decimal? @db.Decimal(12, 4)
   per_image_cny     Decimal? @db.Decimal(12, 4)
   // Verified whole-request token tiers and cache prices. Scalars above are the first tier.
-  billing_details  Json?
+  billing_details   Json?
   // 成本价(可选,毛利看板用)
   cost_cny_per_1m   Decimal? @db.Decimal(12, 4)
 
@@ -1107,28 +1107,28 @@ model ChannelGroupRetirementKey {
 // 映射为 newapi_group，并校验每个 channel_id 在启用档次中只能有一个归属。
 // Portal 档次 key 与 new-api group 名解耦，不得假设存在 pool/default/official。
 model ChannelGroup {
-  id                 String   @id @default(uuid()) @db.Uuid
-  tenant_id          String?  @db.Uuid // P1 tenant 维度;回填平台主体
-  tenant             Tenant?  @relation(fields: [tenant_id], references: [id])
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenant_id          String?   @db.Uuid // P1 tenant 维度;回填平台主体
+  tenant             Tenant?   @relation(fields: [tenant_id], references: [id])
   key                String // portal 动态档次标识
   display_name       String // 面向客户展示的档次名
   description        String?
   // 真正下发到 new-api token.group 的名字(与 portal key 解耦)。
   newapi_group       String
-  tier_level         Int      @default(0) // 排序 / 档位
-  enabled            Boolean  @default(true)
-  is_default         Boolean  @default(false) // 每租户启用档次中必须且只能有一个默认档
+  tier_level         Int       @default(0) // 排序 / 档位
+  enabled            Boolean   @default(true)
+  is_default         Boolean   @default(false) // 每租户启用档次中必须且只能有一个默认档
   // 该档对应 new-api 哪些 channel id —— 是 Portal 模型映射/定价校验的事实源；
   // 真正请求路由仍由 new-api 按 group 执行。
-  newapi_channel_ids Int[]    @default([])
+  newapi_channel_ids Int[]     @default([])
   // 镜像模式保留已删除分组的历史关联，但不再列入当前目录。
-  upstream_present   Boolean  @default(true)
+  upstream_present   Boolean   @default(true)
   upstream_synced_at DateTime?
   // 进货率:该档上游每 1 美元官方价我们付多少元(多上游取最贵的)。只给定价页算利润/核对上游扣费，
   // 不参与计费;客户价由 new-api GroupRatio(售价率)决定。
-  purchase_rate      Decimal? @db.Decimal(12, 6)
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  purchase_rate      Decimal?  @db.Decimal(12, 6)
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
 
   @@unique([tenant_id, key])
   @@index([tenant_id, enabled])
@@ -1369,44 +1369,49 @@ model ImageTask {
 /// usage.completion_tokens × 费率(分辨率×是否含视频)扣费(billed 幂等)。兼作 dashboard
 /// 用量来源(该渠道不进 new-api 日志 → usage-aggregate 里 union 它)。
 model SeedanceVideoTask {
-  id             String    @id // 上游 cgt-... 任务 id(客户轮询也用它)
-  tenant_id      String?   @db.Uuid
-  user_id        String    @db.Uuid // portal User.id
-  newapi_user_id Int? // newapi 账本扣费用(override quota)
-  tier           String
-  model          String // seedance2.0-pro-720p 等
-  resolution     String // 720p | 1080p | 4k
-  has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档
-  duration       Int       @default(5)
-  tokens         BigInt? // 完成时 usage.completion_tokens
-  fail_reason    String? // 失败原因(上游 fail_reason / 过期终态;2026-07-24 企业权责透明)
-  cost_cny       Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
-  billed         Boolean   @default(false) // 幂等:已扣费
-  status         String    @default("queued") // queued | completed | failed
-  created_at     DateTime  @default(now())
-  billed_at      DateTime?
+  id                      String    @id // 上游 cgt-... 任务 id(客户轮询也用它)
+  tenant_id               String?   @db.Uuid
+  user_id                 String    @db.Uuid // portal User.id
+  newapi_user_id          Int? // newapi 账本扣费用(override quota)
+  tier                    String
+  model                   String // seedance2.0-pro-720p 等
+  resolution              String // 720p | 1080p | 4k
+  has_video               Boolean   @default(false) // 输入含参考视频 → 含视频费率档
+  duration                Int       @default(5)
+  tokens                  BigInt? // 完成时 usage.completion_tokens
+  fail_reason             String? // 失败原因(上游 fail_reason / 过期终态;2026-07-24 企业权责透明)
+  cost_cny                Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
+  // 提交时锁定的企业门户价格快照。存量任务为空时回退旧的实时计价逻辑。
+  pricing_discount        Decimal?  @db.Decimal(8, 6)
+  pricing_source          String?
+  pricing_rule            Json?
+  pricing_timezone        String?
+  billed                  Boolean   @default(false) // 幂等:已扣费
+  status                  String    @default("queued") // queued | completed | failed
+  created_at              DateTime  @default(now())
+  billed_at               DateTime?
   // 提交参数回显(2026-08-06,火山方舟形查询响应逐字段对齐客户样例):轮询是独立请求,
   // 要回显 ratio/seed/generate_audio 必须落库。存量行 NULL → 响应用缺省(16:9 / 0 / true)。
-  ratio          String?
-  seed           BigInt?
-  generate_audio Boolean?
+  ratio                   String?
+  seed                    BigInt?
+  generate_audio          Boolean?
   // 火山官方查询响应 2026-09 新增回显字段(2026-09-23):xinhankr 上游完成态什么都不回显,
   // 只能提交时落库再回显;service-inference.ai 上游会回显,以上游真值优先。存量行 NULL → 缺省/省略。
-  safety_identifier String? // 终端用户标识(客户传了才回显)
-  output_format     String? // mp4 | mov
-  tools             Json? // 请求里的 tools 数组(未传/空 → 响应省略,对齐官方「未使用工具时不返回」)
+  safety_identifier       String? // 终端用户标识(客户传了才回显)
+  output_format           String? // mp4 | mov
+  tools                   Json? // 请求里的 tools 数组(未传/空 → 响应省略,对齐官方「未使用工具时不返回」)
   execution_expires_after Int? // 官方创建参数(任务超时阈值秒,[3600,259200]);客户传了就回显,没传响应给官方默认 172800
   // 样片模式(2026-10-08,火山官方 draft / draft_task):draft = 创建时传的布尔(NULL=没传=false);
   // draft_task_id = 正片引用的【客户】样片任务号(方舟真号不落库不对客)。
-  draft             Boolean?
-  draft_task_id     String?
+  draft                   Boolean?
+  draft_task_id           String?
   // 回调投递(2026-10-19):提交时记客户 callback_url(绝不转发上游,#271),终态由我们 POST 查询响应体。
   // callback_format = 提交入口(v1 | ark)决定回调体形;callback_status pending → sending → sent | failed;NULL = 没要回调。
-  callback_url     String?
-  callback_format  String?
-  callback_status  String?
-  callback_sent_at DateTime?
-  callback_error   String?
+  callback_url            String?
+  callback_format         String?
+  callback_status         String?
+  callback_sent_at        DateTime?
+  callback_error          String?
 
   @@index([user_id, created_at])
   @@index([billed])
@@ -1613,14 +1618,21 @@ model EnterpriseModelDiscount {
 // 按 (region, variant) 隔离 —— 只影响目标模型(如 cn×fast),不动其它模型的议价/折扣。
 // expires_at 到期【读时判定】自动失效(不需定时任务),回落客户折扣。仅企业门户计价用。
 model EnterpriseGlobalDiscount {
-  id         String    @id @default(uuid()) @db.Uuid
-  region     String // cn | global | promax | volc
-  variant    String // pro | fast | mini | 2.5 | promax | promax-fast | promax-mini | promax-2.5
-  discount   Decimal   @db.Decimal(6, 4) // 官方挂牌 × discount
-  expires_at DateTime? // 到期时间(空 = 手动撤销前长期有效)
-  note       String?
-  created_at DateTime  @default(now())
-  created_by String?   @db.Uuid
+  id                String    @id @default(uuid()) @db.Uuid
+  version           Int       @default(1)
+  region            String // cn | global | promax | volc
+  variant           String // pro | fast | mini | 2.5 | promax | promax-fast | promax-mini | promax-2.5
+  discount          Decimal   @db.Decimal(6, 4) // 官方挂牌 × discount
+  // 可选日历促销。weekdays 使用 ISO 1=周一..7=周日；windows 为
+  // [{start:"00:00",end:"08:00",discount:0.6}]，跨午夜窗口允许。
+  schedule_timezone String    @default("Asia/Shanghai")
+  schedule_weekdays Json?
+  schedule_windows  Json?
+  effective_from    DateTime?
+  expires_at        DateTime? // 到期时间(空 = 手动撤销前长期有效)
+  note              String?
+  created_at        DateTime  @default(now())
+  created_by        String?   @db.Uuid
 
   @@unique([region, variant])
   @@map("enterprise_global_discounts")

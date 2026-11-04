@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readSyncPrice, syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
-import { IMAGE_FX } from '@/lib/newapi/pricing-sync';
+import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import {
     catalogDetailLines,
     parseCatalogBillingDetails,
@@ -114,6 +114,52 @@ describe('catalog synchronization of new-api billing rules', () => {
         if (scaled.mode !== 'media') throw Error('wrong mode');
         expect(catalogDetailLines(scaled).join(' ')).toContain('/ 秒');
         expect(catalogDetailLines(scaled).join(' ')).toContain('22:00–08:00');
+    });
+    it('imports multi-window discounts for token prices without changing the base rates', () => {
+        const result = read({
+            ModelRatio: { test: 5 },
+            CompletionRatio: { test: 10 },
+            'billing_setting.scheduled_discount': {
+                test: {
+                    enabled: true,
+                    windows: [
+                        { start: '00:00', end: '06:00', discount: 0.36, weekdays: [1, 2, 3, 4, 5], priority: 1 },
+                        { start: '22:00', end: '02:00', discount: 0.3, weekdays: [6, 7], priority: 2 },
+                    ],
+                },
+            },
+        });
+        expect(result.price?.billing_details).toMatchObject({
+            mode: 'tiered_token',
+            tiers: [
+                {
+                    rates: {
+                        input: Number((5 * CHAT_FX * 0.12).toFixed(4)),
+                        output: Number((5 * CHAT_FX * 10 * 0.12).toFixed(4)),
+                    },
+                },
+            ],
+            scheduled_discount: {
+                windows: [
+                    {
+                        start: '00:00',
+                        end: '06:00',
+                        timezone: 'Asia/Shanghai',
+                        multiplier: 0.36,
+                        weekdays: [1, 2, 3, 4, 5],
+                        priority: 1,
+                    },
+                    {
+                        start: '22:00',
+                        end: '02:00',
+                        timezone: 'Asia/Shanghai',
+                        multiplier: 0.3,
+                        weekdays: [6, 7],
+                        priority: 2,
+                    },
+                ],
+            },
+        });
     });
     it('imports task per-request prices even when the legacy mode is ratio', () => {
         const result = read({
