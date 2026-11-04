@@ -93,6 +93,6 @@ export const config = {
     // multipart edits。⚠️ `image-adapter/` 的负向断言是字面匹配(含斜杠),匹配不到 `image-adapter25/`
     // (…adapter2 ≠ …adapter/),必须单列,否则新入口被 10MB 缓冲截断。
     matcher: [
-        '/((?!v1/|v1beta/|seedance-adapter/|image-adapter/|image-adapter25/|gemini-adapter/|minimax-adapter/|seedream-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
+        '/((?!v1/|v1beta/|mj/|mj-adapter/|seedance-adapter/|image-adapter/|image-adapter25/|gemini-adapter/|minimax-adapter/|seedream-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
     ],
 };

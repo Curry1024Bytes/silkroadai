@@ -146,6 +146,11 @@ const AGENTS: AgentSection[] = [
         label: 'Seedream 5.0 Pro / Flash 生图 · 图层拆分',
         blurb: '字节 Seedream 5.0 Pro / Flash — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容 + 火山方舟原生 /api/v3 路径,按张计费,Flash ¥0.0612/张、Pro ¥0.15 起,需「seedream 5 pro」档 key。',
     },
+    {
+        id: 'midjourney',
+        label: 'Midjourney 生图',
+        blurb: 'Midjourney 原生异步接口 — Imagine / Blend / Describe + 放大 / 变体 / Remix / Zoom / Pan / Inpaint 按钮动作;四张单图直链,按次计费,¥0.45 起,需「Midjourney」档 key。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -5061,6 +5066,273 @@ print(r.data[0].url)`}</CodeBlock>
                             (上游临时不可用,重试即可,不扣费)。
                         </p>
                     </div>
+                </section>
+
+                <section id="midjourney" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">24</span>
+                            Midjourney 生图
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        Midjourney
+                        原生任务接口:文生图、多图融合、图生描述,以及放大、变体、重绘、扩图、局部重绘等按钮动作。 接口是
+                        <strong className="text-navy">异步</strong>的 —— 提交后拿任务
+                        ID,再轮询查询结果;一个任务通常需要几分钟,高峰期可能更久。 Base URL 是{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            https://ai.silkroadai.io
+                        </code>
+                        (路径以 <code className="font-mono text-xs">/mj/</code> 开头,不带{' '}
+                        <code className="font-mono text-xs">/v1</code>),用{' '}
+                        <code className="font-mono text-xs">Authorization: Bearer sk-xxx</code> 鉴权。
+                    </p>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
+                        ⚠️ 需先在「API 密钥」页创建一把 <strong className="text-navy">「Midjourney」档</strong> 的
+                        key(创建密钥时在档次里选它)。该 key 只能调 Midjourney 接口;调别的模型请用对应档 key。
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">价格(按次,提交成功时扣费,任务失败自动退款)</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        操作
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        单价
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {[
+                                    [
+                                        'Imagine / Blend / Describe / Variation / Reroll / 强弱变化 / Zoom / Pan',
+                                        '¥0.45 / 次',
+                                    ],
+                                    ['Upscale 放大', '¥0.225 / 次'],
+                                    ['Inpaint 局部重绘(动作本身不扣费,只收一次 Modal)', '¥0.03 / 次'],
+                                    ['Remix(Variation ¥0.45 + Modal ¥0.03)', '¥0.48 / 次'],
+                                ].map(([action, price]) => (
+                                    <tr key={action}>
+                                        <td className="px-4 py-2.5 border-b border-brand-border text-ink">{action}</td>
+                                        <td className="px-4 py-2.5 border-b border-brand-border font-mono text-navy">
+                                            {price}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1. 提交 Imagine 文生图</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        MJ 参数写在提示词末尾。要用参考图时,把可公网访问的图片 URL 放在提示词最前面。
+                    </p>
+                    <div className="mb-4">
+                        <CodeBlock language="bash">{`curl https://ai.silkroadai.io/mj/submit/imagine \\
+  -H "Authorization: Bearer $SILKROAD_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "botType": "MID_JOURNEY",
+    "prompt": "a small red paper boat on calm water --ar 16:9 --v 7"
+  }'`}</CodeBlock>
+                    </div>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        返回的 <code className="font-mono text-xs">result</code> 就是任务
+                        ID。这一步成功只代表任务已受理,不代表出图完成:
+                    </p>
+                    <div className="mb-4">
+                        <CodeBlock language="json">{`{ "code": 1, "description": "提交成功", "result": "1793758367387380", "properties": {} }`}</CodeBlock>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">2. 轮询任务结果</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        建议每 5–10 秒查一次;批量查询用{' '}
+                        <code className="font-mono text-xs">{'POST /mj/task/list-by-condition'}</code>,body 为{' '}
+                        <code className="font-mono text-xs">{'{"ids":["..."]}'}</code>。
+                    </p>
+                    <div className="mb-3">
+                        <CodeBlock language="bash">{`curl https://ai.silkroadai.io/mj/task/1793758367387380/fetch \\
+  -H "Authorization: Bearer $SILKROAD_KEY"`}</CodeBlock>
+                    </div>
+                    <div className="mb-3">
+                        <CodeBlock language="json">{`{
+  "id": "1793758367387380",
+  "action": "IMAGINE",
+  "status": "SUCCESS",
+  "progress": "100%",
+  "imageUrl": "https://images.silkroadai.io/mj/1793758367387380/grid.webp",
+  "imageUrls": [
+    { "url": "https://images.silkroadai.io/mj/1793758367387380/0.png", "thumbnailUrl": "..." },
+    { "url": "https://images.silkroadai.io/mj/1793758367387380/1.png", "thumbnailUrl": "..." },
+    { "url": "https://images.silkroadai.io/mj/1793758367387380/2.png", "thumbnailUrl": "..." },
+    { "url": "https://images.silkroadai.io/mj/1793758367387380/3.png", "thumbnailUrl": "..." }
+  ],
+  "buttons": [
+    { "label": "U1", "customId": "MJ::JOB::upsample::1::6aea949f..." },
+    { "label": "V1", "customId": "MJ::JOB::variation::1::6aea949f..." }
+  ],
+  "properties": { "finalPrompt": "..." },
+  "failReason": ""
+}`}</CodeBlock>
+                    </div>
+                    <ul className="m-0 mb-4 pl-5 text-sm text-ink leading-relaxed list-disc">
+                        <li>
+                            <code className="font-mono text-xs">imageUrls</code> 是四张
+                            <strong className="text-navy">单图</strong>;
+                            <code className="font-mono text-xs">imageUrl</code> 在四图任务里是四宫格
+                            <strong className="text-navy">合并预览</strong>, 不要拿它当单图用。
+                        </li>
+                        <li>
+                            Upscale 只返回一张图,<code className="font-mono text-xs">imageUrls</code> 为{' '}
+                            <code className="font-mono text-xs">null</code>,取{' '}
+                            <code className="font-mono text-xs">imageUrl</code>。
+                        </li>
+                        <li>图片链接公开可读,无需带 key。</li>
+                    </ul>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        status
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        处理
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {[
+                                    ['NOT_START / SUBMITTED / IN_PROGRESS', '继续查询'],
+                                    ['MODAL', '等待补充参数:调用 Modal 后继续查询'],
+                                    ['SUCCESS', '完成,读取图片或描述字段'],
+                                    ['FAILURE / CANCEL', '终止,原因在 failReason;费用自动退回'],
+                                ].map(([status, handling]) => (
+                                    <tr key={status}>
+                                        <td className="px-4 py-2.5 border-b border-brand-border font-mono text-xs text-navy">
+                                            {status}
+                                        </td>
+                                        <td className="px-4 py-2.5 border-b border-brand-border text-ink">
+                                            {handling}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">3. 按钮动作:放大 / 变体 / 重绘 / 扩图</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        所有动作都提交到 <code className="font-mono text-xs">POST /mj/submit/action</code>。
+                        <code className="font-mono text-xs">taskId</code> 是
+                        <strong className="text-navy">直接父任务</strong>的 ID,
+                        <code className="font-mono text-xs">customId</code> 从该父任务的{' '}
+                        <code className="font-mono text-xs">buttons</code> 里
+                        <strong className="text-navy">原样复制</strong>,不能自己拼,也不能跨任务复用。 父任务必须已经
+                        SUCCESS。提交返回新任务 ID,继续按第 2 步轮询这个新 ID。
+                    </p>
+                    <div className="mb-3">
+                        <CodeBlock language="bash">{`curl https://ai.silkroadai.io/mj/submit/action \\
+  -H "Authorization: Bearer $SILKROAD_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "taskId": "1793758367387380",
+    "customId": "MJ::JOB::upsample::1::6aea949fd104f061605c7ec1",
+    "enableRemix": false
+  }'`}</CodeBlock>
+                    </div>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        操作
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        父任务
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        enableRemix
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {[
+                                    ['Variation(V1–V4)/ Reroll / Upscale(U1–U4)', '四宫格任务', 'false'],
+                                    ['Remix', '四宫格任务(用 V1–V4 按钮)', 'true,再调 Modal'],
+                                    ['强变化 / 弱变化 / Zoom Out / Pan', 'Upscale 单图任务', 'false'],
+                                    ['Inpaint 局部重绘', 'Upscale 单图任务', 'true,再调 Modal'],
+                                ].map(([action, parent, remix]) => (
+                                    <tr key={action}>
+                                        <td className="px-4 py-2.5 border-b border-brand-border text-ink">{action}</td>
+                                        <td className="px-4 py-2.5 border-b border-brand-border text-ink">{parent}</td>
+                                        <td className="px-4 py-2.5 border-b border-brand-border text-ink">{remix}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">4. Modal 补充参数(Remix / Inpaint)</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        动作响应的 <code className="font-mono text-xs">description</code> 为{' '}
+                        <code className="font-mono text-xs">Waiting for window confirm</code>、或{' '}
+                        <code className="font-mono text-xs">properties.remix</code> 为 true、或任务状态为{' '}
+                        <code className="font-mono text-xs">MODAL</code> 时,用
+                        <strong className="text-navy">动作响应的 result</strong>调 Modal。
+                        <code className="font-mono text-xs">code</code> 可能是 1 或 21,不要只靠它判断。 Inpaint 额外传{' '}
+                        <code className="font-mono text-xs">maskBase64</code>:与单图同尺寸的 PNG 蒙版原始 Base64 (不带{' '}
+                        <code className="font-mono text-xs">data:</code> 前缀),白色区域重绘、黑色区域保留。
+                        提交后状态可能短暂仍为 MODAL,继续轮询即可,不要重复提交。
+                    </p>
+                    <div className="mb-4">
+                        <CodeBlock language="bash">{`curl https://ai.silkroadai.io/mj/submit/modal \\
+  -H "Authorization: Bearer $SILKROAD_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "taskId": "ACTION_RESPONSE_RESULT",
+    "prompt": "修改后的完整提示词",
+    "maskBase64": "RAW_BASE64_PNG_MASK"
+  }'`}</CodeBlock>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">5. Blend 多图融合 / Describe 图生描述</p>
+                    <div className="mb-3">
+                        <CodeBlock language="bash">{`# Blend:base64Array 可放图片 URL,或不带 data: 前缀的原始 Base64
+curl https://ai.silkroadai.io/mj/submit/blend \\
+  -H "Authorization: Bearer $SILKROAD_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "botType": "MID_JOURNEY",
+    "base64Array": ["IMAGE_URL_1", "IMAGE_URL_2"],
+    "dimensions": "LANDSCAPE"
+  }'
+
+# Describe:完成后从 promptEn 或 properties.finalPrompt 读描述(不一定是英文)
+curl https://ai.silkroadai.io/mj/submit/describe \\
+  -H "Authorization: Bearer $SILKROAD_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "botType": "MID_JOURNEY", "link": "IMAGE_URL" }'`}</CodeBlock>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">注意事项</p>
+                    <ul className="m-0 mb-2 pl-5 text-sm text-ink leading-relaxed list-disc">
+                        <li>
+                            提交请求超时或断连时结果未知,先查已有任务,不要自动重提:
+                            <code className="font-mono text-xs">state</code> 只是业务备注,不是幂等键。
+                        </li>
+                        <li>
+                            暂不支持 <code className="font-mono text-xs">notifyHook</code> 回调,请用轮询。
+                        </li>
+                        <li>Custom Zoom 自定义比例扩图目前不稳定,失败时费用自动退回;优先用 Zoom Out 按钮。</li>
+                        <li>
+                            任务只能由创建它的账号查询和操作;别的账号查询返回{' '}
+                            <code className="font-mono text-xs">task_no_found</code>。
+                        </li>
+                    </ul>
                 </section>
 
                 <section className="mt-12 mb-6 text-center">

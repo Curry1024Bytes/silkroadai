@@ -332,6 +332,10 @@ silkroadai/
 
 ---
 
+### Midjourney(frimodel MJ 原生接口 — 2026-11-04)
+
+- [x] v1 — `ai.silkroadai.io/mj/*` 原生异步接口 ✅(2026-11-04)— 链路 = portal 对客层 `src/app/mj/[...path]` → new-api 内置 MJ 中继(计费 / 任务归属 / 按钮 / 失败退款)→ type=5 渠道 → portal 适配器 `src/app/mj-adapter/mj/[...path]` → `api.frimodel.com`。rc.44 `MidjourneyDto` 没有 `imageUrls` 且查询读自家库,所以适配器在 new-api 轮询入口 `/mj/task/list-by-condition` 把成品转存 R2(`mj/{id}/{grid,0..3}.{ext}`)、单图塞 `videoUrls` 入库,对客层再还原成 `imageUrls`;转存完成前压 IN_PROGRESS 99%,持续失败 3 分钟回落上游直链。Caddy `@portalv1` 加 `/mj/*`(server2 + server3,不在 repo),middleware matcher 排除 `mj/` `mj-adapter/`。计费 = ModelPrice × GR,组 `midjourney` GR=1:¥0.45 / Upscale ¥0.225 / Modal ¥0.03;new-api 对 Inpaint、CustomZoom 动作不扣费,Inpaint 实收只有 Modal ¥0.03。`MjForwardUrlEnabled=false`(否则 imageUrl 被改写成 `/mj/image/{id}`)。
+
 ## 关键架构决策(决策已定,不要重新讨论)
 
 1. **不 fork LiteLLM** — 套层架构(已分析 fork 维护成本太高)
