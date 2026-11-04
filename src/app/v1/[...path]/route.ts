@@ -863,16 +863,27 @@ async function storeGeneratedImage(
  *  时,handleGptImageChat / reshape 的 url 分支原样透传,绕过了只作用于 b64 的剥离)。
  *  拉取失败 → 返 null,调用方决定兜底(极少见;失败时宁可让请求走原逻辑也不静默丢图)。 */
 async function rehostStrippedImageUrl(req: NextRequest, url: string): Promise<StoredImage | null> {
+    const stripped = await fetchStrippedImage(url);
+    if (!stripped) return null;
+    try {
+        const b64 = stripped.toString('base64');
+        return await storeGeneratedImage(req, stripped, sniffImageMime(stripped), b64);
+    } catch (e) {
+        console.warn('[v1-proxy] rehostStrippedImageUrl failed', e instanceof Error ? e.message : e);
+        return null;
+    }
+}
+
+/** 拉上游图片 url 的字节并剥 adobe C2PA。拉取失败 / 空 / 超 50MB → null(永不抛)。 */
+async function fetchStrippedImage(url: string): Promise<Buffer | null> {
     try {
         const r = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
         if (!r.ok) return null;
         const buf = Buffer.from(await r.arrayBuffer());
         if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
-        const stripped = stripAdobeImageMetadata(buf);
-        const b64 = stripped.toString('base64');
-        return await storeGeneratedImage(req, stripped, sniffImageMime(stripped), b64);
+        return stripAdobeImageMetadata(buf);
     } catch (e) {
-        console.warn('[v1-proxy] rehostStrippedImageUrl failed', e instanceof Error ? e.message : e);
+        console.warn('[v1-proxy] fetchStrippedImage failed', e instanceof Error ? e.message : e);
         return null;
     }
 }
@@ -2162,14 +2173,18 @@ async function reshapeOpenAiImageResponse(
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
 
-    // gpt-image-2 上游返【url】(而非 b64,直连 adobe 渠道会这样)→ 拉下来剥 C2PA + 转存,把 url
-    // 替换成我们的干净 url。绝不透传上游 url(带 adobe 凭证 + 暴露上游域名)。仅 gpt-image(gptDefaults)
-    // 且拿得到 req 时做,不碰 gemini / 其它透传模型;拉取失败保留上游 url(极少见,不静默丢图)。
+    // gpt-image-2 上游返【url】(而非 b64,直连 adobe 渠道会这样)→ 拉下来剥 C2PA,改成 b64_json,与
+    // 适配器路径归一:后面的转码 / background / 按 response_format 存图床都只认字节(此前这里直接转存,
+    // 客户要 b64_json 也只拿到 url)。绝不透传上游 url(带 adobe 凭证 + 暴露上游域名)。仅 gpt-image
+    // (gptDefaults)且拿得到 req 时做,不碰 gemini / 其它透传模型;拉取失败保留上游 url(极少见,不静默丢图)。
     if (echo?.gptDefaults && req) {
         for (const it of data) {
             if (!it.b64_json && typeof it.url === 'string' && it.url) {
-                const stored = await rehostStrippedImageUrl(req, it.url);
-                if (stored) it.url = stored.url;
+                const stripped = await fetchStrippedImage(it.url);
+                if (stripped) {
+                    it.b64_json = stripped.toString('base64');
+                    delete it.url;
+                }
             }
         }
     }

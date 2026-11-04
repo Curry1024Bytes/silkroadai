@@ -4907,8 +4907,7 @@ describe('/v1 proxy — gpt-image-2 上游返 url 时剥 C2PA 转存(客户 2026
         expect(storedBuf.includes(Buffer.from('PIXELDATA-not-metadata'))).toBe(true); // 像素无损
     });
 
-    it('images/generations gpt-image-2 上游返 url item → out.data.url 是我们的 url,字节已剥', async () => {
-        const adobe = adobePng();
+    function mockUpstreamUrl(adobe: Buffer): void {
         mockFetch
             .mockResolvedValueOnce(
                 new Response(
@@ -4923,20 +4922,95 @@ describe('/v1 proxy — gpt-image-2 上游返 url 时剥 C2PA 转存(客户 2026
             .mockResolvedValueOnce(
                 new Response(new Uint8Array(adobe), { status: 200, headers: { 'content-type': 'image/png' } }),
             );
+    }
 
+    it.each([
+        ['缺省', {}],
+        ['显式 b64_json', { response_format: 'b64_json' }],
+    ])('images/generations 上游返 url + %s → 内联 b64_json,字节已剥,不落图床', async (_name, extra) => {
+        mockUpstreamUrl(adobePng());
         const res = await POST(
             makeReq('/images/generations', {
-                body: { model: 'gpt-image-2', prompt: 'a puppy', size: '1024x1024', quality: 'medium' },
+                body: { model: 'gpt-image-2-adobe', prompt: 'a puppy', size: '1024x1024', ...extra },
                 headers: { authorization: 'Bearer sk-test' },
             }),
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
-        const j = (await res.json()) as { data: Array<{ url?: string }> };
+        const j = (await res.json()) as { data: Array<{ url?: string; b64_json?: string; generation_id?: string }> };
+        expect(j.data[0].url).toBeUndefined();
+        const bytes = Buffer.from(j.data[0].b64_json ?? '', 'base64').toString('latin1');
+        expect(bytes).toContain('PIXELDATA-not-metadata'); // 像素无损
+        expect(bytes.toLowerCase()).not.toContain('adobe');
+        expect(bytes.toLowerCase()).not.toContain('firefly');
+        expect(j.data[0].generation_id).toBeTruthy();
+        expect(mockUploadImage).not.toHaveBeenCalled();
+        // 转发上游时仍剥 response_format(zhiyunai 拒收)
+        const sent = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
+        expect(sent.response_format).toBeUndefined();
+    });
+
+    it('images/generations 上游返 url + response_format=url → 我们的 url,字节已剥', async () => {
+        mockUpstreamUrl(adobePng());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: {
+                    model: 'gpt-image-2',
+                    prompt: 'a puppy',
+                    size: '1024x1024',
+                    quality: 'medium',
+                    response_format: 'url',
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ url?: string; b64_json?: string }> };
         expect(j.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\//);
         expect(j.data[0].url).not.toContain('upstream-adobe');
+        expect(j.data[0].b64_json).toBeUndefined();
         const storedBuf = mockUploadImage.mock.calls[0][1] as Buffer;
         expect(storedBuf.toString('latin1').toLowerCase()).not.toContain('adobe');
+    });
+
+    it('images/edits multipart 上游返 url + response_format=b64_json → 内联 b64_json', async () => {
+        mockUpstreamUrl(adobePng());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2-adobe');
+        form.append('prompt', 'make it green');
+        form.append('size', '1024x1024');
+        form.append('response_format', 'b64_json');
+        form.append('image', new Blob([new Uint8Array(adobePng())], { type: 'image/png' }), 'in.png');
+        const res = await POST(
+            new NextRequest('http://localhost/v1/images/edits', {
+                method: 'POST',
+                headers: { authorization: 'Bearer sk-test' },
+                body: form,
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ url?: string; b64_json?: string }> };
+        expect(j.data[0].url).toBeUndefined();
+        expect(Buffer.from(j.data[0].b64_json ?? '', 'base64').toString('latin1')).toContain('PIXELDATA-not-metadata');
+        expect(mockUploadImage).not.toHaveBeenCalled();
+    });
+
+    it('图片伪流式 上游返 url → completed 帧带 b64_json、不带上游 url', async () => {
+        mockUpstreamUrl(adobePng());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-adobe', prompt: 'a puppy', size: '1024x1024', stream: true },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const text = await res.text();
+        expect(text).toContain('image_generation.completed');
+        expect(text).toContain('"b64_json"');
+        expect(text).not.toContain('upstream-adobe');
     });
 
     it('上游返 url 拉取失败 → 退回上游 url(不静默丢图),不 crash', async () => {
