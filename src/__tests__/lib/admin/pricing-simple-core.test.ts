@@ -241,12 +241,26 @@ describe('planGroupRatioWrites', () => {
         expect(writes.every((write) => write.target === 2.4)).toBe(true);
     });
 
-    it('does not invent a group_ratio_setting entry', () => {
-        expect(planGroupRatioWrites(options(), 'vip', 2).map((write) => write.key)).toEqual(['GroupRatio']);
+    it('mirrors the complete GroupRatio into a diverged group_ratio_setting copy', () => {
+        const writes = planGroupRatioWrites(options(), 'vip', 2);
+        expect(writes.map((write) => write.key)).toEqual(['GroupRatio', GROUP_SETTING_KEY]);
+        expect(writes[1].value).toEqual({ default: 1.2, vip: 2 });
+    });
+
+    it('heals a diverged copy even when the ratio is unchanged', () => {
+        const writes = planGroupRatioWrites(options(), 'default', 1.2);
+        expect(writes.map((write) => write.key)).toEqual([GROUP_SETTING_KEY]);
+        expect(writes[0].value).toEqual({ default: 1.2, vip: 1.2 });
+    });
+
+    it("leaves new-api's compiled-in default copy alone", () => {
+        const pristine = options({ [GROUP_SETTING_KEY]: JSON.stringify({ default: 1, svip: 1, vip: 1 }) });
+        expect(planGroupRatioWrites(pristine, 'default', 2.4).map((write) => write.key)).toEqual(['GroupRatio']);
     });
 
     it('is empty when unchanged and rejects nonsense ratios', () => {
-        expect(planGroupRatioWrites(options(), 'default', 1.2)).toEqual([]);
+        const consistent = options({ [GROUP_SETTING_KEY]: JSON.stringify({ default: 1.2, vip: 1.2 }) });
+        expect(planGroupRatioWrites(consistent, 'default', 1.2)).toEqual([]);
         expect(() => planGroupRatioWrites(options(), 'default', 0)).toThrow(
             expect.objectContaining({ code: 'pricing_ratio_invalid' }),
         );

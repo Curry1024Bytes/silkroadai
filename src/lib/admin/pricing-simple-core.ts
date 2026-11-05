@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import { QUOTA_PER_USD, USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { mirrorRowPresent, sameRatioMaps } from '@/lib/pricing-rules/options';
 import {
     buildTieredPricingExpression,
     parseTieredPricingExpression,
@@ -319,15 +320,27 @@ export function planModelWrites(options: Record<string, unknown>, name: string, 
     return [...early, ...late].filter((write): write is OptionWrite => write !== null);
 }
 
-/** GroupRatio (+ group_ratio_setting when new-api keeps a copy there). */
+/**
+ * GroupRatio, plus group_ratio_setting.group_ratio when new-api keeps a row for
+ * it. Both keys feed one in-memory map that new-api reloads from the database
+ * every 60s, so the copy is always written with the complete GroupRatio value.
+ * Patching one entry into the copy could truncate the live map to the groups the
+ * copy happened to contain (see src/lib/pricing-rules/options.ts).
+ */
 export function planGroupRatioWrites(options: Record<string, unknown>, group: string, ratio: number): OptionWrite[] {
     if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 1000)
         throw new SimplePricingError('pricing_ratio_invalid', '档次倍率须为 0 到 1000 之间的正数。', 400);
     const target = round(ratio, 6);
-    const writes = [setEntry(options, 'GroupRatio', group, target, false)];
-    if (Object.hasOwn(optionDict(options, GROUP_SETTING_KEY, true), group))
-        writes.push(setEntry(options, GROUP_SETTING_KEY, group, target));
-    return writes.filter((write): write is OptionWrite => write !== null);
+    const writes: OptionWrite[] = [];
+    const classic = setEntry(options, 'GroupRatio', group, target, false);
+    if (classic) writes.push(classic);
+    const next = classic ? classic.value : optionDict(options, 'GroupRatio');
+    if (
+        mirrorRowPresent(options, GROUP_SETTING_KEY) &&
+        !sameRatioMaps(optionDict(options, GROUP_SETTING_KEY, true), next)
+    )
+        writes.push({ key: GROUP_SETTING_KEY, value: { ...next }, entry: group, target });
+    return writes;
 }
 
 /** Keys whose readback does not hold the planned entry. */
