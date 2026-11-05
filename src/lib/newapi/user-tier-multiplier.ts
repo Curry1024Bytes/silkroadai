@@ -5,6 +5,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
+import { managedSaleGroups } from '@/lib/pricing-rules/guards';
 import {
     getOption,
     getTokenForCustomer,
@@ -330,6 +331,7 @@ export async function listUserTierMultipliers(userId: string) {
             tier_key: true,
             newapi_billing_group: true,
             multiplier: true,
+            managed_by_rules: true,
             synced_at: true,
             created_at: true,
             updated_at: true,
@@ -355,6 +357,8 @@ async function saveUserTierMultiplierUnlocked(args: {
         select: { key: true, newapi_group: true, display_name: true },
     });
     if (!tier) throw new UserTierMultiplierError('Selected Portal tier is unavailable', 400);
+    if ((await managedSaleGroups(prisma, [tier.newapi_group])).size)
+        throw new UserTierMultiplierError('该档次已由售卖规则管理，请在客户页的「售卖折扣」中设置该客户的折扣。', 409);
 
     const [existing, conflictingGroupRule, priorActiveOverride] = await Promise.all([
         prisma.userTierMultiplier.findUnique({
@@ -507,9 +511,12 @@ async function disableUserTierMultiplierUnlocked(args: {
             newapi_billing_group: true,
             newapi_user_group: true,
             original_newapi_user_group: true,
+            managed_by_rules: true,
         },
     });
     if (!override) throw new UserTierMultiplierError('Dedicated multiplier not found', 404);
+    if (override.managed_by_rules)
+        throw new UserTierMultiplierError('该倍率由售卖规则生成，请在客户页的「售卖折扣」中修改或删除对应规则。', 409);
 
     const [newApiUser, originalRatioRaw, activeRules] = await Promise.all([
         getUser(args.user.newapi_user_id),

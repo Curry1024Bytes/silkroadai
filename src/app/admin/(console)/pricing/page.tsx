@@ -4,12 +4,13 @@ import { useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import SimplePricing from '@/components/admin/SimplePricing';
+import SaleRules from '@/components/admin/SaleRules';
 import CostPricingWorkbench, { type CostPricingModel } from '@/components/admin/CostPricingWorkbench';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 import { resolveLocale, type Locale } from '@/lib/locale';
 
-type PricingSection = 'cost' | 'simple' | 'jobs';
+type PricingSection = 'cost' | 'simple' | 'rules' | 'jobs';
 
 function PricingWorkspace({
     isDark,
@@ -140,6 +141,7 @@ function PricingWorkspace({
                     [
                         ['cost', en ? 'Cost-based pricing' : '按成本加价'],
                         ['simple', en ? 'Current pricing' : '现有定价'],
+                        ['rules', en ? 'Sale rules' : '售卖规则'],
                         ['jobs', en ? 'Publication tasks' : '发布任务'],
                     ] as const
                 ).map(([key, label]) => (
@@ -204,6 +206,14 @@ function PricingWorkspace({
                 <SimplePricing isDark={isDark} en={en} />
             </div>
             <div
+                id="pricing-section-panel-rules"
+                role="tabpanel"
+                aria-labelledby="pricing-section-rules"
+                hidden={section !== 'rules'}
+            >
+                {section === 'rules' && <SaleRules isDark={isDark} />}
+            </div>
+            <div
                 id="pricing-section-panel-jobs"
                 role="tabpanel"
                 aria-labelledby="pricing-section-jobs"
@@ -234,7 +244,8 @@ function PricingContent() {
     const isEmbedded = (searchParams.get('ui_mode') || 'standalone') === 'embedded';
     const locale = resolveLocale(searchParams.get('lang'));
     const en = locale === 'en';
-    const initialSection: PricingSection = searchParams.get('view') === 'simple' ? 'simple' : 'cost';
+    const view = searchParams.get('view');
+    const initialSection: PricingSection = view === 'simple' ? 'simple' : view === 'rules' ? 'rules' : 'cost';
 
     return (
         <PayPageLayout

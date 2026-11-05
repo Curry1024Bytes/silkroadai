@@ -34,7 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!admin) return unauthorizedResponse(request);
     if (!customer) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
 
-    const [overrides, tiers, ratios, activeKeyCount] = await Promise.all([
+    const [overrides, tiers, ratios, activeKeyCount, managed] = await Promise.all([
         listUserTierMultipliers(customer.id),
         prisma.channelGroup.findMany({
             where: { tenant_id: customer.tenant_id ?? PLATFORM_TENANT_ID, enabled: true },
@@ -43,7 +43,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         }),
         getGroupRatios(),
         prisma.newApiToken.count({ where: { user_id: customer.id, status: 'active' } }),
+        prisma.pricingBillingGroup.findMany({
+            where: { unified_sale_ratio: { not: null } },
+            select: { newapi_group: true },
+        }),
     ]);
+    const managedGroups = new Set(managed.map((row) => row.newapi_group));
     const overrideByTier = new Map(overrides.map((row) => [row.tier_key, row]));
 
     return NextResponse.json({
@@ -51,6 +56,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             id: row.id,
             tier_key: row.tier_key,
             multiplier: Number(row.multiplier),
+            managed_by_rules: row.managed_by_rules,
             synced_at: row.synced_at?.toISOString() ?? null,
             created_at: row.created_at.toISOString(),
             updated_at: row.updated_at.toISOString(),
@@ -59,6 +65,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             key: tier.key,
             display_name: tier.display_name,
             public_multiplier: ratios[tier.newapi_group] ?? null,
+            sale_rules_managed: managedGroups.has(tier.newapi_group),
             effective_multiplier: overrideByTier.has(tier.key)
                 ? Number(overrideByTier.get(tier.key)!.multiplier)
                 : (ratios[tier.newapi_group] ?? null),

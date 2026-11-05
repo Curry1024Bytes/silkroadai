@@ -18,6 +18,7 @@ const mockNewApiTokenUpdateMany = vi.fn();
 const mockTransaction = vi.fn();
 const mockCatalogGuard = vi.fn();
 const mockExecuteRaw = vi.fn();
+const mockManagedGroups = vi.fn(async () => [] as Array<{ newapi_group: string }>);
 vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
     ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
     assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
@@ -36,6 +37,7 @@ vi.mock('@/lib/newapi/client', () => ({
 vi.mock('@/lib/db', () => ({
     prisma: {
         channelGroup: { findFirst: (...args: unknown[]) => mockChannelGroupFindFirst(...args) },
+        pricingBillingGroup: { findMany: () => mockManagedGroups() },
         userTierMultiplier: {
             findUnique: (...args: unknown[]) => mockOverrideFindUnique(...args),
             findFirst: (...args: unknown[]) => mockOverrideFindFirst(...args),
@@ -164,6 +166,7 @@ beforeEach(() => {
     mockOverrideUpdate.mockResolvedValue({ id: 'override-1' });
     mockNewApiTokenFindMany.mockResolvedValue([]);
     mockNewApiTokenUpdateMany.mockResolvedValue({ count: 0 });
+    mockManagedGroups.mockResolvedValue([]);
     mockTransaction.mockImplementation(async (work: (tx: unknown) => unknown) =>
         work({
             $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
@@ -186,6 +189,21 @@ describe('new-api dedicated group multiplier sync', () => {
         expect(mockGetUser).not.toHaveBeenCalled();
         expect(mockPutOption).not.toHaveBeenCalled();
         expect(mockUpdateUser).not.toHaveBeenCalled();
+        expect(mockOverrideUpsert).not.toHaveBeenCalled();
+        expect(mockOverrideUpdate).not.toHaveBeenCalled();
+    });
+
+    it('refuses hand-made multipliers on a group managed by sale rules', async () => {
+        mockManagedGroups.mockResolvedValue([{ newapi_group: 'GPT-Pro20x(企业级)' }]);
+        await expect(
+            saveUserTierMultiplier({ user: portalUser, tierKey: 'gpt-pro20x', multiplier: 0.18, createdBy: 'admin-1' }),
+        ).rejects.toMatchObject({ status: 409 });
+        mockOverrideFindFirst.mockResolvedValue(row({ managed_by_rules: true }));
+        await expect(disableUserTierMultiplier({ user: portalUser, overrideId: 'override-1' })).rejects.toMatchObject({
+            status: 409,
+        });
+        expect(mockGetUser).not.toHaveBeenCalled();
+        expect(mockPutOption).not.toHaveBeenCalled();
         expect(mockOverrideUpsert).not.toHaveBeenCalled();
         expect(mockOverrideUpdate).not.toHaveBeenCalled();
     });

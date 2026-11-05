@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
         catalogPrice: { findMany: vi.fn() },
         channelGroup: { findMany: vi.fn() },
         channelGroupRetirementJob: { findFirst: async () => null },
+        pricingBillingGroup: { findMany: async () => managedGroups.map((newapi_group) => ({ newapi_group })) },
         pricingPublishCoordinator: { findUnique: vi.fn() },
         pricingPublishJob: { findMany: vi.fn() },
         $transaction: vi.fn(),
@@ -84,6 +85,7 @@ let store: Store, live: Record<string, unknown>, disk: Record<string, unknown>;
 let channels: PublishSource['channels'];
 let runtimeExpression: string, runtimeRatio: number, runtimeGroups: string[], runtimeMode: string;
 let holdRuntime: boolean, holdPersistence: boolean, writeFailure: 'before' | 'after' | null;
+let managedGroups: string[] = [];
 let journal: Array<{ id: string; jobId: string; acknowledged: boolean }>;
 let dbTail: Promise<unknown>, insertFailure: boolean;
 
@@ -124,6 +126,7 @@ function dbFor(read: () => Store) {
             },
         },
         channelGroupRetirementJob: { findFirst: async () => null },
+        pricingBillingGroup: { findMany: async () => managedGroups.map((newapi_group) => ({ newapi_group })) },
         pricingPublishCoordinator: {
             findUnique: async () => structuredClone(read().coordinator),
             upsert: async () => {
@@ -189,6 +192,7 @@ function dbFor(read: () => Store) {
 beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    managedGroups = [];
     vi.setSystemTime(NOW);
     vi.stubEnv('PORTAL_JWT_SECRET', 'test-only-publication-signing-secret-long-enough');
     const date = new Date(NOW - 60_000);
@@ -362,6 +366,13 @@ describe('durable group pricing publication', () => {
         await expect(
             enqueuePricingBatch([input(true)], preview.preview_token, ADMIN, GROUP_CONTEXT),
         ).rejects.toMatchObject({ code: 'pricing_group_incomplete' });
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('refuses a group whose ratio is managed by sale rules', async () => {
+        managedGroups = ['Enterprise'];
+        await expect(previewPricingBatch([input(true)], ADMIN, GROUP_CONTEXT)).rejects.toMatchObject({
+            code: 'pricing_sale_rules_managed',
+        });
         expect(mocks.put).not.toHaveBeenCalled();
     });
     it('rechecks membership under worker lock before writes', async () => {

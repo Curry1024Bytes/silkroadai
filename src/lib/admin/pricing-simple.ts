@@ -12,6 +12,7 @@ import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details
 import { advancedSyncPrice } from '@/lib/newapi/catalog-sync-advanced';
 import { syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
 import { assertPricingCatalogWritable, PricingPublishError } from './pricing-publish-lock';
+import { assertGroupsUnmanaged } from '@/lib/pricing-rules/guards';
 import { tenantForInsert } from './tenant-scope';
 import { tierOrder } from './pricing-tiers';
 import type { AdminPrincipal } from './auth';
@@ -67,6 +68,8 @@ export interface SimpleTier {
     active_keys: number;
     customer_overrides: number;
     model_count: number;
+    /** GroupRatio is compiled from sale rules; edit the unified sale ratio instead. */
+    sale_rules_managed: boolean;
 }
 
 export interface SimpleCell {
@@ -230,7 +233,7 @@ function expectedFor(options: Record<string, unknown>, name: string, group: stri
 function buildView(
     catalog: Awaited<ReturnType<typeof loadCatalog>>,
     options: Record<string, unknown>,
-    counts: { keys: Map<string, number>; overrides: Map<string, number> },
+    counts: { keys: Map<string, number>; overrides: Map<string, number>; managed: Set<string> },
 ): SimplePricingView {
     const tierKeys = new Set(catalog.groups.map((group) => group.key));
     const groupByKey = new Map(catalog.groups.map((group) => [group.key, group]));
@@ -298,6 +301,7 @@ function buildView(
             active_keys: counts.keys.get(group.key) ?? 0,
             customer_overrides: counts.overrides.get(group.key) ?? 0,
             model_count: modelCount.get(group.key) ?? 0,
+            sale_rules_managed: counts.managed.has(group.newapi_group),
         })),
         models,
         upstream_models: [...upstream.values()].sort((a, b) => a.name.localeCompare(b.name)),
@@ -305,7 +309,7 @@ function buildView(
 }
 
 async function loadCounts(tenantId: string) {
-    const [keys, overrides] = await Promise.all([
+    const [keys, overrides, managed] = await Promise.all([
         prisma.newApiToken.groupBy({
             by: ['tier'],
             where: { status: 'active', user: { tenant_id: tenantId } },
@@ -316,10 +320,15 @@ async function loadCounts(tenantId: string) {
             where: { enabled: true, user: { tenant_id: tenantId } },
             _count: { _all: true },
         }),
+        prisma.pricingBillingGroup.findMany({
+            where: { unified_sale_ratio: { not: null } },
+            select: { newapi_group: true },
+        }),
     ]);
     return {
         keys: new Map(keys.map((row) => [row.tier, row._count._all])),
         overrides: new Map(overrides.map((row) => [row.tier_key, row._count._all])),
+        managed: new Set(managed.map((row) => row.newapi_group)),
     };
 }
 
@@ -418,6 +427,7 @@ export async function previewTier(admin: AdminPrincipal, groupId: string, ratio:
         loadCounts(tenantId),
     ]);
     const group = tierGroup(catalog, groupId);
+    if (counts.managed.has(group.newapi_group)) await assertGroupsUnmanaged(prisma, [group.newapi_group]);
     const writes = planGroupRatioWrites(options, group.newapi_group, ratio);
     const after = applyWrites(options, writes);
     const warnings: string[] = [];
@@ -492,7 +502,8 @@ async function writeAndVerify(writes: OptionWrite[]): Promise<Record<string, unk
     return readback;
 }
 
-async function snapshotCatalog(
+/** Rewrite stale CatalogPrice snapshots from what new-api bills now. Shared with the sale-rule publisher. */
+export async function snapshotCatalog(
     tx: Prisma.TransactionClient,
     tenantId: string,
     options: Record<string, unknown>,
@@ -577,6 +588,7 @@ export async function saveTier(
         await assertPricingCatalogWritable(tx);
         const [catalog, options] = await Promise.all([loadCatalog(tenantId, tx), getPricingPublishOptions()]);
         const group = tierGroup(catalog, groupId);
+        await assertGroupsUnmanaged(tx, [group.newapi_group]);
         const current = groupRatioOf(options, group.newapi_group);
         if (current === null ? expectedRatio !== null : expectedRatio === null || !sameNumber(current, expectedRatio))
             throw new PricingPublishError('pricing_stale', '档次倍率已被其他人修改，请刷新后重新确认。');

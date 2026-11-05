@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
     audits: [] as unknown[],
     updates: [] as unknown[],
     logs: [] as unknown[],
+    managed: [] as Array<{ newapi_group: string }>,
 }));
 
 vi.mock('@/lib/newapi/client', () => ({
@@ -60,6 +61,7 @@ vi.mock('@/lib/db', () => {
         },
         newApiToken: { groupBy: vi.fn(async () => [{ tier: 'pool', _count: { _all: 7 } }]) },
         userTierMultiplier: { groupBy: vi.fn(async () => [{ tier_key: 'pool', _count: { _all: 2 } }]) },
+        pricingBillingGroup: { findMany: vi.fn(async () => state.managed) },
     };
     return { prisma: { ...db, $transaction: vi.fn(async (fn: (tx: typeof db) => unknown) => fn(db)) } };
 });
@@ -112,6 +114,7 @@ beforeEach(() => {
     state.puts = [];
     state.failPut = null;
     state.dropPut = null;
+    state.managed = [];
     state.created = [];
     state.audits = [];
     state.updates = [];
@@ -235,6 +238,17 @@ describe('saves', () => {
 
     it('refuses a stale tier ratio without writing', async () => {
         await expect(saveTier(context, 'g-pool', 2.4, 1.5)).rejects.toMatchObject({ code: 'pricing_stale' });
+        expect(state.puts).toEqual([]);
+    });
+
+    it('refuses to write the ratio of a group managed by sale rules', async () => {
+        state.managed = [{ newapi_group: 'default' }];
+        const view = await loadSimplePricing(admin);
+        expect(view.tiers.find((tier) => tier.key === 'pool')?.sale_rules_managed).toBe(true);
+        expect(view.tiers.find((tier) => tier.key === 'official')?.sale_rules_managed).toBe(false);
+        await expect(saveTier(context, 'g-pool', 2.4, 1.2)).rejects.toMatchObject({
+            code: 'pricing_sale_rules_managed',
+        });
         expect(state.puts).toEqual([]);
     });
 

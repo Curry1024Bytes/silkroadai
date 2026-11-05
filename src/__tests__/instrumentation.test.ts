@@ -26,7 +26,9 @@ const startEnterpriseReqlogCleanupScheduler = vi.fn();
 const startRequestLogCleanupScheduler = vi.fn();
 const startEnterpriseReconcileSweepScheduler = vi.fn();
 const startPricingPublishScheduler = vi.fn();
+const startSaleRuleScheduler = vi.fn();
 vi.mock('@/lib/scheduler/pricing-publish', () => ({ startPricingPublishScheduler }));
+vi.mock('@/lib/scheduler/sale-rules', () => ({ startSaleRuleScheduler }));
 vi.mock('@/lib/scheduler/enterprise-reconcile-sweep', () => ({ startEnterpriseReconcileSweepScheduler }));
 vi.mock('@/lib/order/timeout', () => ({ startTimeoutScheduler }));
 vi.mock('@/lib/scheduler/balance-alert', () => ({ startBalanceAlertScheduler }));
@@ -43,6 +45,7 @@ vi.mock('@/lib/server/drain', () => ({ installDrainHook }));
 
 const ALL_SCHEDULERS = [
     startPricingPublishScheduler,
+    startSaleRuleScheduler,
     startEnterpriseReconcileSweepScheduler,
     startTimeoutScheduler,
     startBalanceAlertScheduler,

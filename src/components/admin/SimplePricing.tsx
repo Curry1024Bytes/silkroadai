@@ -548,26 +548,32 @@ function TiersPanel({ view, en, isDark, onSaved, onError, onReload }: PanelProps
                                     <MarginLabel purchase={tier.purchase_rate} sell={tier.ratio} en={en} />
                                 </td>
                                 <td className="py-2 text-right">
-                                    <div className="flex justify-end gap-2">
-                                        <input
-                                            aria-label={`${tier.key} ratio`}
-                                            inputMode="decimal"
-                                            className={inputCls(isDark)}
-                                            value={drafts[tier.id] ?? ''}
-                                            placeholder={tier.ratio === null ? '' : String(tier.ratio)}
-                                            onChange={(event) =>
-                                                setDrafts({ ...drafts, [tier.id]: event.target.value })
-                                            }
-                                        />
-                                        <button
-                                            type="button"
-                                            className={buttonCls('plain', isDark)}
-                                            disabled={busy || !drafts[tier.id]}
-                                            onClick={() => void requestPreview(tier.id)}
-                                        >
-                                            {en ? 'Preview' : '预览'}
-                                        </button>
-                                    </div>
+                                    {tier.sale_rules_managed ? (
+                                        <span className={`text-xs ${muted}`}>
+                                            {en ? 'Set by sale rules' : '由售卖规则定价，请在「售卖规则」中修改'}
+                                        </span>
+                                    ) : (
+                                        <div className="flex justify-end gap-2">
+                                            <input
+                                                aria-label={`${tier.key} ratio`}
+                                                inputMode="decimal"
+                                                className={inputCls(isDark)}
+                                                value={drafts[tier.id] ?? ''}
+                                                placeholder={tier.ratio === null ? '' : String(tier.ratio)}
+                                                onChange={(event) =>
+                                                    setDrafts({ ...drafts, [tier.id]: event.target.value })
+                                                }
+                                            />
+                                            <button
+                                                type="button"
+                                                className={buttonCls('plain', isDark)}
+                                                disabled={busy || !drafts[tier.id]}
+                                                onClick={() => void requestPreview(tier.id)}
+                                            >
+                                                {en ? 'Preview' : '预览'}
+                                            </button>
+                                        </div>
+                                    )}
                                 </td>
                             </tr>
                         ))}

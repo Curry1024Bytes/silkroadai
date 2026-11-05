@@ -7,6 +7,8 @@ interface RateTier {
     display_name: string;
     public_multiplier: number | null;
     effective_multiplier: number | null;
+    /** Priced by sale rules; edit it in the 售卖折扣 panel. */
+    sale_rules_managed?: boolean;
 }
 
 interface RateOverride {
@@ -42,6 +44,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     const tierByKey = useMemo(() => new Map(tiers.map((tier) => [tier.key, tier])), [tiers]);
     const selected = tierByKey.get(selectedTier);
     const activeOverride = overrides.find((override) => override.tier_key === selectedTier);
+    const managedTier = !!selected?.sale_rules_managed;
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -230,14 +233,14 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                             : String(selected.public_multiplier)
                                     }
                                     className={`h-10 w-full rounded-lg border px-3 text-sm ${input}`}
-                                    disabled={saving || migrating}
+                                    disabled={saving || migrating || managedTier}
                                 />
                             </label>
                             <div className="flex gap-2">
                                 <button
                                     type="button"
                                     onClick={save}
-                                    disabled={saving || migrating}
+                                    disabled={saving || migrating || managedTier}
                                     className="h-10 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                                 >
                                     {saving ? (zh ? '同步中...' : 'Syncing...') : zh ? '保存并同步' : 'Save & sync'}
@@ -246,7 +249,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                     <button
                                         type="button"
                                         onClick={remove}
-                                        disabled={saving || migrating}
+                                        disabled={saving || migrating || managedTier}
                                         className={`h-10 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-amber-700 text-amber-300 hover:bg-amber-950/40' : 'border-amber-400 text-amber-700 hover:bg-amber-50'}`}
                                     >
                                         {zh ? '取消专属' : 'Remove'}
@@ -254,6 +257,13 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                 )}
                             </div>
                         </div>
+                        {managedTier && (
+                            <div className={`text-xs ${muted}`}>
+                                {zh
+                                    ? '该档次由售卖规则定价，请在下方「售卖折扣」中设置该客户的折扣；这里只能迁移 Key。'
+                                    : 'This tier is priced by sale rules. Set discounts in the panel below; only key migration is available here.'}
+                            </div>
+                        )}
                         <div className={`grid gap-3 text-sm sm:grid-cols-3 ${muted}`}>
                             <div>
                                 <div className="text-xs">{zh ? '公共倍率' : 'Public rate'}</div>

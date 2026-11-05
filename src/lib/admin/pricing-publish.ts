@@ -16,6 +16,7 @@ import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
 import type { AdminPrincipal } from './auth';
 import { tenantScope } from './tenant-scope';
 import { assertNoRetirementJob, lockPricingPublisher, PricingPublishError } from './pricing-publish-lock';
+import { assertGroupsUnmanaged, groupRatioTargets } from '@/lib/pricing-rules/guards';
 import { beginPricingWrite, acknowledgePricingWrite, readUncertainPricingWrites } from './pricing-publish-journal';
 import {
     assertEffectiveCompletion,
@@ -325,6 +326,7 @@ async function planForBatch(
         const names = inputs.map((input) => tieredModelName(state, input));
         const runtime = await getPricingRuntimeModels([...new Set(names)]);
         const plan = buildGroupPublishPlan(state, source, inputs, Date.now(), costContext, runtime);
+        await assertGroupsUnmanaged(db, groupRatioTargets(plan.target));
         const persisted = tieredPriceOptions(await readPersistedTieredPricingOptions());
         if (fingerprint(persisted) !== fingerprint(plan.baseline))
             throw new PricingPublishError('pricing_persistence_mismatch', '实际计费配置与已保存配置不一致，请先核对。');
@@ -392,6 +394,7 @@ async function planForGroupRatio(
         image_fx: IMAGE_FX,
         quota_per_usd: QUOTA_PER_USD,
     });
+    await assertGroupsUnmanaged(prisma, groupRatioTargets(plan.target));
     const persisted = tieredPriceOptions(await readPersistedTieredPricingOptions());
     if (fingerprint(persisted) !== fingerprint(plan.baseline))
         throw new PricingPublishError('pricing_persistence_mismatch', '实际计费配置与已保存配置不一致，请先核对。');

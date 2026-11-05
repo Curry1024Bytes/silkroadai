@@ -19,6 +19,7 @@ vi.mock('@/lib/db', () => ({
         user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
         channelGroup: { findMany: (...args: unknown[]) => mockGroupFindMany(...args) },
         newApiToken: { count: (...args: unknown[]) => mockNewApiTokenCount(...args) },
+        pricingBillingGroup: { findMany: async () => [{ newapi_group: 'managed-group' }] },
     },
 }));
 vi.mock('@/lib/channel-group', () => ({ getGroupRatios: (...args: unknown[]) => mockGetGroupRatios(...args) }));
@@ -121,6 +122,7 @@ describe('admin customer rate overrides', () => {
                 key: 'gpt-pro20x',
                 display_name: 'GPT-Pro20x（企业级）',
                 public_multiplier: 0.2,
+                sale_rules_managed: false,
                 effective_multiplier: 0.18,
             },
         ]);
@@ -137,6 +139,7 @@ describe('admin customer rate overrides', () => {
                 key: 'gpt-pro20x',
                 display_name: 'GPT-Pro20x（企业级）',
                 public_multiplier: 0.2,
+                sale_rules_managed: false,
                 effective_multiplier: 0.2,
             },
         ]);

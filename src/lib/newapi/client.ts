@@ -1168,6 +1168,83 @@ export async function putPricingPublishOption(key: PricingWritableOption, value:
     await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 10_000, requireSuccess: true });
 }
 
+/** Sale-rule compiler inputs. Allowlisted so no secret option leaves this function. */
+export const SALE_RULE_READ_OPTIONS = [
+    'GroupRatio',
+    'group_ratio_setting.group_ratio',
+    'GroupGroupRatio',
+    'group_ratio_setting.group_group_ratio',
+    'group_ratio_setting.group_special_usable_group',
+    'UserUsableGroups',
+    'billing_setting.scheduled_discount',
+    'ModelRatio',
+    'CompletionRatio',
+    'CacheRatio',
+    'ModelPrice',
+    'billing_setting.billing_mode',
+] as const;
+
+export async function getSaleRuleOptions(): Promise<Record<string, unknown>> {
+    const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown>>(
+        'GET',
+        '/api/option/',
+        undefined,
+        undefined,
+        { timeoutMs: 10_000, requireSuccess: true, cache: 'no-store', redirect: 'error' },
+    );
+    if (!data || typeof data !== 'object') throw new Error('Invalid options response');
+    return Object.fromEntries(
+        SALE_RULE_READ_OPTIONS.flatMap((key): Array<[string, unknown]> => {
+            if (Array.isArray(data)) {
+                const row = data.find((item) => item && item.key === key);
+                return row ? [[key, row.value]] : [];
+            }
+            return Object.hasOwn(data, key) ? [[key, data[key]]] : [];
+        }),
+    );
+}
+
+export const SALE_RULE_WRITE_OPTIONS = [
+    'GroupRatio',
+    'group_ratio_setting.group_ratio',
+    'GroupGroupRatio',
+    'group_ratio_setting.group_group_ratio',
+] as const;
+export type SaleRuleWritableOption = (typeof SALE_RULE_WRITE_OPTIONS)[number];
+
+export async function putSaleRuleOption(key: SaleRuleWritableOption, value: string): Promise<void> {
+    if (!(SALE_RULE_WRITE_OPTIONS as readonly string[]).includes(key)) throw new Error('Unsupported sale-rule option');
+    await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 15_000, requireSuccess: true });
+}
+
+/**
+ * new-api per-user ratios inside one billing group (fork route
+ * GET /api/group/:group/user-ratios). They outrank GroupGroupRatio. Only the
+ * user id and ratio leave this function; the response also carries PII.
+ */
+export async function listGroupUserRatios(group: string): Promise<Array<{ user_id: number; ratio: number }>> {
+    const rows = await call<unknown>(
+        'GET',
+        `/api/group/${encodeURIComponent(group)}/user-ratios`,
+        undefined,
+        undefined,
+        {
+            timeoutMs: 10_000,
+            requireSuccess: true,
+            cache: 'no-store',
+            redirect: 'error',
+        },
+    );
+    if (rows === null) return [];
+    if (!Array.isArray(rows)) throw new Error('Invalid group user ratio response');
+    return rows.map((row) => {
+        const record = row as { user_id?: unknown; ratio?: unknown };
+        if (!Number.isSafeInteger(record.user_id) || typeof record.ratio !== 'number' || !Number.isFinite(record.ratio))
+            throw new Error('Invalid group user ratio response');
+        return { user_id: record.user_id as number, ratio: record.ratio };
+    });
+}
+
 export interface NewApiRuntimePricingModel {
     model_name: string;
     quota_type: 0 | 1;

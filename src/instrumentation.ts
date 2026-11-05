@@ -77,6 +77,10 @@ export async function register() {
     const { startPricingPublishScheduler } = await import('@/lib/scheduler/pricing-publish');
     startPricingPublishScheduler();
 
+    // 动态售卖规则(2026-11-05 规格):定时规则只靠这里开始和结束;未纳管任何计费分组时只查一次库。
+    const { startSaleRuleScheduler } = await import('@/lib/scheduler/sale-rules');
+    startSaleRuleScheduler();
+
     const { startTimeoutScheduler } = await import('@/lib/order/timeout');
     startTimeoutScheduler();
 

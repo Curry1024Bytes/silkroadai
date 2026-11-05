@@ -1151,6 +1151,9 @@ model UserTierMultiplier {
   original_newapi_user_group String
   multiplier                 Decimal   @db.Decimal(10, 6)
   enabled                    Boolean   @default(true)
+  // true = 由售卖规则编译器写入(docs/superpowers/plans/2026-11-05-dynamic-model-cost-discounts.md)。
+  // 这类行只能由编译器改写;false 为旧版手工专属倍率。
+  managed_by_rules           Boolean   @default(false)
   synced_at                  DateTime?
   created_by                 String?   @db.Uuid
   created_at                 DateTime  @default(now())
@@ -1159,6 +1162,75 @@ model UserTierMultiplier {
   @@unique([user_id, tier_key])
   @@index([user_id, enabled])
   @@map("user_tier_multipliers")
+}
+
+// ── 动态售卖规则(2026-11-05 规格)──────────────────────────────────────────
+// Portal 是售卖规则的事实源。编译器把规则编译成 new-api 的
+//   GroupRatio[计费分组]                    = 统一售卖倍率 × 当前全局售卖折扣
+//   GroupGroupRatio[客户内部分组][计费分组] = 统一售卖倍率 × 客户命中的折扣
+// new-api 继续实时扣款。unified_sale_ratio 非空表示该计费分组已纳管。
+// 表里只存 uuid,不建外键(与 RequestLog 等新表一致),编译时校验引用是否存在。
+model PricingBillingGroup {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenant_id          String?   @db.Uuid
+  tier_key           String
+  // new-api 的 GroupRatio 是全局表,一个计费分组只能被一个档次纳管。
+  newapi_group       String    @unique
+  is_primary         Boolean   @default(true)
+  unified_sale_ratio Decimal?  @db.Decimal(24, 12)
+  managed_at         DateTime?
+  managed_by         String?   @db.Uuid
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  @@index([tenant_id, tier_key])
+  @@map("pricing_billing_groups")
+}
+
+// kind:customer_model(第 1 层)、global_model / global_tier(第 2 层)、
+// customer_tier(第 3 层)。discount 是统一售卖价的比例,0.05..2。
+model PricingSaleRule {
+  id                    String    @id @default(uuid()) @db.Uuid
+  tenant_id             String?   @db.Uuid
+  kind                  String
+  user_id               String?   @db.Uuid
+  tier_key              String
+  model_id              String?   @db.Uuid
+  discount              Decimal   @db.Decimal(16, 10)
+  effective_from        DateTime?
+  effective_to          DateTime?
+  enabled               Boolean   @default(true)
+  note                  String?
+  below_cost_ack_reason String?
+  created_by            String?   @db.Uuid
+  updated_by            String?   @db.Uuid
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+
+  @@index([tenant_id, tier_key, enabled])
+  @@index([user_id, enabled])
+  @@map("pricing_sale_rules")
+}
+
+// 每次编译发布一条记录,在第一次远端写入前独立提交,失败也能查到。
+model PricingRulePublication {
+  id           String   @id @default(uuid()) @db.Uuid
+  trigger      String // manual | scheduler | rule_save | tier_save | adopt
+  actor_id     String?  @db.Uuid
+  actor_email  String?
+  status       String // applying | applied | failed | interrupted
+  target_at    DateTime
+  preview_hash String?
+  before       Json
+  after        Json
+  diagnostics  Json
+  moves        Json
+  error        String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@index([created_at])
+  @@map("pricing_rule_publications")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
