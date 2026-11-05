@@ -54,10 +54,27 @@ describe('<Sidebar />', () => {
         expect(html).toMatch(/href="\/pay"/);
         // 工具箱 → 独立页 /tools(不跳落地页);旧 AI 对话 / AI 生图 控制台路由已下线
         expect(html).toMatch(/href="\/tools"/);
-        expect(html).toMatch(/href="\/workspace\/models"/);
         expect(html).toMatch(/href="\/workspace\/docs"/);
         expect(html).not.toMatch(/href="\/chat"/);
         expect(html).not.toMatch(/href="\/image"/);
+    });
+
+    it('opens 模型清单 as the full-page public catalog in a new tab', () => {
+        mockUsePathname.mockReturnValue('/dashboard');
+        const html = renderToString(<Sidebar />);
+        const link = html.match(/<a[^>]*href="\/models"[^>]*>/)?.[0] ?? '';
+        expect(link).toContain('target="_blank"');
+        expect(link).toContain('rel="noopener"');
+        expect(link).toContain('title="模型清单（在新标签页打开）"');
+        expect(link).not.toContain('aria-current');
+        expect(html).toContain('<span class="sr-only">（在新标签页打开）</span>');
+        expect(html).not.toMatch(/href="\/workspace\/models"/);
+    });
+
+    it('never marks the new-tab 模型清单 item as the current page', () => {
+        mockUsePathname.mockReturnValue('/workspace/models');
+        const html = renderToString(<Sidebar />);
+        expect(html.match(/aria-current="page"/g) ?? []).toHaveLength(0);
     });
 
     it('工具箱 sits right after API Keys', () => {

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { LucideIcon } from 'lucide-react';
 import {
+    ArrowUpRight,
     BookOpenText,
     Boxes,
     Cpu,
@@ -27,6 +28,8 @@ interface NavItem {
     icon: LucideIcon;
     muted?: boolean;
     status?: string;
+    /** Opens in a new browser tab outside the console shell; never marked active. */
+    newTab?: boolean;
 }
 
 interface NavGroup {
@@ -47,7 +50,8 @@ function workspaceNav(m: CommonMessages): NavItem[] {
 function resourceNav(m: CommonMessages): NavItem[] {
     return [
         { href: '/settings/storage', label: m.nav.storage, icon: HardDrive },
-        { href: '/workspace/models', label: m.nav.models, icon: Boxes },
+        // The full-page public catalog (same Portal data and the viewer's own prices), in its own tab.
+        { href: '/models', label: m.nav.models, icon: Boxes, newTab: true },
         { href: '/workspace/docs', label: m.nav.docs, icon: BookOpenText },
     ];
 }
@@ -106,33 +110,60 @@ function NavigationPanel({
                             <p className="mb-2 px-3 text-xs font-medium text-portal-subtle">{group.label}</p>
                             <ul className="m-0 list-none space-y-1.5 p-0">
                                 {group.items.map((item) => {
-                                    const active = isRouteActive(pathname, item.href);
+                                    const active = !item.newTab && isRouteActive(pathname, item.href);
                                     const Icon = item.icon;
+                                    const rowClass = [
+                                        'flex h-11 items-center gap-3 rounded-lg border px-3 text-sm no-underline',
+                                        'transition-[background-color,border-color,color,box-shadow] duration-200 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25',
+                                        active
+                                            ? 'border-portal-line bg-portal-panel font-semibold text-portal-ink shadow-card'
+                                            : item.muted
+                                              ? 'border-transparent text-minor-ink/70 hover:bg-portal-soft hover:text-portal-muted'
+                                              : 'border-transparent text-portal-muted hover:bg-portal-soft hover:text-portal-ink',
+                                    ].join(' ');
+                                    const body = (
+                                        <>
+                                            <Icon
+                                                size={17}
+                                                strokeWidth={active ? 2 : 1.7}
+                                                className={active ? 'text-brand-accent' : 'text-portal-subtle'}
+                                                aria-hidden="true"
+                                            />
+                                            <span className="truncate">{item.label}</span>
+                                        </>
+                                    );
                                     return (
                                         <li key={item.href}>
-                                            <Link
-                                                href={item.href}
-                                                aria-current={active ? 'page' : undefined}
-                                                data-status={item.status}
-                                                onClick={onNavigate}
-                                                className={[
-                                                    'flex h-11 items-center gap-3 rounded-lg border px-3 text-sm no-underline',
-                                                    'transition-[background-color,border-color,color,box-shadow] duration-200 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25',
-                                                    active
-                                                        ? 'border-portal-line bg-portal-panel font-semibold text-portal-ink shadow-card'
-                                                        : item.muted
-                                                          ? 'border-transparent text-minor-ink/70 hover:bg-portal-soft hover:text-portal-muted'
-                                                          : 'border-transparent text-portal-muted hover:bg-portal-soft hover:text-portal-ink',
-                                                ].join(' ')}
-                                            >
-                                                <Icon
-                                                    size={17}
-                                                    strokeWidth={active ? 2 : 1.7}
-                                                    className={active ? 'text-brand-accent' : 'text-portal-subtle'}
-                                                    aria-hidden="true"
-                                                />
-                                                <span className="truncate">{item.label}</span>
-                                            </Link>
+                                            {item.newTab ? (
+                                                <a
+                                                    href={item.href}
+                                                    target="_blank"
+                                                    rel="noopener"
+                                                    title={`${item.label}${m.nav.opensInNewTab}`.trim()}
+                                                    data-status={item.status}
+                                                    onClick={onNavigate}
+                                                    className={rowClass}
+                                                >
+                                                    {body}
+                                                    <ArrowUpRight
+                                                        size={14}
+                                                        strokeWidth={1.7}
+                                                        className="ml-auto shrink-0 text-portal-subtle"
+                                                        aria-hidden="true"
+                                                    />
+                                                    <span className="sr-only">{m.nav.opensInNewTab}</span>
+                                                </a>
+                                            ) : (
+                                                <Link
+                                                    href={item.href}
+                                                    aria-current={active ? 'page' : undefined}
+                                                    data-status={item.status}
+                                                    onClick={onNavigate}
+                                                    className={rowClass}
+                                                >
+                                                    {body}
+                                                </Link>
+                                            )}
                                         </li>
                                     );
                                 })}
