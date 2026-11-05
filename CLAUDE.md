@@ -659,3 +659,7 @@ operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09
 ## 2026-10-29 火山方舟原生视频入口
 
 `/api/v3/contents/generations/tasks`（提交）与 `/{id}`（查询）由 `src/lib/seedance/ark-native.ts` 转给 new-api doubao 插件原生路由，已上线（`release-3074a2bd`）。`UPSTREAM_TO_CLIENT_MODEL` 必须与 new-api 渠道的模型重定向逐条互逆，加模型时两处一起改。提交带 `callback_url` 返回 400（#271 同一规则），查询缺 `status` 时由 Portal 补齐。API 子域 Nginx 只开这两条路径；线上 Nginx 文件有仓库模板没有的 ACME 块，改配置时按 diff 打补丁，不要用模板覆盖。已上架为 new-api 渠道 #13（Task Plugin、doubao 插件、分组「SD官转」），价格 = 官方价 ÷ 7.5（两位小数进 1），2026-10-29 首条真实任务验收通过；Cloudflare 规则表达式与带参考视频等验收仍待处理，见 `docs/视频模型兼容1.0.md` 第 6 节与手册文末记录。
+
+## 2026-11-05 动态售卖规则第一阶段
+
+定价页「售卖规则」标签与客户页「售卖折扣」面板已上线（`release-f1ca81eb`，北京时间 22:27），代码在 `src/lib/pricing-rules/`，规格与计划见 `docs/superpowers/`。上线时没有纳管的计费分组，价格未变；首次纳管和旧倍率换算须 operator 确认（计划第 10 节）。生产 new-api 没有 `group_ratio_setting.*` 点号行，定价页保存档次只写经典 `GroupRatio`。Portal 发布现走 GitHub 原生构建、服务器拉取产物、在备份副本上试跑 migration 后再切换，见手册文末记录；手册未记 2026-11-04 至 11-05 凌晨的 `00582268` 与 `f219384f` 两次发布。
