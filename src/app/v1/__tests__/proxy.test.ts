@@ -5638,6 +5638,41 @@ describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits
         },
     );
 
+    it('2.6 GIF 放行官方示例 512×512;其它约束和其它模型不变', async () => {
+        const gif = { model: 'gpt-image-2.6-flare', output_format: 'gif' };
+        expect((await POST(gen({ ...gif, size: '512x512' }), ctx('images', 'generations'))).status).toBe(200);
+        expect((await POST(gen({ ...gif, size: '500x500' }), ctx('images', 'generations'))).status).toBe(400);
+        expect(
+            (await POST(gen({ model: 'gpt-image-2.6-flare', size: '512x512' }), ctx('images', 'generations'))).status,
+        ).toBe(400);
+        expect((await POST(gen({ output_format: 'gif', size: '512x512' }), ctx('images', 'generations'))).status).toBe(
+            400,
+        );
+    });
+
+    it('2.6 GIF + stream → 400,不开伪流式', async () => {
+        const res = await POST(
+            gen({ model: 'gpt-image-2.6-flare', output_format: 'gif', size: '512x512', stream: true }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { param: string } }).error.param).toBe('stream');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('multipart→JSON 时 GIF 帧参数转成整数', async () => {
+        const fd = new FormData();
+        fd.append('model', 'gpt-image-2.6-flare');
+        fd.append('prompt', 'x');
+        fd.append('output_format', 'gif');
+        fd.append('frame_count', '4');
+        fd.append('frame_duration_ms', '100');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: fd });
+        await POST(req, ctx('images', 'generations'));
+        const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ frame_count: 4, frame_duration_ms: 100 });
+    });
+
     it('size=auto 不做像素校验 → 放行', async () => {
         expect((await POST(gen({ size: 'auto' }), ctx('images', 'generations'))).status).toBe(200);
     });

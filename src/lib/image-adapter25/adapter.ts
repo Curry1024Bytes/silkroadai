@@ -35,7 +35,17 @@ import { newGenerationId } from '@/lib/image/generation-id';
 import { jsonMaskShapeError, maskDimensionError, multipartMaskShapeError } from '@/lib/image/mask';
 import { resolveOutputBackground } from '@/lib/image/opacity';
 import { alignTo16, isAutoSize, officialAutoDims } from '@/lib/image-adapter/auto-size';
-import { IMAGE_PROVIDERS_25, type AsyncTaskTransport, type ImageProvider25 } from './providers';
+import {
+    GIF_DEFAULT_DIMS,
+    gifDimensions,
+    gifUpstreamDims,
+    gpt26ParamError,
+    GPT_IMAGE_26_EXTRAS,
+    pruneGpt26Extras,
+    requestedOutputFormat,
+    resizeGifB64,
+} from './gif';
+import { GPT_IMAGE_26_MODELS, IMAGE_PROVIDERS_25, type AsyncTaskTransport, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -100,7 +110,7 @@ export function estimateTextTokens(s: string): number {
 
 // ============ 字节工具(独立实现,不从 2.0 适配器 import)============
 
-/** dep-free 尺寸解析(PNG IHDR / JPEG SOF / WebP VP8·VP8L·VP8X),读不出 → null。 */
+/** dep-free 尺寸解析(PNG IHDR / JPEG SOF / WebP VP8·VP8L·VP8X / GIF),读不出 → null。 */
 export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     if (
         buf.length >= 24 &&
@@ -159,7 +169,7 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
             return w > 0 && h > 0 ? { w, h } : null;
         }
     }
-    return null;
+    return gifDimensions(buf);
 }
 
 /** 返图是否带真 alpha 通道:PNG colortype 6/4 → true;PNG 其他 / JPEG → false;识别不出 → null(存疑放行)。 */
@@ -172,12 +182,13 @@ export function imageHasAlpha(buf: Buffer): boolean | null {
     return null;
 }
 
-/** 按首字节魔数判 output_format(png/jpeg/webp);读不出 → ''。 */
+/** 按首字节魔数判 output_format(png/jpeg/webp/gif);读不出 → ''。 */
 export function sniffOutputFormat(buf: Buffer): string {
     if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
     if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
     if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
+    if (buf.length >= 4 && buf.toString('latin1', 0, 4) === 'GIF8') return 'gif';
     return '';
 }
 
@@ -251,7 +262,7 @@ export function sanitizeAdapterError25(text: string, brand: RegExp): string {
 const UPSTREAM_SAFETY_RE =
     /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety|content policy violation|moderation system/i;
 const UPSTREAM_BADREQ_RE =
-    /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value|mask must have the same dimensions|invalid mask/i;
+    /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value|mask must have the same dimensions|invalid mask|no supported sheet fits|for gif output/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
 
 type TerminalReject =
@@ -363,9 +374,15 @@ interface ParsedRequest {
     mask: { buf: Buffer; type: string; name: string } | null;
 }
 
-const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
+const FORWARD_EXTRAS = new Set([
+    'output_format',
+    'output_compression',
+    'background',
+    'user',
+    ...GPT_IMAGE_26_EXTRAS, // 只有 2.6 留下,见 pruneGpt26Extras
+]);
 /** JSON 路径必须是整数的字段(客户常传字符串;multipart 无类型不受影响)。 */
-const INT_EXTRAS = new Set(['output_compression']);
+const INT_EXTRAS = new Set(['output_compression', 'frame_count', 'frame_duration_ms']);
 /** 透传给上游的 quality 合法值(含 auto,上游原生认;非法值不透传,由上游默认 = auto)。 */
 const FORWARD_QUALITY_SET = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 
@@ -947,6 +964,17 @@ export async function handleAdapter25Image(
         return failover('model_not_served', `model '${parsed.model}' not served by provider '${providerName}'`);
     }
 
+    // ---- 2.6 专属字段(frame_count / frame_duration_ms / complexity):其余模型不发上游;校验失败终态 400 ----
+    const isGpt26 = (GPT_IMAGE_26_MODELS as ReadonlyArray<string>).includes(parsed.model);
+    parsed = { ...parsed, extras: pruneGpt26Extras(parsed.extras, isGpt26) };
+    if (isGpt26) {
+        const paramErr = gpt26ParamError(parsed.extras, parsed.mask !== null);
+        if (paramErr) {
+            console.warn('[image-adapter25] 2.6 param rejected', { provider: providerName, ...paramErr });
+            return terminalReject({ terminal: 'bad_request', ...paramErr });
+        }
+    }
+
     // ---- 非法 quality 入口拦截(客户反馈:传 ultra 我们静默按 low 出图 + 计费)----
     // normQuality25 把未知值归一 low 是给 auto/缺省用的;但客户【显式】传了一个非法档位(如 ultra),
     // 应像官方/上游一样明确 400 拒,而不是静默降成 low 出张图还收费。空/缺省不拦(走 auto→low)。
@@ -969,6 +997,12 @@ export async function handleAdapter25Image(
     // 16 倍数、~1MP,与官方尺寸集不同但画幅语义一致)。auto 无法预估 ct,2.5 全量线本就不守门,不受影响。
     const autoSize = isAutoSize(parsed.size);
     const dims = autoSize ? null : parseSize(parsed.size);
+    // ---- 2.6 GIF:低于最低像素的尺寸放大发上游、收图后缩回;auto 按官方示例 512×512(规则见 gif.ts)----
+    const gifTarget = isGpt26 && requestedOutputFormat(parsed.extras) === 'gif' ? (dims ?? GIF_DEFAULT_DIMS) : null;
+    if (gifTarget) {
+        const up = gifUpstreamDims(gifTarget);
+        parsed = { ...parsed, size: `${up.w}x${up.h}` };
+    }
     const quality = normQuality25(parsed.quality);
     // ---- 上游缺档:只把发给上游的档位换成最近的真档(2.6 xhigh/max → high);quality 留在请求档,回显与计费都按它 ----
     const substitutedQuality = provider.upstreamQuality?.[quality];
@@ -1092,6 +1126,8 @@ export async function handleAdapter25Image(
             return failover('transparent_not_delivered', 'upstream returned image(s) without alpha channel');
         items = kept;
     }
+
+    if (gifTarget) for (const it of items) it.b64_json = await resizeGifB64(it.b64_json, gifTarget);
 
     // ---- 计费尺寸 = 回显 size:优先【返回图实际像素】(防上游静默降级超收;auto 由模型选尺寸,只能按实际);
     //      读不出 → 显式 size 按请求值 / auto 无从计费 → 让路 ----

@@ -56,8 +56,9 @@ describe('normalizeEchoOutputFormat — png/jpeg/webp,jpg→jpeg', () => {
         ['jpeg', 'jpeg'],
         ['jpg', 'jpeg'],
         ['webp', 'webp'],
+        ['gif', 'gif'],
         ['', 'png'],
-        ['gif', 'png'],
+        ['bmp', 'png'],
     ])('gpt-image:%s → %s', (input, expected) => {
         expect(normalizeEchoOutputFormat(input, true)).toBe(expected);
     });
@@ -79,6 +80,9 @@ describe('sniffImageFormat — 按返回图实际首字节判定(消解请求/�
     });
     it('WebP 字节 → webp', () => {
         expect(sniffImageFormat([{ b64_json: webp }])).toBe('webp');
+    });
+    it('GIF 字节 → gif', () => {
+        expect(sniffImageFormat([{ b64_json: Buffer.from('GIF89a').toString('base64') }])).toBe('gif');
     });
     it('URL 模式(无 b64_json)→ 空,退回请求侧归一', () => {
         expect(sniffImageFormat([{ url: 'https://x/y.png' }])).toBe('');

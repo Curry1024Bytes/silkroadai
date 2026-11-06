@@ -2428,6 +2428,52 @@ curl ${OPENAI_BASE}/images/generations \\
                         </code>{' '}
                         和计费按你请求的档位。② flare 在 high、xhigh、max 档耗时约 60 秒。
                     </div>
+                    <p className="text-sm text-ink mb-2">
+                        <strong className="text-navy">生成 GIF 动图</strong>:传{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {'"output_format": "gif"'}
+                        </code>
+                        ,响应在{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            data[].b64_json
+                        </code>{' '}
+                        里返回 GIF 字节,回显{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {'output_format: "gif"'}
+                        </code>
+                        。不传 size 时输出 512×512。
+                    </p>
+                    <ul className="text-sm text-ink mb-3 list-disc pl-5 space-y-1">
+                        <li>
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                frame_count
+                            </code>
+                            :2–16,默认 9。
+                        </li>
+                        <li>
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                frame_duration_ms
+                            </code>
+                            :每帧毫秒数,最小 20,默认 200。
+                        </li>
+                        <li>
+                            尺寸:512×512 到 816×816 可用;1024×1024 放不下拼图,返回 400。13 帧及以上也可能因此返回 400。
+                        </li>
+                        <li>GIF 不支持流式、透明背景、蒙版和 output_compression。</li>
+                        <li>
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                complexity
+                            </code>
+                            :low / medium / high,PNG、WebP、JPEG、GIF 都可传。
+                        </li>
+                        <li>
+                            暂不支持{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {'output_format: "svg"'}
+                            </code>
+                            ,请求会返回 400。
+                        </li>
+                    </ul>
                 </section>
 
                 {/* ─── 14 · 异步生图 · 大图/批量免超时 ─── */}

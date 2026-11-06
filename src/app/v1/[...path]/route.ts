@@ -818,7 +818,13 @@ async function storeGeneratedImage(
     // 上游 mimeType 不可信(Gemini 3.1 image 约 1/3 把 JPEG 字节标成 image/png → 存成 .png 后
     // Photoshop 按扩展名/CT 用 PNG 解码器解 JPEG 失败)→ 嗅探真实字节定扩展名 + Content-Type + data URL。
     const realMime = sniffImageMime(buffer);
-    const ext = realMime.includes('jpeg') ? 'jpg' : realMime.includes('webp') ? 'webp' : 'png';
+    const ext = realMime.includes('jpeg')
+        ? 'jpg'
+        : realMime.includes('webp')
+          ? 'webp'
+          : realMime.includes('gif')
+            ? 'gif'
+            : 'png';
     // 按日期分子目录(客户诉求 2026-07-21):客户清理 OSS 时可整删过期日期目录。
     // 日期取北京时间(gotcha #20:容器 TZ=UTC,不显式指定会差 8h);en-CA locale = YYYY-MM-DD。
     const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
@@ -1573,11 +1579,11 @@ function gptImageVariant(model: string): { base: string; size: string } | null {
     const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
     return { base: m[1], size };
 }
-/** OpenAI images 的整型字段(n / output_compression)—— 客户端可能发成字符串(`"n":"1"`),
+/** OpenAI images 的整型字段(n / output_compression / GIF 帧参数)—— 客户端可能发成字符串(`"n":"1"`),
  *  或 multipart→JSON 转换把 form 值(恒字符串)搬进 JSON —— new-api 按 uint 解析 JSON 会 500
  *  `cannot unmarshal string into Go struct field Alias.n of type uint`。就地把纯数字字符串强转成数字。 */
 function coerceImageIntFields(obj: JsonRecord): void {
-    for (const k of ['n', 'output_compression']) {
+    for (const k of ['n', 'output_compression', 'frame_count', 'frame_duration_ms']) {
         const v = obj[k];
         if (typeof v === 'string' && /^\d+$/.test(v.trim())) obj[k] = Number(v.trim());
     }
@@ -1927,7 +1933,7 @@ function isStrictImageMode(req: NextRequest, search: string): boolean {
  *  上游会【静默改尺寸再计费】(1000²→1008²、512²→816²、4096×2304→4K),客户按官方对不上 → 改为默认生效。 */
 const GPT_IMAGE_MIN_PIXELS = 655_360;
 const GPT_IMAGE_MAX_PIXELS = 8_294_400;
-function gptImageSizeError(size: string): string | null {
+function gptImageSizeError(size: string, gif26 = false): string | null {
     if (!size) return null;
     const m = size.match(/^(\d+)x(\d+)$/);
     if (!m) return null; // 非 WxH(auto / "16:9" 等)→ 不在此校验
@@ -1938,11 +1944,24 @@ function gptImageSizeError(size: string): string | null {
     const short = Math.min(w, h);
     if (long > 3840) return `Invalid size '${size}'. The longest edge must be less than or equal to 3840.`;
     if (long / short > 3) return `Invalid size '${size}'. The maximum supported aspect ratio is 3:1.`;
-    if (w * h < GPT_IMAGE_MIN_PIXELS)
+    // 2.6 GIF 官方示例 512×512,低于通用下限:适配器放大发上游再缩回(image-adapter25/gif.ts)
+    if (w * h < GPT_IMAGE_MIN_PIXELS && !gif26)
         return `Invalid size '${size}'. Requested resolution is below the current minimum pixel budget.`;
     if (w * h > GPT_IMAGE_MAX_PIXELS)
         return `Invalid size '${size}'. Requested resolution is above the current maximum pixel budget.`;
     return null;
+}
+
+function isGptImage26Gif(model: string, outputFormat: string): boolean {
+    return isGptImage26Model(model) && outputFormat.trim().toLowerCase() === 'gif';
+}
+
+/** 官方 GIF 不支持流式;代理层的伪流式会先发一张占位 PNG,所以在这里拦。 */
+function gifStreamError(cap: CaptureCtx | null): NextResponse {
+    return imageError('Streaming is not supported for GIF output.', 400, cap, {
+        param: 'stream',
+        code: 'invalid_value',
+    });
 }
 
 /** 客户打的是 /images/edits 却一张输入图都没带 → 官方 400 `missing_required_parameter`(2026-09-17 官方实测)。
@@ -2087,15 +2106,15 @@ export function normalizeEchoBackground(requested: string, gptDefaults: boolean)
     return ''; // 非法值不回显(不鹦鹉学舌)
 }
 
-/** output_format 请求侧归一(仅在无法从字节 sniff 时兜底);官方枚举 png/jpeg/webp。 */
+/** output_format 请求侧归一(仅在无法从字节 sniff 时兜底);官方枚举 png/jpeg/webp/gif。 */
 export function normalizeEchoOutputFormat(requested: string, gptDefaults: boolean): string {
     const s = requested.trim().toLowerCase();
-    if (s === 'png' || s === 'jpeg' || s === 'webp') return s;
+    if (s === 'png' || s === 'jpeg' || s === 'webp' || s === 'gif') return s;
     if (s === 'jpg') return 'jpeg';
     return gptDefaults ? 'png' : '';
 }
 
-/** 按【返回图实际首字节魔数】判定 output_format(PNG/JPEG/WebP)——回显以字节为准,消解"请求
+/** 按【返回图实际首字节魔数】判定 output_format(PNG/JPEG/WebP/GIF)——回显以字节为准,消解"请求
  *  声称一种、上游出另一种"的不一致(F1/F2)。读不出(URL 模式无 b64 / 非常见格式)→ ''(退回请求侧)。 */
 export function sniffImageFormat(data: JsonRecord[]): string {
     const b64 = typeof data[0]?.b64_json === 'string' ? (data[0].b64_json as string) : '';
@@ -2110,6 +2129,7 @@ export function sniffImageFormat(data: JsonRecord[]): string {
     if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'jpeg';
     if (head.length >= 12 && head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
+    if (head.length >= 4 && head.toString('latin1', 0, 4) === 'GIF8') return 'gif';
     return '';
 }
 
@@ -2399,8 +2419,10 @@ async function handleImagesDalle(
                     partialImages = parsePartialImages(form.get('partial_images'));
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
+                    const gif26 = isGptImage26Gif(model, String(form.get('output_format') ?? ''));
+                    if (gif26 && wantStream) return gifStreamError(cap);
                     // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
-                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw, gif26);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
@@ -2568,8 +2590,13 @@ async function handleImagesDalle(
                     partialImages = parsePartialImages(body.partial_images);
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
+                    const gif26 = isGptImage26Gif(
+                        model,
+                        typeof body.output_format === 'string' ? body.output_format : '',
+                    );
+                    if (gif26 && wantStream) return gifStreamError(cap);
                     // 官方尺寸约束默认生效(同 multipart 分支)
-                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw, gif26);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 const echo: ImageEchoFields = {
@@ -3085,6 +3112,7 @@ function sniffImageMime(buf: Buffer): string {
     if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
     if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
         return 'image/webp';
+    if (buf.length >= 4 && buf.toString('ascii', 0, 4) === 'GIF8') return 'image/gif';
     return 'image/png';
 }
 
