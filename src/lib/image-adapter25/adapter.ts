@@ -285,7 +285,11 @@ function extractBadRequestDetail(text: string, brand: RegExp): { detail: string;
         msg = '';
     }
     if (!msg) return { detail: '', param: null };
-    const clean = sanitizeAdapterError25(msg, brand).slice(0, 200);
+    // 上游前缀先去掉再抹品牌,否则变成 "the providerNo supported…";拼图报错里的尺寸是我们放大后的,不回给客户
+    const body = msg
+        .replace(/^bad request to \w+:?\s*/i, '')
+        .replace(/( GIF frames) at size .*/i, '$1 at the requested size.');
+    const clean = sanitizeAdapterError25(body, brand).slice(0, 200);
     // 参数归属(官方 error.param 便于 SDK 定位):按关键词判
     const lc = clean.toLowerCase();
     const param = /\bmask\b/.test(lc)
@@ -968,7 +972,7 @@ export async function handleAdapter25Image(
     const isGpt26 = (GPT_IMAGE_26_MODELS as ReadonlyArray<string>).includes(parsed.model);
     parsed = { ...parsed, extras: pruneGpt26Extras(parsed.extras, isGpt26) };
     if (isGpt26) {
-        const paramErr = gpt26ParamError(parsed.extras, parsed.mask !== null);
+        const paramErr = gpt26ParamError(parsed.extras, parsed.mask !== null, mode === 'edits');
         if (paramErr) {
             console.warn('[image-adapter25] 2.6 param rejected', { provider: providerName, ...paramErr });
             return terminalReject({ terminal: 'bad_request', ...paramErr });

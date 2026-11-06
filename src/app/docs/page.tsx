@@ -2460,6 +2460,7 @@ curl ${OPENAI_BASE}/images/generations \\
                             尺寸:512×512 到 816×816 可用;1024×1024 放不下拼图,返回 400。13 帧及以上也可能因此返回 400。
                         </li>
                         <li>GIF 不支持流式、透明背景、蒙版和 output_compression。</li>
+                        <li>改图接口也能输出 GIF,但只用默认的 9 帧、200 毫秒,传帧参数会返回 400。</li>
                         <li>
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                                 complexity

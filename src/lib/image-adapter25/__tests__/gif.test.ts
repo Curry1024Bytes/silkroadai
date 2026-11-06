@@ -69,6 +69,10 @@ describe('gpt26ParamError', () => {
     it('GIF 不收蒙版', () => {
         expect(gpt26ParamError({ output_format: 'gif' }, true)?.param).toBe('mask');
     });
+    it.each(['frame_count', 'frame_duration_ms'])('改图出 GIF 不收 %s', (param) => {
+        expect(gpt26ParamError({ output_format: 'gif', [param]: '4' }, false, true)?.param).toBe(param);
+        expect(gpt26ParamError({ output_format: 'gif' }, false, true)).toBeNull();
+    });
     it('合法组合放行;帧时长没有上限(上游实测 3000ms 通过)', () => {
         expect(gif({ frame_count: '16', frame_duration_ms: '3000', complexity: 'low' })).toBeNull();
     });
@@ -197,8 +201,7 @@ describe('适配器 GIF 全流程', () => {
         expect(res.status).toBe(400);
         const { error } = (await res.json()) as { error: { message: string; param: string } };
         expect(error.param).toBe('size');
-        expect(error.message).toContain('No supported sheet fits 4 GIF frames');
-        expect(error.message).not.toMatch(/openai/i);
+        expect(error.message).toBe('No supported sheet fits 4 GIF frames at the requested size.');
     });
 
     it('svg 立即 400,不打上游', async () => {

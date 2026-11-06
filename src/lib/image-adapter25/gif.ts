@@ -7,6 +7,7 @@
  *
  * 帧数 / 帧时长 / 压缩的规则与上游原文一致(ztyunjuan 透出的官方错误):frame_count 2-16、frame_duration_ms ≥ 20、
  * GIF 不收 output_compression。提前拦截省一次 25s 的上游往返。流式 GIF 官方不支持,在代理层拦(适配器看不到 stream)。
+ * 改图出 GIF 只能用默认帧参数:ztyunjuan 带任一帧参数恒回 503 `Unknown internal error`(multipart / JSON 各 2-9 帧实测),不带才出图。
  */
 import { loadSharp } from '@/lib/image/transcode';
 
@@ -63,7 +64,11 @@ function intError(raw: string, param: string): Gpt26ParamError | null {
 }
 
 /** 2.6 入参校验,都是换渠道也过不去的确定性错误。svg 两家上游都出不来,立即拒,不空跑 failover。 */
-export function gpt26ParamError(extras: Record<string, string>, hasMask: boolean): Gpt26ParamError | null {
+export function gpt26ParamError(
+    extras: Record<string, string>,
+    hasMask: boolean,
+    isEdits = false,
+): Gpt26ParamError | null {
     const format = requestedOutputFormat(extras);
     if (format === 'svg')
         return {
@@ -79,6 +84,15 @@ export function gpt26ParamError(extras: Record<string, string>, hasMask: boolean
             code: 'invalid_value',
         };
     if (format !== 'gif') return null;
+    if (isEdits) {
+        const param = GIF_ONLY_EXTRAS.find((k) => extras[k] !== undefined);
+        if (param)
+            return {
+                detail: `'${param}' is not supported for GIF output from image edits.`,
+                param,
+                code: 'invalid_value',
+            };
+    }
     if (extras.frame_count !== undefined) {
         const err = intError(extras.frame_count, 'frame_count');
         if (err) return err;
