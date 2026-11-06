@@ -11,9 +11,16 @@
  *     复用送新请求进来(实测 Node 22/25 均如此),排空永远收不住 → 最终还是被 SIGKILL。
  *     本模块解决这一条:SIGTERM 之后每个响应头带 `Connection: close`,Caddy 响应完即弃连,
  *     新请求只能重新拨号 → 监听已关 → Caddy `lb_try_duration` 立刻换副本。
+ *  3. (2026-11-06)Next 自己的 SIGTERM 处理只在 **dev** 调 `server.closeAllConnections()`
+ *     (`next/dist/server/lib/start-server.js`),生产只 `server.close()`。空闲 keep-alive 连接
+ *     不会再收到响应,第 2 条的 `Connection: close` 碰不到它们,`close()` 于是一直等对端 →
+ *     主站 Portal(单容器、nginx `Connection ""` 长连接)实测被 compose 等满 630s 才 SIGKILL,
+ *     公网 502 持续 246 秒。本模块现在在排空时调 `server.closeIdleConnections()`:只关空闲连接,
+ *     在途请求照常做完(由第 2 条带 `Connection: close` 收尾)。
  *
  * 实现:包一层 `http.ServerResponse.prototype.writeHead`(显式 writeHead 与隐式 flush 都经它),
- * 排空中且头未发则 setHeader('Connection','close')。只在 nodejs runtime 装;幂等。
+ * 排空中且头未发则 setHeader('Connection','close');同时记下响应所属的 server,排空时关其空闲连接。
+ * 只在 nodejs runtime 装;幂等。
  */
 import type http from 'node:http';
 
@@ -28,6 +35,8 @@ type Opts = {
 export type DrainHook = {
     isDraining: () => boolean;
     startDraining: () => void;
+    /** 测试用:已观察到的 server 数量。 */
+    trackedServers: () => number;
     /** 测试用:还原 prototype。 */
     uninstall: () => void;
 };
@@ -43,8 +52,13 @@ export function installDrainHook(httpMod: typeof http, opts: Opts = {}): DrainHo
     let draining = false;
     const log = opts.log ?? ((m: string) => console.log(m));
     const origWriteHead = proto.writeHead;
+    /** Servers seen through a response, so draining can close their idle connections. */
+    const servers = new Set<http.Server>();
 
     proto.writeHead = function (this: http.ServerResponse, ...args: unknown[]) {
+        // `socket.server` is the http.Server that accepted the connection.
+        const server = (this.socket as { server?: http.Server } | null)?.server;
+        if (server) servers.add(server);
         if (draining && !this.headersSent) {
             this.shouldKeepAlive = false;
             this.setHeader('Connection', 'close');
@@ -73,7 +87,22 @@ export function installDrainHook(httpMod: typeof http, opts: Opts = {}): DrainHo
     const startDraining = () => {
         if (draining) return;
         draining = true;
-        log('[drain] SIGTERM received: responses now carry Connection: close; waiting for in-flight requests');
+        // Next closes idle connections only in dev, so in production server.close()
+        // waits for nginx's idle keep-alive sockets and the stop grace period runs
+        // out. Close exactly those; in-flight requests finish and the header above
+        // keeps their connection from being reused.
+        let closed = 0;
+        for (const server of servers) {
+            try {
+                server.closeIdleConnections();
+                closed += 1;
+            } catch {
+                /* Older runtimes without closeIdleConnections; the header still applies. */
+            }
+        }
+        log(
+            `[drain] SIGTERM received: responses now carry Connection: close; closed idle connections on ${closed} server(s), waiting for in-flight requests`,
+        );
     };
 
     const proc = opts.proc === undefined ? process : opts.proc;
@@ -83,9 +112,11 @@ export function installDrainHook(httpMod: typeof http, opts: Opts = {}): DrainHo
     const hook: DrainHook = {
         isDraining: () => draining,
         startDraining,
+        trackedServers: () => servers.size,
         uninstall: () => {
             proto.writeHead = origWriteHead;
             delete proto[INSTALLED];
+            servers.clear();
             if (proc) proc.off(signal, startDraining);
         },
     };

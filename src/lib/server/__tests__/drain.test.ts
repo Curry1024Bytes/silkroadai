@@ -49,11 +49,39 @@ describe('installDrainHook', () => {
 
         hook.startDraining();
         expect(hook.isDraining()).toBe(true);
-        const a = await request(port, agent, '/implicit');
-        const b = await request(port, agent, '/explicit');
+        // Draining closed the pooled idle connection, so these dial fresh ones.
+        // The listener stays open here; in production it is already closed.
+        const fresh = new http.Agent({ keepAlive: true });
+        const a = await request(port, fresh, '/implicit');
+        const b = await request(port, fresh, '/explicit');
         expect(a).toMatchObject({ status: 200, connection: 'close', body: 'i' });
         expect(b).toMatchObject({ status: 200, connection: 'close', body: 'e' });
         agent.destroy();
+        fresh.destroy();
+    });
+
+    it('排空关掉空闲长连接,否则 server.close() 会等满宽限期', async () => {
+        hook = installDrainHook(http, { proc: null, log: () => {} });
+        server = http.createServer((_req, res) => res.end('ok'));
+        await new Promise<void>((r) => server!.listen(0, r));
+        const port = (server.address() as { port: number }).port;
+        const agent = new http.Agent({ keepAlive: true });
+
+        await request(port, agent, '/');
+        // The response told the hook which server accepted the connection, which
+        // is how draining knows whose idle connections to close.
+        expect(hook.trackedServers()).toBe(1);
+
+        const closed = new Promise<void>((resolve) => server!.close(() => resolve()));
+        hook.startDraining();
+        await expect(
+            Promise.race([
+                closed.then(() => 'closed' as const),
+                new Promise<'still-open'>((r) => setTimeout(() => r('still-open'), 2_000)),
+            ]),
+        ).resolves.toBe('closed');
+        agent.destroy();
+        server = null; // Already closed; afterEach must not close it twice.
     });
 
     it('幂等:重复 install 返回同一钩子;信号触发排空', () => {
