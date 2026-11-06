@@ -5,15 +5,18 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish';
 import { basePriceSchema, SimplePricingError } from '@/lib/admin/pricing-simple-core';
+import { VIDEO_TOKEN_INPUTS, VIDEO_TOKEN_RESOLUTIONS } from '@/lib/admin/pricing-video-token-expression';
 import {
     loadSimplePricing,
     lookupBillLog,
     previewModel,
     previewTier,
+    previewVideoQuote,
     resyncCatalog,
     saveModel,
     savePurchaseRate,
     saveTier,
+    saveVideoQuote,
     verifyRuntime,
 } from '@/lib/admin/pricing-simple';
 
@@ -22,6 +25,23 @@ const noStore = { 'Cache-Control': 'private, no-store' };
 
 const modelName = z.string().trim().min(1).max(200);
 const ratio = z.number().finite().positive().max(1000);
+const discount = z.number().finite().positive().max(2);
+const videoQuote = {
+    model: modelName,
+    official: z
+        .array(
+            z
+                .object({
+                    resolution: z.enum(VIDEO_TOKEN_RESOLUTIONS),
+                    video_input: z.enum(VIDEO_TOKEN_INPUTS),
+                    price: z.number().finite().positive().max(1_000_000),
+                })
+                .strict(),
+        )
+        .length(8),
+    buy_discount: discount,
+    sell_discount: discount,
+};
 
 const bodySchema = z.discriminatedUnion('action', [
     z.object({ action: z.literal('preview_tier'), group_id: z.string().uuid(), ratio }).strict(),
@@ -43,6 +63,15 @@ const bodySchema = z.discriminatedUnion('action', [
         })
         .strict(),
     z.object({ action: z.literal('resync_catalog') }).strict(),
+    z.object({ action: z.literal('preview_video_quote'), ...videoQuote }).strict(),
+    z
+        .object({
+            action: z.literal('save_video_quote'),
+            ...videoQuote,
+            expected_state: z.string().min(1).max(200_000),
+            expected_revision: z.number().int().positive().max(2_147_483_646).nullable(),
+        })
+        .strict(),
     z.object({ action: z.literal('verify_runtime'), models: z.array(modelName).min(1).max(30) }).strict(),
     z
         .object({
@@ -118,6 +147,34 @@ export async function POST(request: NextRequest) {
                 );
             case 'resync_catalog':
                 return NextResponse.json({ result: await resyncCatalog(context) }, { headers: noStore });
+            case 'preview_video_quote':
+                return NextResponse.json(
+                    {
+                        preview: await previewVideoQuote(admin, body.model, {
+                            official: body.official,
+                            buy_discount: body.buy_discount,
+                            sell_discount: body.sell_discount,
+                        }),
+                    },
+                    { headers: noStore },
+                );
+            case 'save_video_quote':
+                return NextResponse.json(
+                    {
+                        result: await saveVideoQuote(
+                            context,
+                            body.model,
+                            {
+                                official: body.official,
+                                buy_discount: body.buy_discount,
+                                sell_discount: body.sell_discount,
+                            },
+                            body.expected_state,
+                            body.expected_revision,
+                        ),
+                    },
+                    { headers: noStore },
+                );
             case 'verify_runtime':
                 return NextResponse.json({ check: await verifyRuntime(body.models) }, { headers: noStore });
             case 'save_purchase_rate':

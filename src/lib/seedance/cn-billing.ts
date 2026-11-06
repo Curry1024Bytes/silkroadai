@@ -21,65 +21,10 @@ import { syncNewapiGate } from '@/lib/billing/newapi-gate';
 import { getUser, addQuota } from '@/lib/newapi/client';
 import { cnyToQuota } from '@/lib/newapi/quota-units';
 
-export type Resolution = '480p' | '720p' | '1080p' | '4k';
+export type { Resolution } from './official-rates';
 export type { SeedanceVariant } from './cn-adapter';
 import { variantForModel, type SeedanceVariant } from './cn-adapter';
-
-/** 【火山官方挂牌价】(元/1M token):[变体][分辨率][是否含视频输入]。上游给我们 0.75。
- *  2026-07-19 加 fast/mini;2026-08-03 全变体加 480p(上游挂牌 480p 与 720p 统一价,
- *  见 artsdance/dreamina 定价页 —— token 量 ∝ 像素,480p 整条约为 720p 的一半价)。
- *  ⚠️ 此表【不含任何折扣】;零售/客户折扣由调用方显式乘(见文件头口径说明)。 */
-const OFFICIAL_CNY_PER_M: Record<
-    SeedanceVariant,
-    Partial<Record<Resolution, { noVideo: number; withVideo: number }>>
-> = {
-    pro: {
-        '480p': { noVideo: 46, withVideo: 28 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 46, withVideo: 28 }, // 官方挂牌
-        '1080p': { noVideo: 51, withVideo: 31 }, // 官方挂牌
-        '4k': { noVideo: 26, withVideo: 16 }, // 官方挂牌
-    },
-    fast: {
-        '480p': { noVideo: 37, withVideo: 22 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
-        '1080p': { noVideo: 40.5, withVideo: 24.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
-    },
-    mini: {
-        '480p': { noVideo: 23, withVideo: 14 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
-        '1080p': { noVideo: 25.5, withVideo: 15.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
-    },
-    // seedance 2.5:国内版渠道(上游 artsdance-2-5-pro)仅 720p/1080p;火山渠道(上游筷子
-    // 开放平台,2026-08-17)仅 480p/720p —— 两渠道同一费率表(同为火山官方挂牌),取并集。
-    // 480p 与 720p 同费率(与 2.0 全系一致:token ∝ 像素,整条约半价,不是费率档不同)。
-    '2.5': {
-        '480p': { noVideo: 70, withVideo: 42 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 70, withVideo: 42 }, // 官方挂牌
-        '1080p': { noVideo: 77, withVideo: 46 }, // 官方挂牌(2026-09-07 调价,原 90/54)
-    },
-    // 海外版proMax(2026-07-23,dreamina 系):dreamina 官方挂牌(上游对我们 9 折)。
-    promax: {
-        '480p': { noVideo: 68, withVideo: 40.8 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 68, withVideo: 40.8 }, // 官方挂牌
-        '1080p': { noVideo: 73.44, withVideo: 44.88 }, // 官方挂牌
-        '4k': { noVideo: 38.08, withVideo: 23.12 }, // 官方挂牌
-    },
-    'promax-fast': {
-        '480p': { noVideo: 54.4, withVideo: 32.896 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 54.4, withVideo: 32.896 }, // 官方挂牌
-    },
-    'promax-mini': {
-        '480p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌
-    },
-    // 海外版 proMax seedance 2.5(2026-08-08):按原价(划线价)挂牌;2026-10-15 换 service-inference.ai 上游后
-    // 加 480p(与 720p 同费率,沿用全线 480p 口径)。
-    'promax-2.5': {
-        '480p': { noVideo: 72.76, withVideo: 43.52 }, // 官方挂牌(与 720p 同费率)
-        '720p': { noVideo: 72.76, withVideo: 43.52 }, // 官方挂牌(原价)
-        '1080p': { noVideo: 80.24, withVideo: 47.94 }, // 官方挂牌(原价)
-    },
-};
+import { OFFICIAL_CNY_PER_M, type Resolution } from './official-rates';
 
 /** 标准零售折扣率:seedance-cn 渠道对客价 = 官方挂牌 × 本比例(operator 定 85 折)。
  *  企业门户【不】用它 —— 那边按客户 discount 显式乘(见 enterprise/billing)。 */

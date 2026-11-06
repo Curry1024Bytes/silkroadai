@@ -2,6 +2,12 @@
 export interface PricingCostConfig {
     version: 1;
     basis: 'token' | 'image' | 'video';
+    /**
+     * Video only. Absent = legacy per-second trial quotes. `million_tokens` quotes
+     * official ¥ per 1M upstream tokens and is written only by the video-token quote
+     * editor on the pricing page (model base prices).
+     */
+    video_unit?: 'second' | 'million_tokens';
     currency: 'cny' | 'credits';
     credits_per_cny: number;
     upstream_multiplier: number;

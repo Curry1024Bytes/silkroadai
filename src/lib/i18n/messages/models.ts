@@ -84,6 +84,9 @@ export const modelsMessages = defineMessages(
             更多规格价格见详情: 'See details for other specs',
             其他输入长度价格见详情: 'See details for other input lengths',
             '另含 token 计费，完整价格见详情': 'Token charges also apply; see details for full pricing',
+            无参考视频: 'no reference video',
+            有参考视频: 'with reference video',
+            其他分辨率和参考视频的价格见详情: 'See details for other resolutions and reference video',
         } as Record<string, string>,
     },
 );

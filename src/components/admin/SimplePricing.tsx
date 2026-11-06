@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import PricingReferencePicker, { type PricingReferenceSelection } from '@/components/admin/PricingReferencePicker';
 import CatalogTieredPriceDetails from '@/components/admin/CatalogTieredPriceDetails';
 import { pricingNumberFromInput, pricingNumberInput } from '@/components/admin/pricing-number-input';
-import type { BasePrice } from '@/lib/admin/pricing-simple-core';
+import type { BasePrice, EditableBasePrice } from '@/lib/admin/pricing-simple-core';
 import type {
     CellStatus,
     LoggedBillLookup,
@@ -14,6 +14,8 @@ import type {
     SimplePricingView,
     SimpleTier,
     SimpleUpstreamModel,
+    SimpleVideoQuote,
+    SimpleVideoQuotePreview,
 } from '@/lib/admin/pricing-simple';
 import {
     cnyMatches,
@@ -24,7 +26,9 @@ import {
     type BillLine,
 } from '@/lib/admin/pricing-bill-check';
 import type { CatalogAmounts, CatalogDiff, CatalogDiffField } from '@/lib/admin/pricing-simple-core';
-import { catalogDetailLines } from '@/lib/models/catalog-pricing-details';
+import { catalogDetailLines, videoTokenSummaryCell } from '@/lib/models/catalog-pricing-details';
+import { computeVideoQuote, type VideoQuoteCell, type VideoQuoteInput } from '@/lib/admin/pricing-video-quote';
+import { VIDEO_TOKEN_COMBOS, videoTokenInputLabel, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
 
 type Tab = 'tiers' | 'models' | 'overview' | 'check';
 
@@ -56,6 +60,10 @@ function money(value: number | null | undefined): string {
 
 function amountsLabel(amounts: CatalogAmounts | null, en: boolean): string {
     if (!amounts) return '—';
+    if (amounts.billing_details?.mode === 'video_token') {
+        const cell = videoTokenSummaryCell(amounts.billing_details);
+        return `${cell.resolution} ${videoTokenInputLabel(cell.video_input, en)} ${money(cell.price)}${en ? '/1M' : '/百万'} · ${en ? `${amounts.billing_details.cells.length} cells` : `共 ${amounts.billing_details.cells.length} 档`}`;
+    }
     if (amounts.billing_details && amounts.billing_details.mode !== 'tiered_token')
         return catalogDetailLines(amounts.billing_details, en).join(' · ');
     if (amounts.per_image_cny !== null) return `${money(amounts.per_image_cny)}${en ? '/call' : '/次'}`;
@@ -642,7 +650,8 @@ function draftFrom(base: BasePrice | null, modality: string): ModelDraft {
         price: '',
         tiers: [],
     };
-    if (!base) return empty;
+    // Video-token matrices are edited only through VideoQuoteEditor.
+    if (!base || base.mode === 'video_token') return empty;
     if (base.mode === 'token')
         return {
             ...empty,
@@ -668,7 +677,7 @@ function draftFrom(base: BasePrice | null, modality: string): ModelDraft {
     };
 }
 
-function baseFrom(draft: ModelDraft): BasePrice {
+function baseFrom(draft: ModelDraft): EditableBasePrice {
     const value = (raw: string) => pricingNumberFromInput(raw) ?? Number.NaN;
     const optional = (raw: string) => (raw.trim() ? value(raw) : null);
     if (draft.mode === 'per_call') return { mode: 'per_call', price: value(draft.price) };
@@ -700,6 +709,7 @@ function baseSummary(base: BasePrice | null, en: boolean): string {
     if (!base) return en ? 'Unpriced' : '未定价';
     if (base.mode === 'per_call') return `$${base.price}${en ? '/call' : '/次'}`;
     if (base.mode === 'token') return `$${base.input} / $${base.output}`;
+    if (base.mode === 'video_token') return en ? 'Video · 8 cells' : '视频 · 8 档';
     return `${en ? 'Tiered' : '阶梯'} ×${base.tiers.length} · $${base.tiers[0].rates.input} / $${base.tiers[0].rates.output}`;
 }
 
@@ -772,6 +782,16 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
             <div>
                 {current?.read_only ? (
                     <p className={`py-8 text-sm ${muted}`}>{current.error}</p>
+                ) : current?.base?.mode === 'video_token' && current.video_quote ? (
+                    <VideoQuoteEditor
+                        key={`${current.name}:${current.state}:${current.video_quote.rule?.revision ?? 0}`}
+                        model={current}
+                        view={view}
+                        en={en}
+                        isDark={isDark}
+                        onSaved={onSaved}
+                        onError={onError}
+                    />
                 ) : current ? (
                     <ModelEditor
                         key={`${current.name}:${current.state}`}
@@ -1124,6 +1144,304 @@ function ModelEditor({ model, view, en, isDark, onSaved, onError }: PanelProps &
     );
 }
 
+// ── Video-token quote (官方价 × 折扣) ──
+
+/** Official ¥/1M per cell, plus the buy and sell discount, as typed. */
+interface VideoQuoteDraft {
+    official: Record<string, string>;
+    buy: string;
+    sell: string;
+}
+
+function videoDraftFrom(quote: SimpleVideoQuote): VideoQuoteDraft {
+    const stored = quote.rule?.quote ?? null;
+    const source: VideoQuoteInput['official'] = stored?.official ?? quote.prefill ?? [];
+    const prices = new Map(source.map((cell) => [videoTokenKey(cell), cell.price] as const));
+    return {
+        official: Object.fromEntries(
+            VIDEO_TOKEN_COMBOS.map((combo) => {
+                const price = prices.get(videoTokenKey(combo));
+                return [videoTokenKey(combo), price === undefined ? '' : text(price)];
+            }),
+        ),
+        buy: stored ? text(stored.buy_discount) : '',
+        sell: stored ? text(stored.sell_discount) : '',
+    };
+}
+
+/** The draft as the server expects it, or null while a field is still empty or invalid. */
+function videoQuoteFromDraft(draft: VideoQuoteDraft): VideoQuoteInput | null {
+    const official = VIDEO_TOKEN_COMBOS.map((combo) => ({
+        ...combo,
+        price: pricingNumberFromInput(draft.official[videoTokenKey(combo)] ?? ''),
+    }));
+    const buy = pricingNumberFromInput(draft.buy);
+    const sell = pricingNumberFromInput(draft.sell);
+    if (official.some((cell) => cell.price === null) || buy === null || sell === null) return null;
+    return {
+        official: official as VideoQuoteInput['official'],
+        buy_discount: buy,
+        sell_discount: sell,
+    };
+}
+
+function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelProps & { model: SimpleUpstreamModel }) {
+    const quote = model.video_quote!;
+    const [draft, setDraft] = useState<VideoQuoteDraft>(() => videoDraftFrom(quote));
+    const [preview, setPreview] = useState<{ input: VideoQuoteInput; data: SimpleVideoQuotePreview } | null>(null);
+    const [busy, setBusy] = useState(false);
+    const muted = isDark ? 'text-slate-400' : 'text-slate-500';
+    const ratio = quote.group_ratio;
+    const live = useMemo(
+        () =>
+            new Map(
+                (model.base?.mode === 'video_token' ? model.base.cells : []).map((cell) => [
+                    videoTokenKey(cell),
+                    cell.price,
+                ]),
+            ),
+        [model.base],
+    );
+    const input = videoQuoteFromDraft(draft);
+    // Local echo of the server's arithmetic so the table reacts while typing; the
+    // server recomputes it and only its numbers are ever saved.
+    const local = useMemo(() => {
+        if (!input || ratio === null) return { cells: null, error: '' };
+        try {
+            return { cells: computeVideoQuote(input, view.units.base_fx, ratio), error: '' };
+        } catch (caught) {
+            return { cells: null, error: caught instanceof Error ? caught.message : '报价无法计算。' };
+        }
+    }, [input, ratio, view.units.base_fx]);
+    const cells: Array<VideoQuoteCell | null> = preview
+        ? preview.data.cells
+        : (local.cells ?? VIDEO_TOKEN_COMBOS.map(() => null));
+
+    const set = (patch: Partial<VideoQuoteDraft>) => {
+        setPreview(null);
+        setDraft((previous) => ({ ...previous, ...patch }));
+    };
+    const setPrice = (key: string, value: string) => set({ official: { ...draft.official, [key]: value } });
+    const requestPreview = async () => {
+        if (!input) return;
+        setBusy(true);
+        onError('');
+        try {
+            const { preview: data } = await api<{ preview: SimpleVideoQuotePreview }>({
+                action: 'preview_video_quote',
+                model: model.name,
+                ...input,
+            });
+            setPreview({ input, data });
+        } catch (caught) {
+            onError(caught instanceof Error ? caught.message : '预览失败。');
+        } finally {
+            setBusy(false);
+        }
+    };
+    const confirm = async () => {
+        if (!preview) return;
+        setBusy(true);
+        onError('');
+        try {
+            const { result } = await api<{ result: SaveResult }>({
+                action: 'save_video_quote',
+                model: model.name,
+                ...preview.input,
+                expected_state: model.state,
+                expected_revision: quote.rule?.revision ?? null,
+            });
+            setPreview(null);
+            onSaved(result);
+        } catch (caught) {
+            onError(caught instanceof Error ? caught.message : '保存失败。');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <div className="space-y-3 text-sm">
+            <div>
+                <h3 className="text-base font-semibold">{model.name}</h3>
+                <p className={`text-xs ${muted}`}>
+                    {en ? 'Used by' : '使用它的模型'}:{' '}
+                    {model.used_by.map((use) => `${use.display_name}(${use.tier})`).join('、')}
+                </p>
+                <p className={`mt-1 text-xs ${muted}`}>
+                    {en
+                        ? `Video billed per 1M upstream tokens. Tier ${quote.tier_name} (new-api group ${quote.newapi_group}), ratio ${ratio ?? '?'}.`
+                        : `视频按上游 token 计费。档次「${quote.tier_name}」(new-api 分组 ${quote.newapi_group})，倍率 ${ratio ?? '?'}。`}
+                </p>
+                {model.error && <p className="mt-1 text-xs text-red-500">{model.error}</p>}
+                {quote.notes.map((note) => (
+                    <p key={note} className="mt-1 text-xs text-amber-600">
+                        ⚠ {note}
+                    </p>
+                ))}
+                {quote.drift && (
+                    <p className="mt-1 text-xs text-amber-600">
+                        ⚠{' '}
+                        {en
+                            ? 'new-api no longer bills what this stored quote produces; someone changed the formula there. Save again to realign.'
+                            : 'new-api 现在的计费系数与这份已保存报价算出来的不一致(有人直接在 new-api 改过)。重新保存可对齐。'}
+                    </p>
+                )}
+                {quote.rule?.quote === null && (
+                    <p className="mt-1 text-xs text-amber-600">
+                        ⚠{' '}
+                        {en ? 'Stored cost data is not a video-token quote.' : '已保存的成本资料不是视频 token 报价。'}
+                    </p>
+                )}
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+                <Field
+                    label={en ? 'Buy discount (0.7 = 70% of official)' : '进货折扣(0.7 = 官方价 7 折)'}
+                    value={draft.buy}
+                    onChange={(buy) => set({ buy })}
+                    isDark={isDark}
+                />
+                <Field
+                    label={en ? 'Sell discount' : '售卖折扣'}
+                    value={draft.sell}
+                    onChange={(sell) => set({ sell })}
+                    isDark={isDark}
+                />
+            </div>
+
+            <table className="w-full text-xs">
+                <thead className={muted}>
+                    <tr>
+                        <th className="py-1 text-left">{en ? 'Resolution' : '分辨率'}</th>
+                        <th className="py-1 text-left">{en ? 'Reference video' : '参考视频'}</th>
+                        <th className="py-1 text-right">{en ? 'Official ¥/1M' : '官方价 ¥/百万'}</th>
+                        <th className="py-1 text-right">{en ? 'Cost' : '成本'}</th>
+                        <th className="py-1 text-right">{en ? 'Coefficient' : '计费系数'}</th>
+                        <th className="py-1 text-right">{en ? 'Customer pays' : '客户实付'}</th>
+                        <th className="py-1 text-right">{en ? 'Margin' : '毛利'}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {VIDEO_TOKEN_COMBOS.map((combo, index) => {
+                        const key = videoTokenKey(combo);
+                        const cell = cells[index];
+                        const current = live.get(key);
+                        return (
+                            <tr
+                                key={key}
+                                className={isDark ? 'border-t border-slate-700' : 'border-t border-slate-200'}
+                            >
+                                <td className="py-1">{combo.resolution}</td>
+                                <td className="py-1">{videoTokenInputLabel(combo.video_input, en)}</td>
+                                <td className="py-1 text-right">
+                                    <input
+                                        aria-label={`official ${key}`}
+                                        className={`w-24 rounded border px-2 py-1 text-right text-xs ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white'}`}
+                                        value={draft.official[key] ?? ''}
+                                        onChange={(event) => setPrice(key, event.target.value)}
+                                    />
+                                </td>
+                                <td className="py-1 text-right">{cell ? money(cell.cost) : '—'}</td>
+                                <td className="py-1 text-right">
+                                    {cell ? (
+                                        <span className={current === cell.coefficient ? muted : 'font-medium'}>
+                                            {cell.coefficient}
+                                            {current !== undefined && current !== cell.coefficient && (
+                                                <span className={muted}> ←{current}</span>
+                                            )}
+                                        </span>
+                                    ) : (
+                                        '—'
+                                    )}
+                                </td>
+                                <td className="py-1 text-right">{cell ? money(cell.actual) : '—'}</td>
+                                <td className="py-1 text-right">{cell ? percent(cell.margin) : '—'}</td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+
+            <p className={`text-xs ${muted}`}>
+                {en
+                    ? 'Official prices are ¥ per 1M upstream tokens. Coefficient = official × sell discount ÷ (fx × tier ratio), rounded up to two decimals, so the customer price is never below target.'
+                    : '官方价按「元 / 百万上游 token」填写。计费系数 = 官方价 × 售卖折扣 ÷ (换算比例 × 档次倍率)，两位小数向上取整，客户实付不会低于目标价。'}
+            </p>
+            {ratio === null && (
+                <p className="text-xs text-red-500">
+                    {en
+                        ? `new-api group "${quote.newapi_group}" has no group ratio; set it on the Tiers tab first.`
+                        : `new-api 分组「${quote.newapi_group}」没有分组倍率，请先在「档次」页设置。`}
+                </p>
+            )}
+            {local.error && <p className="text-xs text-red-500">{local.error}</p>}
+            {quote.sale_rules_managed && (
+                <p className="text-xs text-amber-600">
+                    ⚠{' '}
+                    {en
+                        ? 'This tier is managed by sale rules; saving here is refused until it is released.'
+                        : '该档次已被售卖规则纳管，纳管期间这里不能保存。'}
+                </p>
+            )}
+            {quote.customer_overrides > 0 && (
+                <p className={`text-xs ${muted}`}>
+                    {en
+                        ? `${quote.customer_overrides} customer(s) on this tier have their own ratio; their price differs.`
+                        : `该档次有 ${quote.customer_overrides} 位客户使用专属倍率，他们的实付价与上表不同。`}
+                </p>
+            )}
+
+            <button
+                type="button"
+                className={buttonCls('plain', isDark)}
+                disabled={busy || !input || ratio === null || !!local.error}
+                onClick={() => void requestPreview()}
+            >
+                {en ? 'Preview' : '预览'}
+            </button>
+            {preview && (
+                <div
+                    className={`mt-3 rounded-lg border p-3 text-sm ${isDark ? 'border-amber-700 bg-amber-950/20' : 'border-amber-200 bg-amber-50'}`}
+                >
+                    {preview.data.unchanged ? (
+                        <p>{en ? 'new-api already bills these coefficients.' : 'new-api 已经是这些系数，无需写入。'}</p>
+                    ) : (
+                        <p className="font-medium">
+                            {en
+                                ? `${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} of 8 coefficient(s) will change.`
+                                : `8 档中有 ${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} 档的计费系数会变。`}
+                        </p>
+                    )}
+                    {preview.data.warnings.map((warning) => (
+                        <p key={warning} className="mt-1 text-amber-600">
+                            ⚠ {warning}
+                        </p>
+                    ))}
+                    <div className="mt-3 flex gap-2">
+                        <button
+                            type="button"
+                            className={buttonCls('primary', isDark)}
+                            disabled={busy}
+                            onClick={() => void confirm()}
+                        >
+                            {busy ? (en ? 'Saving…' : '保存中…') : en ? 'Confirm and save' : '确认保存'}
+                        </button>
+                        <button
+                            type="button"
+                            className={buttonCls('plain', isDark)}
+                            disabled={busy}
+                            onClick={() => setPreview(null)}
+                        >
+                            {en ? 'Cancel' : '取消'}
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ── Overview ──
 
 function OverviewPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
@@ -1385,10 +1703,13 @@ function BillCheckPanel({ view, en, isDark, onError }: PanelProps) {
         }
     };
 
+    // Video-token models are billed from task usage (resolution, reference video), not token
+    // counts, so this token-usage estimator cannot reproduce their charge.
+    const billBase = model?.base && model.base.mode !== 'video_token' ? model.base : null;
     const estimate =
-        model?.base && tier?.ratio
+        billBase && tier?.ratio
             ? estimateBill(
-                  model.base,
+                  billBase,
                   {
                       prompt: count(usage.prompt),
                       completion: count(usage.completion),
@@ -1448,6 +1769,12 @@ function BillCheckPanel({ view, en, isDark, onError }: PanelProps) {
             en
                 ? `Model "${lookup.log.model}" is not in the catalog; pick it by hand.`
                 : `日志模型「${lookup.log.model}」不在目录映射里，请手动选择模型。`,
+        );
+    if (model?.base?.mode === 'video_token')
+        hints.push(
+            en
+                ? 'This model is billed per task (resolution and reference video), so it cannot be checked here. Compare the quote on the Models tab instead.'
+                : '该模型按任务参数(分辨率、是否有参考视频)计费，这里的 token 用量算不出它的扣费;请在「模型」页用报价表核对。',
         );
 
     const selectCls = `rounded border px-2 py-1 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white'}`;

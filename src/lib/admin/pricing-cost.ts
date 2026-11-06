@@ -157,6 +157,7 @@ const configShape = z
     .object({
         version: z.literal(1),
         basis: z.enum(['token', 'image', 'video']),
+        video_unit: z.enum(['second', 'million_tokens']).optional(),
         currency: z.enum(['cny', 'credits']),
         credits_per_cny: positive,
         upstream_multiplier: positive,
@@ -198,6 +199,20 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     const issue = (path: Array<string | number>, message: string) => ctx.addIssue({ code: 'custom', path, message });
     if (config.currency === 'cny' && config.credits_per_cny !== 1) {
         issue(['credits_per_cny'], '人民币报价的兑换比例须为 1，避免重复折算。');
+    }
+    if (config.video_unit !== undefined && config.basis !== 'video')
+        issue(['video_unit'], '只有视频成本可以选择计量单位。');
+    if (config.video_unit === 'million_tokens') {
+        if (config.currency !== 'cny') issue(['currency'], '按 token 计价的视频报价须使用人民币官方价。');
+        if (config.retail_multiplier === undefined)
+            issue(['retail_multiplier'], '按 token 计价的视频报价须填写售卖折扣。');
+        config.variants.forEach((variant, index) => {
+            if (variant.minimum_units !== 1 || variant.step_units !== 1)
+                issue(['variants', index, 'minimum_units'], '按 token 计价不使用最低用量和步长。');
+            if (variant.audio !== 'any') issue(['variants', index, 'audio'], '按 token 计价不区分声音。');
+            if (variant.reference_video === 'any')
+                issue(['variants', index, 'reference_video'], '按 token 计价须区分有无参考视频。');
+        });
     }
     if (config.retail_multiplier !== undefined) {
         if (config.markup_percent !== 0)
@@ -301,6 +316,7 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
             margin_percent: retail > 0 ? round(divide(multiply(decimal(profit), decimal(100)), decimal(retail)), 4) : 0,
         };
     };
+    const videoTokens = config.basis === 'video' && config.video_unit === 'million_tokens';
     const lines =
         config.basis === 'token'
             ? tokenKeys.flatMap((key) => {
@@ -308,7 +324,12 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
                   return price == null ? [] : [makeLine(key, tokenLabels[key], 'million_tokens', price)];
               })
             : config.variants.map((variant) =>
-                  makeLine(variant.key, variant.label, config.basis === 'image' ? 'image' : 'second', variant.price),
+                  makeLine(
+                      variant.key,
+                      variant.label,
+                      config.basis === 'image' ? 'image' : videoTokens ? 'million_tokens' : 'second',
+                      variant.price,
+                  ),
               );
     return { lines, multiplier: asNumber(markupMultiplier(config)) };
 }
@@ -324,10 +345,12 @@ export function calculateCostSample(input: PricingCostConfig, key: string, units
     const line = calculation.lines.find((item) => item.key === key);
     if (!line) throw new Error('未找到该计费项的明确价格，不能按免费试算。');
     const requestedUnits = nonNegative.parse(units);
-    if (config.basis !== 'video' && !Number.isSafeInteger(requestedUnits))
+    // Token counts (text or token-priced video) are whole numbers priced per million.
+    const perMillion = config.basis === 'token' || config.video_unit === 'million_tokens';
+    if ((config.basis !== 'video' || perMillion) && !Number.isSafeInteger(requestedUnits))
         throw new Error('Token 数和图片张数必须是非负整数。');
     let billed = decimal(requestedUnits);
-    if (config.basis !== 'token' && requestedUnits > 0) {
+    if (!perMillion && requestedUnits > 0) {
         const variant = config.variants.find((item) => item.key === key)!;
         const minimum = decimal(variant.minimum_units);
         const excess = subtract(billed, minimum);
@@ -339,7 +362,7 @@ export function calculateCostSample(input: PricingCostConfig, key: string, units
         }
     }
     if (compare(billed, decimal(MAX_SAFE_VALUE)) > 0) throw new Error('计费用量超出可安全计算的范围。');
-    const priceUnits = config.basis === 'token' ? divide(billed, decimal(1_000_000)) : billed;
+    const priceUnits = perMillion ? divide(billed, decimal(1_000_000)) : billed;
     const cost = asNumber(multiply(decimal(line.cost), priceUnits));
     const retail = asNumber(multiply(decimal(line.retail), priceUnits));
     const profit = asNumber(multiply(subtract(decimal(line.retail), decimal(line.cost)), priceUnits));

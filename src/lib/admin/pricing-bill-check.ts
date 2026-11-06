@@ -8,7 +8,7 @@
  * Units come from the server view: the browser cannot read the prod env
  * (quota-units falls back to 7.2 there), so nothing here imports those constants.
  */
-import type { BasePrice } from './pricing-simple-core';
+import type { EditableBasePrice } from './pricing-simple-core';
 import type { TieredPricingBuildTier } from './pricing-tiered-expression';
 
 export interface BillUnits {
@@ -49,7 +49,7 @@ export interface BillLine {
 }
 
 export interface BillEstimate {
-    mode: BasePrice['mode'];
+    mode: EditableBasePrice['mode'];
     /** Tiered only: 0-based tier that priced the whole request. */
     tier: number | null;
     lines: BillLine[];
@@ -138,7 +138,7 @@ function tieredLines(tiers: TieredPricingBuildTier[], usage: BillUsage): { tier:
 }
 
 export function estimateBill(
-    base: BasePrice,
+    base: EditableBasePrice,
     usage: BillUsage,
     groupRatio: number,
     purchaseRate: number | null,

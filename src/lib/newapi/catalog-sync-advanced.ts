@@ -1,5 +1,6 @@
 import 'server-only';
 import { parseTieredPricingExpression } from '@/lib/admin/pricing-tiered-expression';
+import { isTaskUsageExpression, parseVideoTokenExpression } from '@/lib/admin/pricing-video-token-expression';
 import { IMAGE_FX } from './pricing-sync';
 import {
     parseCatalogBillingDetails,
@@ -90,7 +91,16 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
         if (mode === 'tiered_expr') {
             const expression = own(syncDictionary(raw.billingExpr, 'billing_expr'), model);
             if (typeof expression !== 'string' || !expression.trim()) throw new Error('阶梯计费表达式缺失');
-            if (/\bimg(?:_cr)?\b/.test(expression)) details = componentExpression(expression);
+            if (isTaskUsageExpression(expression)) {
+                // Only the strict Seedance resolution × reference-video matrix is accepted; any
+                // other task formula still fails here instead of being guessed.
+                details = parseCatalogBillingDetails({
+                    version: 1,
+                    mode: 'video_token',
+                    unit: 'cny_per_million_tokens',
+                    cells: parseVideoTokenExpression(expression).cells,
+                })!;
+            } else if (/\bimg(?:_cr)?\b/.test(expression)) details = componentExpression(expression);
             else
                 details = parseCatalogBillingDetails({
                     version: 1,
@@ -176,6 +186,13 @@ export function syncModelModality(raw: RawSyncPrices, model: string, fallback: s
         if (Object.hasOwn(syncDictionary(raw.taskBillingPricing, 'task_billing_pricing'), model)) return 'video';
         const mode = own(syncDictionary(raw.billingMode, 'billing_mode'), model);
         if (mode === 'per-second' || /^video-|^wan-/i.test(model)) return 'video';
+        if (mode === 'tiered_expr') {
+            const expression = own(syncDictionary(raw.billingExpr, 'billing_expr'), model);
+            if (isTaskUsageExpression(expression)) {
+                parseVideoTokenExpression(expression as string);
+                return 'video';
+            }
+        }
     } catch {
         /* The price reader reports invalid metadata and prevents publication. */
     }

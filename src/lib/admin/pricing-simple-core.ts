@@ -17,8 +17,20 @@ import {
     parseTieredPricingExpression,
     type TieredPricingBuildTier,
 } from './pricing-tiered-expression';
+import {
+    isTaskUsageExpression,
+    parseVideoTokenExpression,
+    rewriteVideoTokenExpression,
+    type VideoTokenCell,
+    type VideoTokenInput,
+    type VideoTokenResolution,
+} from './pricing-video-token-expression';
 import type { TieredPricingDetails } from './pricing-publish-types';
-import type { CatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
+import {
+    parseCatalogBillingDetails,
+    scaleCatalogBillingDetails,
+    type CatalogBillingDetails,
+} from '@/lib/models/catalog-pricing-details';
 
 /** ¥ per 1 unit of base price (tiered coefficients and ModelPrice). Production = 1. */
 export const BASE_FX = USD_TO_CNY_RATE;
@@ -55,7 +67,19 @@ export interface PerCallBasePrice {
     mode: 'per_call';
     price: number;
 }
-export type BasePrice = TokenBasePrice | TieredBasePrice | PerCallBasePrice;
+/**
+ * A Seedance task-usage matrix: eight coefficients (currency per 1M tokens) by
+ * output resolution and reference video. Read here, written only through the
+ * official-price discount quote, never through save_model.
+ */
+export interface VideoTokenBasePrice {
+    mode: 'video_token';
+    cells: VideoTokenCell[];
+    fallback: { resolution: VideoTokenResolution; video_input: VideoTokenInput };
+}
+/** Base prices save_model can write. */
+export type EditableBasePrice = TokenBasePrice | TieredBasePrice | PerCallBasePrice;
+export type BasePrice = EditableBasePrice | VideoTokenBasePrice;
 
 export class SimplePricingError extends Error {
     constructor(
@@ -86,7 +110,7 @@ const tierSchema = z
     })
     .strict();
 
-export const basePriceSchema: z.ZodType<BasePrice> = z.discriminatedUnion('mode', [
+export const basePriceSchema: z.ZodType<EditableBasePrice> = z.discriminatedUnion('mode', [
     z
         .object({
             mode: z.literal('token'),
@@ -155,6 +179,10 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
     if (modes[name] === 'tiered_expr') {
         const expression = optionDict(options, EXPR_KEY, true)[name];
         if (typeof expression !== 'string') return null;
+        if (isTaskUsageExpression(expression)) {
+            const parsed = parseVideoTokenExpression(expression);
+            return { mode: 'video_token', cells: parsed.cells, fallback: parsed.fallback };
+        }
         const parsed = parseTieredPricingExpression(expression);
         return {
             mode: 'tiered',
@@ -259,11 +287,23 @@ function setEntry(
  * Order keeps every intermediate state billable: new pricing keys are written
  * before the mode switch; obsolete keys are removed after it.
  */
-export function planModelWrites(options: Record<string, unknown>, name: string, base: BasePrice): OptionWrite[] {
+export function planModelWrites(
+    options: Record<string, unknown>,
+    name: string,
+    base: EditableBasePrice,
+): OptionWrite[] {
     if (hasStructuredMediaPrice(options, name))
         throw new SimplePricingError(
             'pricing_media_readonly',
             '该模型的图片或视频计费规则须在 new-api 修改，再同步目录。',
+        );
+    if (
+        optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
+        isTaskUsageExpression(optionDict(options, EXPR_KEY, true)[name])
+    )
+        throw new SimplePricingError(
+            'pricing_video_token_quote_only',
+            '该模型按分辨率和参考视频计价，请在视频报价里按官方价和折扣改价，不能改成其他计费方式。',
         );
     const parsed = basePriceSchema.parse(base);
     const early: Array<OptionWrite | null> = [];
@@ -318,6 +358,28 @@ export function planModelWrites(options: Record<string, unknown>, name: string, 
         late.push(setEntry(options, EXPR_KEY, name, undefined));
     }
     return [...early, ...late].filter((write): write is OptionWrite => write !== null);
+}
+
+/**
+ * The single write that reprices a video-token matrix: the same expression with
+ * only its eight coefficients replaced. Mode, ModelRatio and ModelPrice stay as
+ * they are; an empty list means new-api already bills these coefficients.
+ */
+export function planVideoTokenWrites(
+    options: Record<string, unknown>,
+    name: string,
+    cells: VideoTokenCell[],
+): OptionWrite[] {
+    if (optionDict(options, MODE_KEY, true)[name] !== 'tiered_expr')
+        throw new SimplePricingError('pricing_video_token_invalid', '该模型已不再按视频 token 公式计费，请刷新。');
+    const expression = optionDict(options, EXPR_KEY, true)[name];
+    if (typeof expression !== 'string' || !isTaskUsageExpression(expression))
+        throw new SimplePricingError('pricing_video_token_invalid', '未读到该模型的视频计费公式，请刷新。');
+    if (Object.hasOwn(optionDict(options, 'ModelPrice'), name))
+        throw new SimplePricingError('pricing_tiered_ambiguous', '该模型同时配置了按次价格，请先在 new-api 核对。');
+    const next = rewriteVideoTokenExpression(expression, cells);
+    const write = setEntry(options, EXPR_KEY, name, next);
+    return write ? [write] : [];
 }
 
 /**
@@ -376,9 +438,27 @@ function cny(value: number, groupRatio: number): number {
 }
 
 export function customerPrice(
-    base: BasePrice,
+    base: EditableBasePrice,
     groupRatio: number,
-): CatalogAmounts & { billing_details: TieredPricingDetails | null } {
+): CatalogAmounts & { billing_details: TieredPricingDetails | null };
+export function customerPrice(base: BasePrice, groupRatio: number): CatalogAmounts;
+export function customerPrice(base: BasePrice, groupRatio: number): CatalogAmounts {
+    if (base.mode === 'video_token')
+        return {
+            input_cny_per_1m: null,
+            output_cny_per_1m: null,
+            per_image_cny: null,
+            // Same scaling as the catalog sync (groupRatio × fx), so snapshots compare equal.
+            billing_details: scaleCatalogBillingDetails(
+                parseCatalogBillingDetails({
+                    version: 1,
+                    mode: 'video_token',
+                    unit: 'cny_per_million_tokens',
+                    cells: base.cells,
+                })!,
+                groupRatio * BASE_FX,
+            ),
+        };
     if (base.mode === 'per_call')
         return {
             input_cny_per_1m: null,

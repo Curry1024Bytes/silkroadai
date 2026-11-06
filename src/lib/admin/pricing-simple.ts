@@ -17,6 +17,19 @@ import { tenantForInsert } from './tenant-scope';
 import { tierOrder } from './pricing-tiers';
 import type { AdminPrincipal } from './auth';
 import { parseLoggedBill, type LoggedBill } from './pricing-bill-check';
+import { saveCostRulesInTransaction } from './pricing-cost-store';
+import { pricingCostConfigSchema } from './pricing-cost';
+import {
+    VideoQuoteError,
+    computeVideoQuote,
+    videoQuoteCostConfig,
+    videoQuoteFromCostConfig,
+    type VideoQuoteCell,
+    type VideoQuoteInput,
+    type VideoQuoteOfficialCell,
+} from './pricing-video-quote';
+import { VIDEO_TOKEN_COMBOS, videoTokenKey } from './pricing-video-token-expression';
+import { arkOfficialPrice } from '@/lib/seedance/official-rates';
 import {
     BASE_FX,
     EXPR_KEY,
@@ -33,11 +46,13 @@ import {
     round,
     planGroupRatioWrites,
     planModelWrites,
+    planVideoTokenWrites,
     readBasePrice,
     hasStructuredMediaPrice,
     sameNumber,
     unverifiedWrites,
     type BasePrice,
+    type EditableBasePrice,
     type CatalogAmounts,
     type CatalogDiff,
     type OptionWrite,
@@ -103,6 +118,34 @@ export interface SimpleUpstreamModel {
     /** new-api rules that also change the charge and are not edited here. */
     notes: string[];
     used_by: Array<{ model_id: string; slug: string; display_name: string; modality: string; tier: string }>;
+    /** Only for video-token models: the official-price discount quote. */
+    video_quote?: SimpleVideoQuote;
+}
+
+/** One video-token model's quote: stored official prices and discounts, or a prefill. */
+export interface SimpleVideoQuote {
+    model_id: string;
+    tier: string;
+    tier_name: string;
+    newapi_group: string;
+    group_ratio: number | null;
+    /** The stored Portal quote (official prices, buy and sell discount), if any. */
+    rule: { id: string; revision: number; quote: VideoQuoteInput | null; updated_at: string } | null;
+    /** Official prices to start from when no quote is stored. Null = fill in by hand. */
+    prefill: VideoQuoteOfficialCell[] | null;
+    /** True when the stored quote no longer produces the live coefficients. */
+    drift: boolean;
+    customer_overrides: number;
+    sale_rules_managed: boolean;
+    notes: string[];
+}
+
+export interface SimpleVideoQuotePreview {
+    unchanged: boolean;
+    tier: string;
+    group_ratio: number;
+    cells: Array<VideoQuoteCell & { current_coefficient: number; current_actual: number }>;
+    warnings: string[];
 }
 
 export interface SimplePricingView {
@@ -339,7 +382,141 @@ export async function loadSimplePricing(admin: AdminPrincipal): Promise<SimplePr
         getPricingPublishOptions(),
         loadCounts(tenantId),
     ]);
-    return buildView(catalog, options, counts);
+    const view = buildView(catalog, options, counts);
+    await attachVideoQuotes(view, catalog, options, counts);
+    return view;
+}
+
+// ── video-token quotes (official price × discount) ──
+
+type CostRuleRow = { id: string; model_id: string; tier: string; revision: number; config: unknown; updated_at: Date };
+
+function storedQuote(rule: CostRuleRow | undefined) {
+    if (!rule) return null;
+    const parsed = pricingCostConfigSchema.safeParse(rule.config);
+    return {
+        id: rule.id,
+        revision: rule.revision,
+        quote: parsed.success ? videoQuoteFromCostConfig(parsed.data) : null,
+        updated_at: rule.updated_at.toISOString(),
+    };
+}
+
+function officialPrefill(name: string): VideoQuoteOfficialCell[] | null {
+    const cells = VIDEO_TOKEN_COMBOS.map((combo) => ({
+        ...combo,
+        price: arkOfficialPrice(name, combo.resolution, combo.video_input === 'video'),
+    }));
+    return cells.every((cell) => cell.price !== null) ? (cells as VideoQuoteOfficialCell[]) : null;
+}
+
+/** A discount quote prices one catalog model in one tier; a shared upstream name has no single ratio. */
+function planVideoQuote(
+    catalog: Awaited<ReturnType<typeof loadCatalog>>,
+    options: Record<string, unknown>,
+    name: string,
+    input: VideoQuoteInput,
+) {
+    const tierKeys = new Set(catalog.groups.map((group) => group.key));
+    const uses = catalog.models.flatMap((model) =>
+        mappings(model, tierKeys)
+            .filter((mapping) => mapping.upstream_model === name)
+            .map((mapping) => ({ model, tier: mapping.tier })),
+    );
+    if (!uses.length)
+        throw new SimplePricingError('pricing_model_not_found', `没有启用的模型在启用档次上映射到「${name}」。`, 404);
+    if (uses.length !== 1)
+        throw new SimplePricingError(
+            'pricing_video_quote_shared',
+            `「${name}」被 ${uses.length} 个模型或档次使用，按官方价折扣定价只支持一个档次。`,
+        );
+    const { model, tier } = uses[0];
+    const group = catalog.groups.find((row) => row.key === tier)!;
+    const base = safeBase(options, name);
+    if (base.error) throw new SimplePricingError('pricing_video_token_invalid', base.error);
+    if (base.base?.mode !== 'video_token')
+        throw new SimplePricingError('pricing_video_token_invalid', '该模型不是按分辨率和参考视频计价，请刷新。');
+    const ratio = groupRatioOf(options, group.newapi_group);
+    if (ratio === null)
+        throw new SimplePricingError('pricing_no_ratio', `档次「${group.display_name}」在 new-api 没有分组倍率。`);
+    const cells = quoteOrError(input, ratio);
+    let writes: OptionWrite[];
+    try {
+        writes = planVideoTokenWrites(
+            options,
+            name,
+            cells.map((cell) => ({
+                resolution: cell.resolution,
+                video_input: cell.video_input,
+                price: cell.coefficient,
+            })),
+        );
+    } catch (error) {
+        if (error instanceof SimplePricingError) throw error;
+        throw new SimplePricingError(
+            'pricing_video_token_invalid',
+            error instanceof Error ? error.message : '视频计费公式无法改写。',
+        );
+    }
+    return { model, tier, group, ratio, current: base.base, cells, writes };
+}
+
+function quoteOrError(input: VideoQuoteInput, groupRatio: number): VideoQuoteCell[] {
+    try {
+        return computeVideoQuote(input, BASE_FX, groupRatio);
+    } catch (error) {
+        if (error instanceof VideoQuoteError)
+            throw new SimplePricingError('pricing_video_quote_invalid', error.message, 400);
+        throw error;
+    }
+}
+
+async function attachVideoQuotes(
+    view: SimplePricingView,
+    catalog: Awaited<ReturnType<typeof loadCatalog>>,
+    options: Record<string, unknown>,
+    counts: Awaited<ReturnType<typeof loadCounts>>,
+) {
+    const videos = view.upstream_models.filter((model) => model.base?.mode === 'video_token');
+    if (!videos.length) return;
+    const rules: CostRuleRow[] = await prisma.pricingCostRule.findMany({
+        where: { model_id: { in: [...new Set(videos.flatMap((model) => model.used_by.map((use) => use.model_id)))] } },
+        select: { id: true, model_id: true, tier: true, revision: true, config: true, updated_at: true },
+    });
+    for (const model of videos) {
+        const use = model.used_by[0];
+        const group = catalog.groups.find((row) => row.key === use.tier)!;
+        const ratio = groupRatioOf(options, group.newapi_group);
+        const rule = storedQuote(rules.find((row) => row.model_id === use.model_id && row.tier === use.tier));
+        const notes: string[] = [];
+        if (model.used_by.length !== 1)
+            notes.push(`被 ${model.used_by.length} 个模型或档次使用，按官方价折扣定价只支持一个档次。`);
+        if (rule && !rule.quote) notes.push('已保存的成本资料不是按 token 计价的视频报价，保存后会被替换。');
+        let drift = false;
+        if (rule?.quote && ratio !== null && model.base?.mode === 'video_token') {
+            const live = new Map(model.base.cells.map((cell) => [videoTokenKey(cell), cell.price]));
+            try {
+                drift = computeVideoQuote(rule.quote, BASE_FX, ratio).some(
+                    (cell) => live.get(videoTokenKey(cell)) !== cell.coefficient,
+                );
+            } catch {
+                drift = true;
+            }
+        }
+        model.video_quote = {
+            model_id: use.model_id,
+            tier: use.tier,
+            tier_name: group.display_name,
+            newapi_group: group.newapi_group,
+            group_ratio: ratio,
+            rule,
+            prefill: rule?.quote ? null : officialPrefill(model.name),
+            drift,
+            customer_overrides: counts.overrides.get(use.tier) ?? 0,
+            sale_rules_managed: counts.managed.has(group.newapi_group),
+            notes,
+        };
+    }
 }
 
 // ── previews ──
@@ -446,7 +623,11 @@ export async function previewTier(admin: AdminPrincipal, groupId: string, ratio:
     };
 }
 
-export async function previewModel(admin: AdminPrincipal, name: string, base: BasePrice): Promise<SimplePreview> {
+export async function previewModel(
+    admin: AdminPrincipal,
+    name: string,
+    base: EditableBasePrice,
+): Promise<SimplePreview> {
     const tenantId = tenantForInsert(admin);
     const [catalog, options] = await Promise.all([loadCatalog(tenantId), getPricingPublishOptions()]);
     modelUsers(catalog, name);
@@ -618,7 +799,7 @@ export async function saveTier(
 export async function saveModel(
     context: SimplePricingContext,
     name: string,
-    base: BasePrice,
+    base: EditableBasePrice,
     expectedState: string,
 ): Promise<SaveResult> {
     const tenantId = tenantForInsert(context.admin);
@@ -650,6 +831,118 @@ export async function saveModel(
         );
         await audit(tx, context, 'pricing_model_base', name, { before, after: parsed, catalog_rows: rows });
         return { unchanged: writes.length === 0, written_keys: writes.map((write) => write.key), catalog_rows: rows };
+    }, TX_OPTIONS);
+}
+
+function videoQuoteWarnings(
+    options: Record<string, unknown>,
+    name: string,
+    overrides: number,
+    rule: CostRuleRow | undefined,
+): string[] {
+    const warnings: string[] = [
+        '计费系数按两位小数向上取整，客户实付可能比目标价略高，不会更低。',
+        'new-api 按模型名计价，所有渠道里同名模型的请求都按新系数扣费。',
+    ];
+    if (overrides) warnings.push(`${overrides} 位客户在该档次有专属倍率，他们的价格按同一比例变化。`);
+    const stored = storedQuote(rule);
+    if (stored && !stored.quote) warnings.push('该档次已有的按秒成本草稿会被这份按 token 的报价替换。');
+    warnings.push(...notesFor(options, name));
+    return warnings;
+}
+
+export async function previewVideoQuote(
+    admin: AdminPrincipal,
+    name: string,
+    input: VideoQuoteInput,
+): Promise<SimpleVideoQuotePreview> {
+    const tenantId = tenantForInsert(admin);
+    const [catalog, options, counts] = await Promise.all([
+        loadCatalog(tenantId),
+        getPricingPublishOptions(),
+        loadCounts(tenantId),
+    ]);
+    const plan = planVideoQuote(catalog, options, name, input);
+    if (counts.managed.has(plan.group.newapi_group)) await assertGroupsUnmanaged(prisma, [plan.group.newapi_group]);
+    const rule = await prisma.pricingCostRule.findUnique({
+        where: { model_id_tier: { model_id: plan.model.id, tier: plan.tier } },
+        select: { id: true, model_id: true, tier: true, revision: true, config: true, updated_at: true },
+    });
+    const live = new Map(plan.current.cells.map((cell) => [videoTokenKey(cell), cell.price]));
+    return {
+        unchanged: plan.writes.length === 0,
+        tier: plan.tier,
+        group_ratio: plan.ratio,
+        cells: plan.cells.map((cell) => {
+            const current = live.get(videoTokenKey(cell))!;
+            return { ...cell, current_coefficient: current, current_actual: round(current * BASE_FX * plan.ratio, 6) };
+        }),
+        warnings: videoQuoteWarnings(options, name, counts.overrides.get(plan.tier) ?? 0, rule ?? undefined),
+    };
+}
+
+/**
+ * Store the quote as the model's Portal cost rule and write the matching
+ * coefficients to new-api, in one database transaction: the rule is validated
+ * and saved first (so a refused rule never reaches new-api), then new-api is
+ * written and read back, then the catalog snapshot and audit follow.
+ */
+export async function saveVideoQuote(
+    context: SimplePricingContext,
+    name: string,
+    input: VideoQuoteInput,
+    expectedState: string,
+    expectedRevision: number | null,
+): Promise<SaveResult> {
+    const tenantId = tenantForInsert(context.admin);
+    return prisma.$transaction(async (tx) => {
+        await assertPricingCatalogWritable(tx);
+        const [catalog, options] = await Promise.all([loadCatalog(tenantId, tx), getPricingPublishOptions()]);
+        if (modelOptionState(options, name) !== expectedState)
+            throw new PricingPublishError('pricing_stale', '该模型的计费配置已被其他人修改，请刷新后重新确认。');
+        let plan: ReturnType<typeof planVideoQuote>;
+        try {
+            plan = planVideoQuote(catalog, options, name, input);
+        } catch (error) {
+            toPricingError(error);
+        }
+        await assertGroupsUnmanaged(tx, [plan.group.newapi_group]);
+        const existing = await tx.pricingCostRule.findUnique({
+            where: { model_id_tier: { model_id: plan.model.id, tier: plan.tier } },
+            select: { id: true, model_id: true, tier: true, revision: true, config: true, updated_at: true },
+        });
+        if ((existing?.revision ?? null) !== expectedRevision)
+            throw new PricingPublishError('pricing_cost_revision', '该模型的报价已被其他人修改，请刷新后重新确认。');
+        const config = videoQuoteCostConfig(input);
+        const before = storedQuote(existing ?? undefined)?.quote ?? null;
+        const ruleChanged = !before || JSON.stringify(videoQuoteCostConfig(before)) !== JSON.stringify(config);
+        if (ruleChanged)
+            await saveCostRulesInTransaction(
+                tx,
+                [{ model_id: plan.model.id, tier: plan.tier, expected_revision: expectedRevision, config }],
+                context.admin,
+                { videoTokenQuote: true },
+            );
+        const readback = plan.writes.length ? await writeAndVerify(plan.writes) : options;
+        const rows = await snapshotCatalog(
+            tx,
+            tenantId,
+            readback,
+            context.admin.user?.id ?? null,
+            ({ upstream_model }) => upstream_model === name,
+        );
+        await audit(tx, context, 'pricing_video_quote', name, {
+            tier: plan.tier,
+            group_ratio: plan.ratio,
+            before: { quote: before, coefficients: plan.current.cells.map((cell) => cell.price) },
+            after: { quote: input, coefficients: plan.cells.map((cell) => cell.coefficient) },
+            catalog_rows: rows,
+        });
+        return {
+            unchanged: plan.writes.length === 0 && !ruleChanged,
+            written_keys: plan.writes.map((write) => write.key),
+            catalog_rows: rows,
+        };
     }, TX_OPTIONS);
 }
 
@@ -727,7 +1020,7 @@ export async function verifyRuntime(names: string[]): Promise<{ models: RuntimeC
         if (!base) diffs.push('Portal 读不到该模型的基础价。');
         else if (base.mode === 'per_call') {
             if (row.quota_type !== 1 || !sameNumber(row.model_price, base.price)) diffs.push('按次价与配置不一致。');
-        } else if (base.mode === 'tiered') {
+        } else if (base.mode === 'tiered' || base.mode === 'video_token') {
             const expression = optionDict(options, EXPR_KEY, true)[row.model_name];
             if (row.billing_mode !== 'tiered_expr' || row.billing_expr !== expression)
                 diffs.push('阶梯公式与配置不一致。');

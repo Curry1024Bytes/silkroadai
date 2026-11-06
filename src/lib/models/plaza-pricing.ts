@@ -35,6 +35,7 @@ export function plazaGroupLabel(model: PricingModel, group: string): string {
 
 export function plazaBillingKind(model: PricingModel, selectedGroup?: string): 'token' | 'request' | 'task' {
     const price = plazaQuote(model, selectedGroup)?.price;
+    if (price?.billing_details?.mode === 'video_token') return 'task';
     if (price?.billing_details?.mode === 'media') {
         return price.billing_details.unit === 'cny_per_second' ? 'task' : 'request';
     }

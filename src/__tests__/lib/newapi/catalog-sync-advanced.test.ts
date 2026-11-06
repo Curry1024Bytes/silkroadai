@@ -88,6 +88,46 @@ describe('catalog synchronization of new-api billing rules', () => {
             },
         });
     });
+    it('imports the Seedance resolution × reference-video matrix and tags it as video', () => {
+        // Verbatim from prod new-api 2026-11-06: doubao-seedance-2-0-mini-260615.
+        const seedance =
+            'u("resolution") == "480p" && u("video_input") == "none" ? tier("480p·none", u("tokens") * 3.07 / 1000000) : u("resolution") == "480p" && u("video_input") == "video" ? tier("480p·video", u("tokens") * 1.87 / 1000000) : u("resolution") == "720p" && u("video_input") == "none" ? tier("720p·none", u("tokens") * 3.07 / 1000000) : u("resolution") == "720p" && u("video_input") == "video" ? tier("720p·video", u("tokens") * 1.87 / 1000000) : u("resolution") == "1080p" && u("video_input") == "none" ? tier("1080p·none", u("tokens") * 3.4 / 1000000) : u("resolution") == "1080p" && u("video_input") == "video" ? tier("1080p·video", u("tokens") * 2.07 / 1000000) : u("resolution") == "4k" && u("video_input") == "none" ? tier("4k·none", u("tokens") * 3.4 / 1000000) : tier("4k·video", u("tokens") * 2.07 / 1000000)';
+        const extra = {
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': { test: seedance },
+        };
+        const raw = syncPricesFromOptions(options(extra));
+        expect(syncModelModality(raw, 'test', 'chat')).toBe('video');
+        const result = read(extra);
+        expect(result.reason).toBeNull();
+        const details = result.price!.billing_details!;
+        if (details.mode !== 'video_token') throw Error('wrong mode');
+        expect(details.cells).toHaveLength(8);
+        expect(details.cells[0]).toEqual({ resolution: '480p', video_input: 'none', price: amount(3.07) });
+        expect(details.cells[7]).toEqual({ resolution: '4k', video_input: 'video', price: amount(2.07) });
+        expect(catalogDetailLines(details).join(' ')).toContain('480p');
+    });
+    it('still refuses a time-conditioned token expression', () => {
+        // Verbatim shape from prod new-api 2026-11-06: deepseek-v4.1-flash (aipg peak/off-peak).
+        const result = read({
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': {
+                test: 'weekday("Asia/Shanghai") >= 1 && hour("Asia/Shanghai") < 12 ? tier("peak", p * 2 + cr * 0.04 + c * 8) : tier("off_peak", p * 1 + cr * 0.02 + c * 4)',
+            },
+        });
+        expect(result.price).toBeNull();
+        expect(result.reason).toMatch(/计费规则无法同步/);
+    });
+    it('refuses a task expression that is not the accepted matrix instead of guessing', () => {
+        const result = read({
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': {
+                test: 'u("duration") == "5s" ? tier("short", u("tokens") * 3 / 1000000) : tier("long", u("tokens") * 6 / 1000000)',
+            },
+        });
+        expect(result.price).toBeNull();
+        expect(result.reason).toMatch(/计费规则无法同步/);
+    });
     it('preserves seconds, resolution prices, and the cross-midnight Beijing discount window', () => {
         const result = read({
             'billing_setting.billing_mode': { test: 'per-second' },
@@ -230,6 +270,53 @@ describe('catalog synchronization of new-api billing rules', () => {
         expect(
             read({ ...extra, ModelRatio: { test: 1 }, CompletionRatio: { test: 2 }, ModelPrice: { test: 5 } }).price,
         ).toBeNull();
+    });
+    it('imports the Seedance resolution × reference-video matrix and prices it as video', () => {
+        const combos = ['480p', '720p', '1080p', '4k'].flatMap((resolution) =>
+            ['none', 'video'].map((input) => ({ resolution, input })),
+        );
+        const prices = [9.34, 5.6, 9.34, 5.6, 10.27, 6.14, 10.27, 6.14];
+        const expression = combos
+            .map(({ resolution, input }, index) => {
+                const call = `tier("${resolution}·${input}", u("tokens") * ${prices[index]} / 1000000)`;
+                return index === combos.length - 1
+                    ? call
+                    : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
+            })
+            .join(' : ');
+        const extra = {
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': { test: expression },
+        };
+        expect(syncModelModality(syncPricesFromOptions(options(extra)), 'test', 'chat')).toBe('video');
+        const result = read(extra);
+        expect(result.reason).toBeNull();
+        // Scalar columns stay empty: no single ¥/1M describes an eight-cell matrix.
+        expect(result.price).toMatchObject({ input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: null });
+        const details = result.price!.billing_details!;
+        if (details.mode !== 'video_token') throw Error('wrong mode');
+        expect(details.cells).toHaveLength(8);
+        expect(details.cells[0]).toEqual({ resolution: '480p', video_input: 'none', price: amount(9.34) });
+        expect(details.cells.at(-1)).toEqual({ resolution: '4k', video_input: 'video', price: amount(6.14) });
+        const scaled = scaleCatalogBillingDetails(details, 2);
+        if (scaled.mode !== 'video_token') throw Error('wrong mode');
+        expect(scaled.cells[0].price).toBe(amount(9.34) * 2);
+        expect(catalogDetailLines(scaled).join(' ')).toContain('480p · 无参考视频');
+        expect(catalogDetailLines(scaled, true).join(' ')).toContain('no reference video');
+    });
+    it.each([
+        'u("resolution") == "480p" && u("video_input") == "none" ? tier("480p·none", u("tokens") * 1 / 1000000) : tier("rest", u("tokens") * 2 / 1000000)',
+        'tier("base", u("tokens") * 9.8 / 1000000)',
+        'u("mode") == "pro" ? tier("pro", u("tokens") * 70 / 1000000) : tier("std", u("tokens") * 42 / 1000000)',
+    ])('refuses task formulas outside the supported matrix: %s', (expression) => {
+        const extra = {
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': { test: expression },
+        };
+        expect(read(extra).price).toBeNull();
+        expect(read(extra).reason).toContain('计费规则无法同步');
+        // An unreadable formula must not be reported as video either.
+        expect(syncModelModality(syncPricesFromOptions(options(extra)), 'test', 'chat')).toBe('chat');
     });
     it('validates persisted units and never treats unknown metadata as a scalar quote', () => {
         expect(() =>

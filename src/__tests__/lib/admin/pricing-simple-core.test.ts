@@ -14,6 +14,7 @@ import {
     modelOptionState,
     planGroupRatioWrites,
     planModelWrites,
+    planVideoTokenWrites,
     readBasePrice,
     unverifiedWrites,
     type BasePrice,

@@ -98,11 +98,17 @@ export async function listCostRules(admin: AdminPrincipal) {
     return rules.map((rule) => publicCostRule(rule, rule.model, groups));
 }
 
-/** The caller transaction also owns the publication coordinator row lock. */
+/**
+ * The caller transaction also owns the publication coordinator row lock.
+ * Token-priced video quotes (`video_unit: 'million_tokens'`) are written only by
+ * the video-token quote editor, which also writes the matching new-api formula;
+ * every other caller is refused so a quote never drifts from what is billed.
+ */
 export async function saveCostRulesInTransaction(
     tx: Prisma.TransactionClient,
     inputs: CostRuleSave[],
     admin: AdminPrincipal,
+    options: { videoTokenQuote?: boolean } = {},
 ) {
     if (
         !inputs.length ||
@@ -131,6 +137,18 @@ export async function saveCostRulesInTransaction(
                 'pricing_cost_revision',
                 '成本资料已被更新，请刷新后再保存，避免覆盖其他修改。',
             );
+        const tokenVideo = input.config.video_unit === 'million_tokens';
+        const storedTokenVideo =
+            existing !== null &&
+            pricingCostConfigSchema.safeParse(existing.config).data?.video_unit === 'million_tokens';
+        if (!options.videoTokenQuote && (tokenVideo || storedTokenVideo))
+            throw new PricingPublishError(
+                'pricing_video_token_quote_only',
+                '按 token 计价的视频报价请在「现有定价 → 模型基础价」里修改，保存时会同时写入 new-api。',
+                400,
+            );
+        if (options.videoTokenQuote && !tokenVideo)
+            throw new PricingPublishError('pricing_cost_basis', '视频报价必须按 token 计价。', 400);
         const data = {
             channel_id: mapping.channel_id,
             upstream_model: mapping.upstream_model,

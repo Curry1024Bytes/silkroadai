@@ -2,6 +2,8 @@ import type { BrowserTier } from './catalog-browser-types';
 import type { TierPricing } from './machine-catalog';
 import type { TypeName } from './categorize';
 import { isUniformPricingDetails, tieredPricingConditionLabel } from './tiered-pricing-details';
+import { videoTokenSummaryCell } from './catalog-pricing-details';
+import { videoTokenInputLabel } from '@/lib/admin/pricing-video-token-expression';
 
 export interface CatalogPriceSummary {
     unit: string;
@@ -20,6 +22,19 @@ export function catalogSummaryTier(tiers: BrowserTier[], prices: Record<string, 
 export function catalogPriceSummary(price: TierPricing | null, type: TypeName): CatalogPriceSummary | null {
     if (!price) return null;
     const details = price.billing_details;
+    if (details?.mode === 'video_token') {
+        const cell = videoTokenSummaryCell(details);
+        return {
+            unit: '元 / 百万 token',
+            rates: [{ label: '价格', amount: cell.price }],
+            condition: `${details.scheduled_discount ? '常规价 · ' : ''}${cell.resolution} · ${videoTokenInputLabel(cell.video_input)}`,
+            note: details.scheduled_discount
+                ? '分时优惠与完整规格见详情'
+                : details.cells.length > 1
+                  ? '其他分辨率和参考视频的价格见详情'
+                  : null,
+        };
+    }
     if (details?.mode === 'media') {
         const unit = { cny_per_image: '元 / 张', cny_per_request: '元 / 次', cny_per_second: '元 / 秒' }[details.unit];
         // Pick a named specification, not the cheapest amount. A default is not a price for every resolution.

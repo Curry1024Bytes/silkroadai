@@ -6,6 +6,13 @@ import {
     scaleTieredPricingDetails,
     formatTieredPrice,
 } from './tiered-pricing-details';
+import {
+    VIDEO_TOKEN_COMBOS,
+    VIDEO_TOKEN_INPUTS,
+    VIDEO_TOKEN_RESOLUTIONS,
+    videoTokenInputLabel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 
 const rate = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const resolution = z
@@ -78,9 +85,40 @@ const componentSchema = z
     })
     .strict();
 
+/** Video billed per 1M upstream tokens at a price chosen by output resolution and reference video. */
+const videoTokenSchema = z
+    .object({
+        version: z.literal(1),
+        mode: z.literal('video_token'),
+        unit: z.literal('cny_per_million_tokens'),
+        cells: z
+            .array(
+                z
+                    .object({
+                        resolution: z.enum(VIDEO_TOKEN_RESOLUTIONS),
+                        video_input: z.enum(VIDEO_TOKEN_INPUTS),
+                        price: rate,
+                    })
+                    .strict(),
+            )
+            .min(1)
+            .max(VIDEO_TOKEN_COMBOS.length),
+        scheduled_discount: discount.optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+        const keys = value.cells.map(videoTokenKey);
+        if (new Set(keys).size !== keys.length) context.addIssue({ code: 'custom', message: 'Duplicate video cell' });
+        const order = VIDEO_TOKEN_COMBOS.map(videoTokenKey);
+        if (keys.some((key, index) => index > 0 && order.indexOf(key) < order.indexOf(keys[index - 1])))
+            context.addIssue({ code: 'custom', message: 'Video cells out of order' });
+    });
+
 export type MediaPricingDetails = z.infer<typeof mediaSchema>;
 export type ComponentTokenPricingDetails = z.infer<typeof componentSchema>;
-export type CatalogBillingDetails = TieredPricingDetails | MediaPricingDetails | ComponentTokenPricingDetails;
+export type VideoTokenPricingDetails = z.infer<typeof videoTokenSchema>;
+export type CatalogBillingDetails =
+    TieredPricingDetails | MediaPricingDetails | ComponentTokenPricingDetails | VideoTokenPricingDetails;
 
 /** Validate every mode before exposing it. Unknown non-null metadata never falls back to a scalar quote. */
 export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails | null {
@@ -89,12 +127,22 @@ export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails 
     if (mode === 'tiered_token') return parseTieredPricingDetails(raw);
     if (mode === 'media') return mediaSchema.parse(raw);
     if (mode === 'component_token') return componentSchema.parse(raw);
+    if (mode === 'video_token') return videoTokenSchema.parse(raw);
     throw new Error('Invalid catalog billing details');
+}
+
+/** The cell a one-line summary shows: 720p without reference video, else the first listed. */
+export function videoTokenSummaryCell(details: VideoTokenPricingDetails): VideoTokenPricingDetails['cells'][number] {
+    return details.cells.find((cell) => cell.resolution === '720p' && cell.video_input === 'none') ?? details.cells[0];
 }
 
 export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: number): CatalogBillingDetails {
     const details = parseCatalogBillingDetails(raw)!;
     if (details.mode === 'tiered_token') return scaleTieredPricingDetails(details, scale);
+    if (details.mode === 'video_token') {
+        for (const cell of details.cells) cell.price = scalePricingAmount(cell.price, scale);
+        return details;
+    }
     if (details.mode === 'component_token') {
         for (const key of Object.keys(details.rates) as Array<keyof typeof details.rates>) {
             const value = details.rates[key];
@@ -139,6 +187,14 @@ export function catalogDetailLines(
     details: Exclude<CatalogBillingDetails, TieredPricingDetails>,
     en = false,
 ): string[] {
+    if (details.mode === 'video_token')
+        return [
+            ...details.cells.map(
+                (cell) =>
+                    `${cell.resolution} · ${videoTokenInputLabel(cell.video_input, en)} ¥${formatTieredPrice(cell.price)} / ${en ? 'million tokens' : '百万 token'}`,
+            ),
+            ...(details.scheduled_discount ? catalogScheduledDiscountLines(details.scheduled_discount, en) : []),
+        ];
     if (details.mode === 'component_token') {
         const labels = {
             input: en ? 'Text input' : '文本输入',
