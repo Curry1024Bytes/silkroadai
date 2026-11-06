@@ -604,6 +604,13 @@ async function fetchImageAsB64(
     }
 }
 
+/** 发给上游的模型名:modelMapByQuality(按档位)> modelMap(别名)> 客户模型名。 */
+function upstreamModel(provider: ImageProvider25, parsed: ParsedRequest): string {
+    const q = normQuality25(parsed.quality);
+    const byQuality = q === 'xhigh' || q === 'max' ? undefined : provider.modelMapByQuality?.[q];
+    return byQuality?.[parsed.model] ?? provider.modelMap?.[parsed.model] ?? parsed.model;
+}
+
 /** 单次上游调用(n 原生透传,一次拿 n 张)→ b64 数组;终态错返 TerminalReject;其余失败 null(failover)。 */
 async function callUpstream(
     provider: ImageProvider25,
@@ -622,7 +629,7 @@ async function callUpstream(
     let upstreamBody: BodyInit;
     if (mode === 'edits') {
         const f = new FormData();
-        f.append('model', provider.modelMap?.[parsed.model] ?? parsed.model);
+        f.append('model', upstreamModel(provider, parsed));
         f.append('prompt', parsed.prompt);
         const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
         if (sendSize) f.append('size', sendSize);
@@ -636,7 +643,7 @@ async function callUpstream(
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
         const j: Record<string, unknown> = {
-            model: provider.modelMap?.[parsed.model] ?? parsed.model,
+            model: upstreamModel(provider, parsed),
             prompt: parsed.prompt,
         };
         const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
@@ -739,7 +746,7 @@ async function callUpstreamAsyncTask(
     const started = Date.now();
     const headers: Record<string, string> = { authorization: auth, 'content-type': 'application/json' };
     const body: Record<string, unknown> = {
-        model: provider.modelMap?.[parsed.model] ?? parsed.model,
+        model: upstreamModel(provider, parsed),
         prompt: parsed.prompt,
     };
     const sendSize = parsed.size.trim();
@@ -962,7 +969,18 @@ export async function handleAdapter25Image(
     // 16 倍数、~1MP,与官方尺寸集不同但画幅语义一致)。auto 无法预估 ct,2.5 全量线本就不守门,不受影响。
     const autoSize = isAutoSize(parsed.size);
     const dims = autoSize ? null : parseSize(parsed.size);
-    const quality = normQuality25(parsed.quality);
+    let quality = normQuality25(parsed.quality);
+    // ---- 上游缺档:发最近的真档(2.6 xhigh/max → high),回显与计费都跟实际档走,不按请求档多收 ----
+    const substitutedQuality = provider.upstreamQuality?.[quality];
+    if (substitutedQuality) {
+        console.warn('[image-adapter25] quality substituted', {
+            provider: providerName,
+            requested: quality,
+            used: substitutedQuality,
+        });
+        quality = substitutedQuality;
+        parsed = { ...parsed, quality };
+    }
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
     if (provider.qualities && !provider.qualities.includes(quality)) {

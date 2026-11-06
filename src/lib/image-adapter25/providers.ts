@@ -44,6 +44,13 @@ export interface ImageProvider25 {
     /** 上游【如实交付】的显式尺寸白名单(小写 `WxH`)。设了名单的 provider 收到名单外显式尺寸 → 503 让路,不打上游
      *  (上游对名单外尺寸是静默改尺寸,如 suduma -gzs 把 1536×1024 缩成 1152×768);`auto` 不受名单约束。缺省 = 任意尺寸。 */
     sizes?: ReadonlyArray<string>;
+    /** 客户档位 → 发给上游的档位:上游【没有】这一档时用最近的真档代替(2.6 无 xhigh/max → high)。
+     *  与 qualities 的 503 让路相反:这里继续出图。【回显与计费按实际发给上游的档位】,不按客户请求档 ——
+     *  交付 high 就收 high(2.0 适配器同名字段是按请求档计费,口径不同,别混)。 */
+    upstreamQuality?: Partial<Record<'low' | 'medium' | 'high' | 'xhigh' | 'max', 'low' | 'medium' | 'high'>>;
+    /** 某档位下改走另一个上游模型(按 upstreamQuality 之后的档位查,优先于 modelMap)。用于上游某模型档位是假的:
+     *  2.6 flare 各档延迟几乎不变、裁片不随档位变好 → high 改走真分档的 sunburst。入口白名单 / 回显 / 计费仍按客户模型名。 */
+    modelMapByQuality?: Partial<Record<'low' | 'medium' | 'high', Readonly<Record<string, string>>>>;
 }
 
 /** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
@@ -70,6 +77,16 @@ export const WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000;
  *  区别是 sunburst 更慢(max 档 147s vs 46s)、画质更好;单价由 operator 在 new-api 后台按官方设。 */
 export const GPT_IMAGE_25_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const;
 
+/** 2.6 系:token 公式与 2.5 相同(we-token 直出 usage 2026-11-06 实测 196/439/1756、1536×1024 high 1372、2048² high 3568、
+ *  4K high 3336 逐点命中),所以复用本模块;但上游只有 low/medium/high 三档,见 ztyunjuan26 / wetokenasia26。 */
+export const GPT_IMAGE_26_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'] as const;
+/** 2.6 上游缺 xhigh / max → 都按 high 出图、计费、回显(operator 2026-11-06 拍板用 high 代替)。 */
+const GPT_IMAGE_26_UPSTREAM_QUALITY = { xhigh: 'high', max: 'high' } as const;
+/** 2.6 flare 档位是假的 → high 改走 sunburst(两家都是一口价,sunburst 不多花钱,代价是 ~60s vs ~25s)。 */
+const GPT_IMAGE_26_MODEL_MAP_BY_QUALITY = {
+    high: { 'gpt-image-2.6-flare': 'gpt-image-2.6-sunburst' },
+} as const;
+
 /** suduma `-gzs` 2.5 实测【如实交付】的尺寸(2026-10-18):1024² / 2048² / 2880² / 3840×2160 / 1280×720 如实;
  *  1536×1024 → 1152×768、1024×1536 → 768×1152、1000×1000 → 1024² 被改尺寸 → 表外让路(operator 2026-10-18 拍板加白名单)。 */
 export const SUDUMAGZS25_SIZES: ReadonlyArray<string> = [
@@ -93,6 +110,24 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         models: GPT_IMAGE_25_MODELS,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS, // 2026-09-11:we-token 挂死不回头,600s→300s
         nativeN: true, // 2026-09-09 实测 n 原生 honor(一次真返 n 张)
+    },
+    // wetokenasia26:asian-acc.we-token.cc 的 gpt-image-2.6(专用 key sk-cfca…,与 ch219 的 2.5 key 分开)。
+    // 2026-11-06 实测 45 发 39 成,失败全是 xhigh/max:
+    //  - 全 OpenAI OpCo 单层签名 `API/gpt-image`,返 b64,usage 就是官方表,n=2 真返 2 张,webp 真返,透明真 RGBA,
+    //    edits 通,1536×1024 / 2048² / 3840×2160 如实;14 并发 14/14;
+    //  - sunburst 分档可信:1K low 28–42s / medium 37s / high 63s,裁片随档变好;
+    //    flare 延迟 16s / 17s / 20s 几乎不变,裁片也不分档 → high 改走 sunburst(modelMapByQuality);
+    //  - 【硬伤】xhigh / max 在 1.5s 内回 408 `Model is overloaded`,串行重试也一样 = 伪装成过载的不支持,
+    //    直通会被 failover 空转 → 适配器发 high(upstreamQuality)。真过载的 408 不在此列,走通用 failover。
+    //  - 计费 = 一口价 $0.06/张(list $0.1 × 0.6,不分档位尺寸,失败不计费),`GET /v1/usage` 可查余额。
+    wetokenasia26: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_26_MODELS,
+        upstreamQuality: GPT_IMAGE_26_UPSTREAM_QUALITY,
+        modelMapByQuality: GPT_IMAGE_26_MODEL_MAP_BY_QUALITY,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+        nativeN: true, // 2026-11-06 实测 n=2 真返 2 张不同的图
     },
     // llmway25:llmway.ai 对 gpt-image-2.5 两模型是真 OpenAI 直通(2026-09-13 实测 27/27 带 OpenAI OpCo
     // C2PA、PNG 原始编码单 IDAT 不经重编码;1024² / 1536×1024 / 1024×1536 / 2880² / 3840×2160 全如实、
@@ -261,6 +296,24 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         baseUrl: 'https://ztyunjuan.com',
         brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
+    },
+    // ztyunjuan26:ztyunjuan.com 的 gpt-image-2.6(专用 key sk-vNYe…,token 名 2.6,default 组)。2026-11-06 实测 43 发 34 成,
+    // 失败 = 8 个 xhigh/max + 1 个 503 `system under load`(走通用 failover):
+    //  - 四个模型名实为两条线:flare = star-swirl、sunburst = aurora(422 报错互指,延迟画质也按此分组),只放 flare / sunburst;
+    //  - 全 OpenAI 单层签名 `API/gpt-image`(与同站 2.5 sunburst 的 Adobe 双层不同),图床 Firefly S3,
+    //    不发 response_format 时返 url,由 fetchImageAsB64 直拉(绕开上游转 b64 经 nginx 回送的慢段,2.0 线的老坑);
+    //  - sunburst 分档可信:1K low 31–40s / medium 39–47s / high 58–65s,4K low 37s / high 56s;
+    //    flare 单档:low 23s = high 24s,4K high 28s < 4K low 40s → high 改走 sunburst(modelMapByQuality);
+    //  - xhigh / max → 422 `detail_level ... only supported by GPT Image 2.5` → 适配器发 high(upstreamQuality);
+    //  - 其余毛病现有逻辑已兜:n=2 只返 1 张(不标 nativeN = 扇出)、webp 被忽略(服务端转码)、usage 是 2.0 词表
+    //    (196/1756/7024,丢弃自算)、1536×1024 / 2048² / 3840×2160 如实、透明真 RGBA、edits 通;
+    //  - 计费 = 一口价 $0.05/张(不分档位尺寸,失败不计费)。
+    ztyunjuan26: {
+        baseUrl: 'https://ztyunjuan.com',
+        brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|gpt-image-2\.6-(?:aurora|star-swirl)|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_26_MODELS,
+        upstreamQuality: GPT_IMAGE_26_UPSTREAM_QUALITY,
+        modelMapByQuality: GPT_IMAGE_26_MODEL_MAP_BY_QUALITY,
     },
     // sudumagzs25:www.suduma.com 的 `-gzs` 同步变体(2026-10-18 上游新增;同 key sk-21fb…)。与 suduma25(异步任务形)的区别:
     // POST /v1/images/generations 直接等 60–130s 返 OpenAI 同步壳 `{created, data:[{url}]}`,不再提交+轮询 → 走普通同步直转,

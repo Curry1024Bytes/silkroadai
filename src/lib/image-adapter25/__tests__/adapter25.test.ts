@@ -16,7 +16,12 @@ import {
     sanitizeAdapterError25,
     estimateTextTokens,
 } from '@/lib/image-adapter25/adapter';
-import { IMAGE_PROVIDERS_25, GPT_IMAGE_25_MODELS, SUDUMAGZS25_SIZES } from '@/lib/image-adapter25/providers';
+import {
+    IMAGE_PROVIDERS_25,
+    GPT_IMAGE_25_MODELS,
+    GPT_IMAGE_26_MODELS,
+    SUDUMAGZS25_SIZES,
+} from '@/lib/image-adapter25/providers';
 import { IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 
 const URL_GEN = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
@@ -2772,5 +2777,167 @@ describe('2.5 适配器 mask 校验 + background 按实际像素(2026-11-02 OAI 
         expect(o.background).toBe('opaque');
         const stats = await sharp(Buffer.from(o.data[0].b64_json, 'base64')).stats();
         expect(stats.isOpaque).toBe(true);
+    });
+});
+
+describe('gpt-image-2.6 两条线(ztyunjuan26 / wetokenasia26):缺 xhigh/max 用 high 代替,flare 高档改走 sunburst', () => {
+    const urlOf = (p: string) => `http://portal.test/image-adapter25/${p}/v1/images/generations`;
+    const gen = (provider: string, body: Record<string, unknown>) =>
+        handleAdapter25Image(
+            jsonReq(urlOf(provider), { model: 'gpt-image-2.6-sunburst', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            provider,
+        );
+    const upstreamOk = (count = 1) =>
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: Array.from({ length: count }, () => ({ b64_json: pngB64(1024, 1024) })),
+                        quality: 'high',
+                        usage: { input_tokens: 49, output_tokens: 7024, total_tokens: 7073 },
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+        );
+    const sentBody = (i = 0) => JSON.parse(String(fetchMock.mock.calls[i][1]?.body)) as Record<string, unknown>;
+
+    it('registry:两条线各自独立,只放 2.6 两个名;we-token 原生 n,ztyunjuan 扇出', () => {
+        const we = IMAGE_PROVIDERS_25.wetokenasia26;
+        const zt = IMAGE_PROVIDERS_25.ztyunjuan26;
+        expect(we.baseUrl).toBe('https://asian-acc.we-token.cc');
+        expect(zt.baseUrl).toBe('https://ztyunjuan.com');
+        for (const p of [we, zt]) {
+            expect(p.models).toEqual(GPT_IMAGE_26_MODELS);
+            expect(p.upstreamQuality).toEqual({ xhigh: 'high', max: 'high' });
+            expect(p.qualities).toBeUndefined();
+        }
+        expect(we.nativeN).toBe(true);
+        expect(zt.nativeN).toBeUndefined();
+        expect('ztyunjuan gpt-image-2.6-aurora gpt-image-2.6-star-swirl'.replace(zt.brand, '*')).toBe('* * *');
+    });
+
+    it.each(['wetokenasia26', 'ztyunjuan26'])('%s:xhigh / max 发 high,计费与回显都是 high(1756)', async (p) => {
+        for (const q of ['xhigh', 'max']) {
+            fetchMock.mockReset();
+            upstreamOk();
+            const res = await gen(p, { quality: q });
+            expect(res.status).toBe(200);
+            expect(sentBody().quality).toBe('high');
+            const j = (await res.json()) as { quality: string; usage: { output_tokens: number } };
+            expect(j.quality).toBe('high');
+            expect(j.usage.output_tokens).toBe(1756);
+        }
+    });
+
+    it.each(['wetokenasia26', 'ztyunjuan26'])('%s:flare high / xhigh / max 改走 sunburst,回显计费不变', async (p) => {
+        for (const q of ['high', 'xhigh', 'max']) {
+            fetchMock.mockReset();
+            upstreamOk();
+            const res = await gen(p, { model: 'gpt-image-2.6-flare', quality: q });
+            expect(res.status).toBe(200);
+            expect(sentBody().model).toBe('gpt-image-2.6-sunburst');
+            expect(sentBody().quality).toBe('high');
+        }
+    });
+
+    it.each(['low', 'medium', 'auto'])('flare %s 仍走 flare、quality 原样发', async (q) => {
+        upstreamOk();
+        const res = await gen('wetokenasia26', { model: 'gpt-image-2.6-flare', quality: q });
+        expect(res.status).toBe(200);
+        expect(sentBody().model).toBe('gpt-image-2.6-flare');
+        expect(sentBody().quality).toBe(q);
+    });
+
+    it('sunburst 三档原样发,按官方表计费', async () => {
+        for (const [q, tokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+        ] as const) {
+            fetchMock.mockReset();
+            upstreamOk();
+            const res = await gen('ztyunjuan26', { quality: q });
+            expect(sentBody().model).toBe('gpt-image-2.6-sunburst');
+            expect(sentBody().quality).toBe(q);
+            const j = (await res.json()) as { usage: { output_tokens: number } };
+            expect(j.usage.output_tokens).toBe(tokens);
+        }
+    });
+
+    it('edits(multipart):同样发 high + sunburst', async () => {
+        upstreamOk();
+        const res = await handleAdapter25Image(
+            formReq(
+                URL_EDIT.replace('wetokenasia25', 'ztyunjuan26'),
+                { model: 'gpt-image-2.6-flare', prompt: 'x', size: '1024x1024', quality: 'max' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'ztyunjuan26',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1]?.body as FormData;
+        expect(form.get('quality')).toBe('high');
+        expect(form.get('model')).toBe('gpt-image-2.6-sunburst');
+    });
+
+    it('ztyunjuan26 n=2 扇出两次单图;wetokenasia26 n=2 一次原生', async () => {
+        upstreamOk();
+        const zt = await gen('ztyunjuan26', { quality: 'medium', n: 2 });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(sentBody().n).toBeUndefined();
+        expect(((await zt.json()) as { data: unknown[] }).data).toHaveLength(2);
+
+        fetchMock.mockReset();
+        upstreamOk(2);
+        const we = await gen('wetokenasia26', { quality: 'medium', n: 2 });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(sentBody().n).toBe(2);
+        expect(((await we.json()) as { data: unknown[] }).data).toHaveLength(2);
+    });
+
+    it('ztyunjuan26 返 url:拉回转 b64,响应不外泄上游地址', async () => {
+        const s3 = 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x.png';
+        fetchMock.mockImplementation(async (u: unknown) =>
+            String(u) === s3
+                ? new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 })
+                : new Response(JSON.stringify({ created: 1, data: [{ url: s3 }] }), {
+                      status: 200,
+                      headers: { 'content-type': 'application/json' },
+                  }),
+        );
+        const res = await gen('ztyunjuan26', { quality: 'low' });
+        const text = await res.text();
+        expect(res.status).toBe(200);
+        expect(text).not.toContain('firefly');
+        expect((JSON.parse(text) as { data: Array<{ b64_json: string }> }).data[0].b64_json).toBeTruthy();
+    });
+
+    it('真过载(408)仍走中性 503 failover', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ error: { message: 'Model is overloaded, please retry later' } }), {
+                    status: 408,
+                }),
+        );
+        const res = await gen('wetokenasia26', { quality: 'high' });
+        expect(res.status).toBe(503);
+    });
+
+    it('模型白名单隔离:2.5 名打 2.6 线、2.6 名打 2.5 线都 503 让路,不打上游', async () => {
+        const a = await gen('ztyunjuan26', { model: 'gpt-image-2.5-flare' });
+        const b = await gen('wetokenasia25', { model: 'gpt-image-2.6-flare' });
+        expect([a.status, b.status]).toEqual([503, 503]);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('2.5 线不受影响:xhigh 原样发 flare、按 3122 计费', async () => {
+        upstreamOk();
+        const res = await gen('wetokenasia25', { model: 'gpt-image-2.5-flare', quality: 'xhigh' });
+        expect(sentBody().model).toBe('gpt-image-2.5-flare');
+        expect(sentBody().quality).toBe('xhigh');
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(3122);
     });
 });

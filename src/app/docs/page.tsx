@@ -2392,6 +2392,42 @@ curl ${OPENAI_BASE}/images/generations \\
                         </code>{' '}
                         请联系客服开通该档。
                     </div>
+
+                    {/* gpt-image-2.6 flare / sunburst — 2026-11-06 上线,三档 quality */}
+                    <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">
+                        新增 · gpt-image-2.6(flare / sunburst)· 三档 quality
+                    </h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        调用方式与 gpt-image-2.5 相同,把{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            model
+                        </code>{' '}
+                        换成{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gpt-image-2.6-flare
+                        </code>{' '}
+                        或{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gpt-image-2.6-sunburst
+                        </code>{' '}
+                        即可,token 口径也与 2.5 一致。
+                    </p>
+                    <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        ⚠️ <strong className="text-navy">与 2.5 的区别</strong>:① 2.6 只有{' '}
+                        <strong className="text-navy">low / medium / high</strong> 三档。传{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            xhigh
+                        </code>{' '}
+                        或{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            max
+                        </code>{' '}
+                        不报错,按 high 出图、按 high 计费,响应里的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            quality
+                        </code>{' '}
+                        也回显 high。② flare 在 high 档会走 sunburst 出图,所以耗时接近 sunburst(约 60 秒)。
+                    </div>
                 </section>
 
                 {/* ─── 14 · 异步生图 · 大图/批量免超时 ─── */}
