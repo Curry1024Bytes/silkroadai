@@ -19,6 +19,9 @@ const state = vi.hoisted(() => ({
     updates: [] as unknown[],
     logs: [] as unknown[],
     managed: [] as Array<{ newapi_group: string }>,
+    costRules: [] as Array<Record<string, unknown>>,
+    costWrites: [] as unknown[],
+    costRevisions: [] as unknown[],
 }));
 
 vi.mock('@/lib/newapi/client', () => ({
@@ -46,7 +49,41 @@ vi.mock('@/lib/db', () => {
                 return args;
             }),
         },
-        catalogModel: { findMany: vi.fn(async () => state.models) },
+        catalogModel: {
+            findMany: vi.fn(async () => state.models),
+            findFirst: vi.fn(async (args: { where: { id: string } }) =>
+                (state.models as Array<{ id: string }>).find((model) => model.id === args.where.id),
+            ),
+        },
+        pricingCostRule: {
+            findMany: vi.fn(async () => state.costRules),
+            findUnique: vi.fn(
+                async (args: { where: { model_id_tier?: { model_id: string; tier: string } } }) =>
+                    state.costRules.find(
+                        (rule) =>
+                            rule.model_id === args.where.model_id_tier?.model_id &&
+                            rule.tier === args.where.model_id_tier?.tier,
+                    ) ?? null,
+            ),
+            create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+                state.costWrites.push({ action: 'create', ...args.data });
+                const rule = { id: 'cost-new', revision: 1, updated_at: new Date(0), ...args.data };
+                state.costRules.push(rule);
+                return rule;
+            }),
+            update: vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
+                state.costWrites.push({ action: 'update', id: args.where.id, ...args.data });
+                const rule = state.costRules.find((row) => row.id === args.where.id)!;
+                Object.assign(rule, args.data, { revision: Number(rule.revision) + 1 });
+                return rule;
+            }),
+        },
+        pricingCostRuleRevision: {
+            create: vi.fn(async (args: { data: unknown }) => {
+                state.costRevisions.push(args.data);
+                return args.data;
+            }),
+        },
         catalogPrice: {
             create: vi.fn(async (args: { data: unknown }) => {
                 state.created.push(args.data);
@@ -119,6 +156,9 @@ beforeEach(() => {
     state.audits = [];
     state.updates = [];
     state.logs = [];
+    state.costRules = [];
+    state.costWrites = [];
+    state.costRevisions = [];
     state.groups = [
         {
             id: 'g-official',
@@ -127,6 +167,9 @@ beforeEach(() => {
             newapi_group: 'official',
             tier_level: 1,
             purchase_rate: null,
+            newapi_channel_ids: [9],
+            is_default: false,
+            enabled: true,
         },
         {
             id: 'g-pool',
@@ -135,6 +178,9 @@ beforeEach(() => {
             newapi_group: 'default',
             tier_level: 0,
             purchase_rate: '0.3',
+            newapi_channel_ids: [13],
+            is_default: true,
+            enabled: true,
         },
     ];
     state.models = [

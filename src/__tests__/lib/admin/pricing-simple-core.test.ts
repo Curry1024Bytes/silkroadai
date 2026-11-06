@@ -340,3 +340,95 @@ describe('customerPrice / catalogMatches', () => {
         ]);
     });
 });
+
+describe('video-token matrices', () => {
+    const CELLS: Array<[string, string, number]> = [
+        ['480p', 'none', 9.34],
+        ['480p', 'video', 5.6],
+        ['720p', 'none', 9.34],
+        ['720p', 'video', 5.6],
+        ['1080p', 'none', 10.27],
+        ['1080p', 'video', 6.14],
+        ['4k', 'none', 10.27],
+        ['4k', 'video', 6.14],
+    ];
+    const expression = CELLS.map(([resolution, input, price], index) => {
+        const call = `tier("${resolution}·${input}", u("tokens") * ${price} / 1000000)`;
+        return index === CELLS.length - 1
+            ? call
+            : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
+    }).join(' : ');
+    const video = (overrides: Record<string, unknown> = {}) =>
+        options({
+            [MODE]: JSON.stringify({ seedance: 'tiered_expr' }),
+            [EXPR]: JSON.stringify({ seedance: expression }),
+            ...overrides,
+        });
+
+    it('reads every cell and the unconditioned fallback', () => {
+        const base = readBasePrice(video(), 'seedance');
+        if (base?.mode !== 'video_token') throw Error('wrong mode');
+        expect(base.cells.map((cell) => cell.price)).toEqual(CELLS.map(([, , price]) => price));
+        expect(base.fallback).toEqual({ resolution: '4k', video_input: 'video' });
+    });
+
+    it('refuses to turn a video matrix into another billing mode', () => {
+        expect(() => planModelWrites(video(), 'seedance', { mode: 'per_call', price: 1 })).toThrow('参考视频');
+        expect(() =>
+            planModelWrites(video(), 'seedance', {
+                mode: 'token',
+                input: 1,
+                output: 2,
+                cache_read: null,
+                cache_write: null,
+            }),
+        ).toThrow('参考视频');
+    });
+
+    it('rewrites only the coefficients, and writes nothing when they are unchanged', () => {
+        const source = video();
+        const cells = CELLS.map(([resolution, video_input, price]) => ({
+            resolution: resolution as '480p',
+            video_input: video_input as 'none',
+            price,
+        }));
+        expect(planVideoTokenWrites(source, 'seedance', cells)).toEqual([]);
+        const writes = planVideoTokenWrites(source, 'seedance', [{ ...cells[0], price: 7.01 }, ...cells.slice(1)]);
+        expect(writes.map((write) => write.key)).toEqual([EXPR]);
+        const next = (writes[0].value as Record<string, string>).seedance;
+        expect(next).toBe(expression.replace('* 9.34 / 1000000', '* 7.01 / 1000000'));
+        // Conditions, labels and the other seven prices are untouched.
+        expect(next.replace('7.01', '9.34')).toBe(expression);
+    });
+
+    it('refuses a matrix that is also priced per call, or is no longer a task formula', () => {
+        const cells = CELLS.map(([resolution, video_input, price]) => ({
+            resolution: resolution as '480p',
+            video_input: video_input as 'none',
+            price,
+        }));
+        expect(() =>
+            planVideoTokenWrites(video({ ModelPrice: JSON.stringify({ seedance: 2 }) }), 'seedance', cells),
+        ).toThrow('按次价格');
+        expect(() => planVideoTokenWrites(options(), 'gpt-5.5', cells)).toThrow('视频 token');
+    });
+
+    it('prices every cell by the tier ratio and reports a changed cell as a rule difference', () => {
+        const base = readBasePrice(video(), 'seedance')!;
+        const expected = customerPrice(base, 1.2);
+        expect(expected).toMatchObject({ input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: null });
+        if (expected.billing_details?.mode !== 'video_token') throw Error('wrong mode');
+        expect(expected.billing_details.cells[0]).toEqual({
+            resolution: '480p',
+            video_input: 'none',
+            price: Number((9.34 * 1.2).toFixed(12)),
+        });
+        expect(catalogMatches(expected, expected)).toBe(true);
+        const changed = structuredClone(expected);
+        if (changed.billing_details?.mode !== 'video_token') throw Error('wrong mode');
+        changed.billing_details.cells[3].price = 1;
+        expect(catalogDiffs(changed, expected)).toEqual([
+            { tier: null, field: 'billing_rule', catalog: null, expected: null },
+        ]);
+    });
+});
