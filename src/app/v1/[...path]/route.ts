@@ -1553,7 +1553,7 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
 function isGptImageModel(model: string): boolean {
     return model.startsWith('gpt-image') || model.startsWith('az-gpt-image');
 }
-/** gpt-image-2.6 flare / sunburst:走 image-adapter25,上游只有三档,xhigh / max 由适配器按 high 交付。
+/** gpt-image-2.6 flare / sunburst:走 image-adapter25,上游只有三档,xhigh / max 由适配器用 high 出图,回显计费按请求档。
  *  只认这两个名:`-c` 等后缀变体是别的渠道,不走适配器。 */
 function isGptImage26Model(model: string): boolean {
     return model === 'gpt-image-2.6-flare' || model === 'gpt-image-2.6-sunburst';
@@ -2060,8 +2060,6 @@ type ImageEchoFields = {
     /** true = gpt-image-2.5 系:quality 回显枚举扩成 5 档(low/medium/high/xhigh/max)。
      *  2.0 不设 → xhigh/max 仍归一 low(与 2.0 适配器计费口径一致)。 */
     tier5?: boolean;
-    /** true = gpt-image-2.6:xhigh / max 实际按 high 交付和计费,回显也是 high(见 normalizeEchoQuality)。 */
-    capHigh?: boolean;
 };
 
 /** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
@@ -2072,10 +2070,9 @@ type ImageEchoFields = {
 /** 官方 gpt-image 响应 quality 枚举只有 low/medium/high。入参 auto/standard/缺省/未知按官方语义
  *  归一成 low(与适配器计费口径 normQuality 同源)。gptDefaults=false(非 gpt-image 模型)时缺省
  *  不回显。返回 '' = 不回显。 */
-export function normalizeEchoQuality(requested: string, gptDefaults: boolean, tier5 = false, capHigh = false): string {
+export function normalizeEchoQuality(requested: string, gptDefaults: boolean, tier5 = false): string {
     const s = requested.trim().toLowerCase();
     if (s === 'medium' || s === 'high' || s === 'low') return s;
-    if (capHigh && (s === 'xhigh' || s === 'max')) return 'high';
     // gpt-image-2.5 系官方多两档 xhigh / max(2026-09-09 官 key 实测各有独立 usage);2.0 不认 → 归一 low
     if (tier5 && (s === 'xhigh' || s === 'max')) return s;
     // auto / standard / hd / 空 / 未知 → low(gpt-image 模型才补,其余不回显)
@@ -2246,7 +2243,7 @@ async function reshapeOpenAiImageResponse(
     // 覆盖上游带的非法值(不再 `undefined 才补`):上游把 quality 漏成 standard 等旧词也纠正。
     if (echo) {
         const sniffed = sniffImageFormat(data);
-        const q = normalizeEchoQuality(echo.quality, echo.gptDefaults, echo.tier5 === true, echo.capHigh === true);
+        const q = normalizeEchoQuality(echo.quality, echo.gptDefaults, echo.tier5 === true);
         if (q) out.quality = q;
         const bg = normalizeEchoBackground(echo.background, echo.gptDefaults);
         if (bg) out.background = actualBackground ?? bg;
@@ -2420,7 +2417,6 @@ async function handleImagesDalle(
                     outputFormat: String(form.get('output_format') ?? ''),
                     gptDefaults: isGptImageModel(model),
                     tier5: isGptImage25Model(model),
-                    capHigh: isGptImage26Model(model),
                 };
                 const run = async (): Promise<NextResponse> => {
                     try {
@@ -2583,7 +2579,6 @@ async function handleImagesDalle(
                     gptDefaults: isGptImageModel(model),
                     recognized: seedream,
                     tier5: isGptImage25Model(model),
-                    capHigh: isGptImage26Model(model),
                 };
                 const run = async (): Promise<NextResponse> => {
                     try {

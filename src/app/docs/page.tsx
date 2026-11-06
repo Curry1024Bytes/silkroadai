@@ -2422,11 +2422,12 @@ curl ${OPENAI_BASE}/images/generations \\
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             max
                         </code>{' '}
-                        不报错,按 high 出图、按 high 计费,响应里的{' '}
+                        不报错,实际由 high 出图,响应里的{' '}
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             quality
                         </code>{' '}
-                        也回显 high。② flare 在 high 档会走 sunburst 出图,所以耗时接近 sunburst(约 60 秒)。
+                        和计费按你请求的档位。② flare 在 high、xhigh、max 档会走 sunburst 出图,所以耗时接近 sunburst(约
+                        60 秒)。
                     </div>
                 </section>
 

@@ -969,8 +969,8 @@ export async function handleAdapter25Image(
     // 16 倍数、~1MP,与官方尺寸集不同但画幅语义一致)。auto 无法预估 ct,2.5 全量线本就不守门,不受影响。
     const autoSize = isAutoSize(parsed.size);
     const dims = autoSize ? null : parseSize(parsed.size);
-    let quality = normQuality25(parsed.quality);
-    // ---- 上游缺档:发最近的真档(2.6 xhigh/max → high),回显与计费都跟实际档走,不按请求档多收 ----
+    const quality = normQuality25(parsed.quality);
+    // ---- 上游缺档:只把发给上游的档位换成最近的真档(2.6 xhigh/max → high);quality 留在请求档,回显与计费都按它 ----
     const substitutedQuality = provider.upstreamQuality?.[quality];
     if (substitutedQuality) {
         console.warn('[image-adapter25] quality substituted', {
@@ -978,8 +978,7 @@ export async function handleAdapter25Image(
             requested: quality,
             used: substitutedQuality,
         });
-        quality = substitutedQuality;
-        parsed = { ...parsed, quality };
+        parsed = { ...parsed, quality: substitutedQuality };
     }
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----

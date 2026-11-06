@@ -2818,29 +2818,42 @@ describe('gpt-image-2.6 两条线(ztyunjuan26 / wetokenasia26):缺 xhigh/max 用
         expect('ztyunjuan gpt-image-2.6-aurora gpt-image-2.6-star-swirl'.replace(zt.brand, '*')).toBe('* * *');
     });
 
-    it.each(['wetokenasia26', 'ztyunjuan26'])('%s:xhigh / max 发 high,计费与回显都是 high(1756)', async (p) => {
-        for (const q of ['xhigh', 'max']) {
+    it.each(['wetokenasia26', 'ztyunjuan26'])('%s:xhigh / max 发 high,回显与计费按请求档', async (p) => {
+        for (const [q, tokens] of [
+            ['xhigh', 3122],
+            ['max', 7024],
+        ] as const) {
             fetchMock.mockReset();
             upstreamOk();
             const res = await gen(p, { quality: q });
             expect(res.status).toBe(200);
             expect(sentBody().quality).toBe('high');
             const j = (await res.json()) as { quality: string; usage: { output_tokens: number } };
-            expect(j.quality).toBe('high');
-            expect(j.usage.output_tokens).toBe(1756);
+            expect(j.quality).toBe(q);
+            expect(j.usage.output_tokens).toBe(tokens);
         }
     });
 
-    it.each(['wetokenasia26', 'ztyunjuan26'])('%s:flare high / xhigh / max 改走 sunburst,回显计费不变', async (p) => {
-        for (const q of ['high', 'xhigh', 'max']) {
-            fetchMock.mockReset();
-            upstreamOk();
-            const res = await gen(p, { model: 'gpt-image-2.6-flare', quality: q });
-            expect(res.status).toBe(200);
-            expect(sentBody().model).toBe('gpt-image-2.6-sunburst');
-            expect(sentBody().quality).toBe('high');
-        }
-    });
+    it.each(['wetokenasia26', 'ztyunjuan26'])(
+        '%s:flare high / xhigh / max 改走 sunburst,回显计费按请求档',
+        async (p) => {
+            for (const [q, tokens] of [
+                ['high', 1756],
+                ['xhigh', 3122],
+                ['max', 7024],
+            ] as const) {
+                fetchMock.mockReset();
+                upstreamOk();
+                const res = await gen(p, { model: 'gpt-image-2.6-flare', quality: q });
+                expect(res.status).toBe(200);
+                expect(sentBody().model).toBe('gpt-image-2.6-sunburst');
+                expect(sentBody().quality).toBe('high');
+                const j = (await res.json()) as { quality: string; usage: { output_tokens: number } };
+                expect(j.quality).toBe(q);
+                expect(j.usage.output_tokens).toBe(tokens);
+            }
+        },
+    );
 
     it.each(['low', 'medium', 'auto'])('flare %s 仍走 flare、quality 原样发', async (q) => {
         upstreamOk();
@@ -2881,6 +2894,9 @@ describe('gpt-image-2.6 两条线(ztyunjuan26 / wetokenasia26):缺 xhigh/max 用
         const form = fetchMock.mock.calls[0][1]?.body as FormData;
         expect(form.get('quality')).toBe('high');
         expect(form.get('model')).toBe('gpt-image-2.6-sunburst');
+        const j = (await res.json()) as { quality: string; usage: { output_tokens: number } };
+        expect(j.quality).toBe('max');
+        expect(j.usage.output_tokens).toBe(7024);
     });
 
     it('ztyunjuan26 n=2 扇出两次单图;wetokenasia26 n=2 一次原生', async () => {

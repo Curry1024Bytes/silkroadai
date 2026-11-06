@@ -45,8 +45,8 @@ export interface ImageProvider25 {
      *  (上游对名单外尺寸是静默改尺寸,如 suduma -gzs 把 1536×1024 缩成 1152×768);`auto` 不受名单约束。缺省 = 任意尺寸。 */
     sizes?: ReadonlyArray<string>;
     /** 客户档位 → 发给上游的档位:上游【没有】这一档时用最近的真档代替(2.6 无 xhigh/max → high)。
-     *  与 qualities 的 503 让路相反:这里继续出图。【回显与计费按实际发给上游的档位】,不按客户请求档 ——
-     *  交付 high 就收 high(2.0 适配器同名字段是按请求档计费,口径不同,别混)。 */
+     *  与 qualities 的 503 让路相反:这里继续出图。只影响发给上游的档位,【回显与计费仍按客户请求档】,
+     *  与 2.0 适配器同名字段口径一致(operator 2026-11-06 拍板)。 */
     upstreamQuality?: Partial<Record<'low' | 'medium' | 'high' | 'xhigh' | 'max', 'low' | 'medium' | 'high'>>;
     /** 某档位下改走另一个上游模型(按 upstreamQuality 之后的档位查,优先于 modelMap)。用于上游某模型档位是假的:
      *  2.6 flare 各档延迟几乎不变、裁片不随档位变好 → high 改走真分档的 sunburst。入口白名单 / 回显 / 计费仍按客户模型名。 */
@@ -80,7 +80,7 @@ export const GPT_IMAGE_25_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunbur
 /** 2.6 系:token 公式与 2.5 相同(we-token 直出 usage 2026-11-06 实测 196/439/1756、1536×1024 high 1372、2048² high 3568、
  *  4K high 3336 逐点命中),所以复用本模块;但上游只有 low/medium/high 三档,见 ztyunjuan26 / wetokenasia26。 */
 export const GPT_IMAGE_26_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'] as const;
-/** 2.6 上游缺 xhigh / max → 都按 high 出图、计费、回显(operator 2026-11-06 拍板用 high 代替)。 */
+/** 2.6 上游缺 xhigh / max → 用 high 出图,回显与计费仍按客户请求档(operator 2026-11-06 拍板)。 */
 const GPT_IMAGE_26_UPSTREAM_QUALITY = { xhigh: 'high', max: 'high' } as const;
 /** 2.6 flare 档位是假的 → high 改走 sunburst(两家都是一口价,sunburst 不多花钱,代价是 ~60s vs ~25s)。 */
 const GPT_IMAGE_26_MODEL_MAP_BY_QUALITY = {

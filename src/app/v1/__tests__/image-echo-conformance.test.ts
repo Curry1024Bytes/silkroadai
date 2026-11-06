@@ -30,11 +30,11 @@ describe('normalizeEchoQuality — 官方枚举 low/medium/high,auto/standard→
         expect(normalizeEchoQuality('', false)).toBe('');
         expect(normalizeEchoQuality('high', false)).toBe('high'); // 有效值仍回显
     });
-    it('gpt-image-2.6:xhigh / max 按 high 交付,回显也是 high', () => {
-        expect(normalizeEchoQuality('xhigh', true, true, true)).toBe('high');
-        expect(normalizeEchoQuality('MAX', true, true, true)).toBe('high');
-        expect(normalizeEchoQuality('medium', true, true, true)).toBe('medium');
-        expect(normalizeEchoQuality('auto', true, true, true)).toBe('low');
+    it('gpt-image-2.6:走 5 档枚举,xhigh / max 回显请求档(适配器用 high 出图)', () => {
+        expect(normalizeEchoQuality('xhigh', true, true)).toBe('xhigh');
+        expect(normalizeEchoQuality('MAX', true, true)).toBe('max');
+        expect(normalizeEchoQuality('medium', true, true)).toBe('medium');
+        expect(normalizeEchoQuality('auto', true, true)).toBe('low');
     });
 });
 
