@@ -12,6 +12,8 @@ const m = vi.hoisted(() => ({
     verify: vi.fn(),
     savePurchase: vi.fn(),
     lookup: vi.fn(),
+    previewVideoQuote: vi.fn(),
+    saveVideoQuote: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: {} }));
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: m.auth }));
@@ -34,6 +36,8 @@ vi.mock('@/lib/admin/pricing-simple', () => ({
     verifyRuntime: m.verify,
     savePurchaseRate: m.savePurchase,
     lookupBillLog: m.lookup,
+    previewVideoQuote: m.previewVideoQuote,
+    saveVideoQuote: m.saveVideoQuote,
 }));
 
 import { GET, POST } from '@/app/api/admin/pricing/simple/route';
@@ -48,6 +52,10 @@ const req = (body: unknown) =>
         body: JSON.stringify(body),
     });
 const token = { mode: 'token', input: 5, output: 40, cache_read: null, cache_write: null };
+const official = ['480p', '720p', '1080p', '4k'].flatMap((resolution) =>
+    ['none', 'video'].map((video_input) => ({ resolution, video_input, price: 23 })),
+);
+const videoQuote = { model: 'doubao-seedance-2-0-mini-260615', official, buy_discount: 0.36, sell_discount: 0.45 };
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -115,8 +123,50 @@ describe('/api/admin/pricing/simple', () => {
         expect(m.lookup).toHaveBeenCalledWith(admin, 'req_1-a');
     });
 
+    it('dispatches the video-token quote actions', async () => {
+        m.previewVideoQuote.mockResolvedValue({ unchanged: false, cells: [] });
+        m.saveVideoQuote.mockResolvedValue({ catalog_rows: 1 });
+        expect(await (await POST(req({ action: 'preview_video_quote', ...videoQuote }))).json()).toEqual({
+            preview: { unchanged: false, cells: [] },
+        });
+        expect(m.previewVideoQuote).toHaveBeenCalledWith(admin, videoQuote.model, {
+            official,
+            buy_discount: 0.36,
+            sell_discount: 0.45,
+        });
+        expect(
+            await (
+                await POST(
+                    req({ action: 'save_video_quote', ...videoQuote, expected_state: 's', expected_revision: 3 }),
+                )
+            ).json(),
+        ).toEqual({ result: { catalog_rows: 1 } });
+        expect(m.saveVideoQuote).toHaveBeenCalledWith(
+            expect.objectContaining({ admin }),
+            videoQuote.model,
+            { official, buy_discount: 0.36, sell_discount: 0.45 },
+            's',
+            3,
+        );
+    });
+
     it('rejects malformed input before touching the service', async () => {
         for (const body of [
+            { action: 'preview_video_quote', ...videoQuote, official: official.slice(1) },
+            { action: 'preview_video_quote', ...videoQuote, sell_discount: 0 },
+            { action: 'preview_video_quote', ...videoQuote, buy_discount: 3 },
+            {
+                action: 'preview_video_quote',
+                ...videoQuote,
+                official: [{ ...official[0], resolution: '8k' }, ...official.slice(1)],
+            },
+            {
+                action: 'preview_video_quote',
+                ...videoQuote,
+                official: [{ ...official[0], price: 0 }, ...official.slice(1)],
+            },
+            { action: 'save_video_quote', ...videoQuote, expected_state: 's', expected_revision: 0 },
+            { action: 'save_video_quote', ...videoQuote, expected_revision: null },
             { action: 'save_tier', group_id: GROUP, ratio: 0, expected_ratio: 1 },
             { action: 'save_model', model: 'gpt-5.5', base: { ...token, input: 0 }, expected_state: 's' },
             { action: 'preview_model', model: 'x', base: token, extra: 1 },
@@ -135,6 +185,8 @@ describe('/api/admin/pricing/simple', () => {
         expect(m.saveModel).not.toHaveBeenCalled();
         expect(m.savePurchase).not.toHaveBeenCalled();
         expect(m.lookup).not.toHaveBeenCalled();
+        expect(m.previewVideoQuote).not.toHaveBeenCalled();
+        expect(m.saveVideoQuote).not.toHaveBeenCalled();
     });
 
     it('maps service errors to their status', async () => {

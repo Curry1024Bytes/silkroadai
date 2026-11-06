@@ -108,14 +108,18 @@ import {
     lookupBillLog,
     previewModel,
     previewTier,
+    previewVideoQuote,
     resyncCatalog,
     saveModel,
     savePurchaseRate,
     saveTier,
+    saveVideoQuote,
     type SimplePricingContext,
 } from '@/lib/admin/pricing-simple';
 import type { AdminPrincipal } from '@/lib/admin/auth';
 
+const EXPR = 'billing_setting.billing_expr';
+const MODE = 'billing_setting.billing_mode';
 const TENANT = '00000000-0000-0000-0000-000000000001';
 const admin = {
     user: { id: 'u1', email: 'a@x' },
@@ -402,5 +406,197 @@ describe('lookupBillLog', () => {
             code: 'pricing_log_not_found',
             status: 404,
         });
+    });
+});
+
+describe('video-token quotes', () => {
+    // doubao-seedance-2-0-mini official ¥/1M, in canonical cell order.
+    const OFFICIAL = [23, 14, 23, 14, 25.5, 15.5, 25.5, 15.5];
+    const COMBOS: Array<[string, string]> = [
+        ['480p', 'none'],
+        ['480p', 'video'],
+        ['720p', 'none'],
+        ['720p', 'video'],
+        ['1080p', 'none'],
+        ['1080p', 'video'],
+        ['4k', 'none'],
+        ['4k', 'video'],
+    ];
+    const formula = (prices: number[]) =>
+        COMBOS.map(([resolution, input], index) => {
+            const call = `tier("${resolution}·${input}", u("tokens") * ${prices[index]} / 1000000)`;
+            return index === COMBOS.length - 1
+                ? call
+                : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
+        }).join(' : ');
+    const quote = (buy: number, sell: number) => ({
+        official: COMBOS.map(([resolution, video_input], index) => ({
+            resolution: resolution as '480p',
+            video_input: video_input as 'none',
+            price: OFFICIAL[index],
+        })),
+        buy_discount: buy,
+        sell_discount: sell,
+    });
+    const SEEDANCE = 'doubao-seedance-2-0-mini-260615';
+
+    beforeEach(() => {
+        // Coefficients at the old ÷7.5 convention, billed at the pool ratio 1.2.
+        state.options[MODE] = JSON.stringify({ [SEEDANCE]: 'tiered_expr' });
+        state.options[EXPR] = JSON.stringify({
+            [SEEDANCE]: formula([3.07, 1.87, 3.07, 1.87, 3.4, 2.07, 3.4, 2.07]),
+        });
+        state.models = [
+            {
+                id: '11111111-1111-4111-8111-111111111111',
+                slug: SEEDANCE,
+                display_name: 'Seedance 2.0 mini',
+                vendor: 'volc',
+                modality: 'video',
+                enabled: true,
+                upstream_map: { pool: { channel_id: 13, upstream_model: SEEDANCE } },
+                prices: [],
+            },
+        ];
+    });
+
+    it('shows the stored quote, the official prefill and the live coefficients', async () => {
+        const view = await loadSimplePricing(admin);
+        const model = view.upstream_models.find((row) => row.name === SEEDANCE)!;
+        expect(model.base).toMatchObject({ mode: 'video_token' });
+        const videoQuote = model.video_quote!;
+        expect(videoQuote).toMatchObject({
+            model_id: '11111111-1111-4111-8111-111111111111',
+            tier: 'pool',
+            newapi_group: 'default',
+            group_ratio: 1.2,
+            rule: null,
+            drift: false,
+        });
+        // Official prices come from the shared Seedance rate table, not from new-api.
+        expect(videoQuote.prefill?.map((cell) => cell.price)).toEqual(OFFICIAL);
+    });
+
+    it('previews the coefficients, margins and what new-api bills today', async () => {
+        const preview = await previewVideoQuote(admin, SEEDANCE, quote(0.36, 0.45));
+        expect(preview).toMatchObject({ unchanged: false, tier: 'pool', group_ratio: 1.2 });
+        expect(preview.cells[0]).toMatchObject({
+            resolution: '480p',
+            video_input: 'none',
+            official: 23,
+            cost: 8.28,
+            target: 10.35,
+            // 10.35 ÷ 1.2 = 8.625, rounded up to two decimals.
+            coefficient: 8.63,
+            actual: 10.356,
+            current_coefficient: 3.07,
+        });
+        expect(preview.cells[0].margin).toBe(0.200463);
+        expect(preview.warnings.join(' ')).toContain('向上取整');
+        expect(state.puts).toEqual([]);
+    });
+
+    it('refuses a sell discount below the buy discount', async () => {
+        await expect(previewVideoQuote(admin, SEEDANCE, quote(0.45, 0.36))).rejects.toMatchObject({
+            code: 'pricing_video_quote_invalid',
+            status: 400,
+        });
+    });
+
+    it('saves the quote, writes one option, snapshots the catalog and audits', async () => {
+        const view = await loadSimplePricing(admin);
+        const model = view.upstream_models.find((row) => row.name === SEEDANCE)!;
+        const result = await saveVideoQuote(context, SEEDANCE, quote(0.36, 0.45), model.state, null);
+        expect(result).toMatchObject({ unchanged: false, written_keys: [EXPR] });
+        // Only the expression changes; the mode and every ratio are left alone.
+        expect(state.puts.map(([key]) => key)).toEqual([EXPR]);
+        expect(JSON.parse(state.puts[0][1])[SEEDANCE]).toBe(formula([8.63, 5.25, 8.63, 5.25, 9.57, 5.82, 9.57, 5.82]));
+        // The quote is stored as this model's cost rule, with both discounts.
+        expect(state.costWrites[0]).toMatchObject({
+            action: 'create',
+            channel_id: 13,
+            upstream_model: SEEDANCE,
+            config: expect.objectContaining({
+                basis: 'video',
+                video_unit: 'million_tokens',
+                upstream_multiplier: 0.36,
+                retail_multiplier: 0.45,
+            }),
+        });
+        expect(state.costRevisions).toHaveLength(1);
+        const snapshot = state.created[0] as { tier: string; billing_details: { cells: Array<{ price: number }> } };
+        expect(snapshot.tier).toBe('pool');
+        expect(snapshot.billing_details.cells[0].price).toBe(10.356);
+        expect(state.audits[0]).toMatchObject({ action: 'pricing_video_quote', target: SEEDANCE });
+    });
+
+    it('refuses a stale model state or revision without writing anything', async () => {
+        const view = await loadSimplePricing(admin);
+        const model = view.upstream_models.find((row) => row.name === SEEDANCE)!;
+        await expect(saveVideoQuote(context, SEEDANCE, quote(0.36, 0.45), 'stale', null)).rejects.toMatchObject({
+            code: 'pricing_stale',
+        });
+        await expect(saveVideoQuote(context, SEEDANCE, quote(0.36, 0.45), model.state, 7)).rejects.toMatchObject({
+            code: 'pricing_cost_revision',
+        });
+        expect(state.puts).toEqual([]);
+        expect(state.costWrites).toEqual([]);
+    });
+
+    it('refuses to reprice a tier managed by sale rules', async () => {
+        state.managed = [{ newapi_group: 'default' }];
+        const view = await loadSimplePricing(admin);
+        const model = view.upstream_models.find((row) => row.name === SEEDANCE)!;
+        expect(model.video_quote?.sale_rules_managed).toBe(true);
+        await expect(previewVideoQuote(admin, SEEDANCE, quote(0.36, 0.45))).rejects.toMatchObject({
+            code: 'pricing_sale_rules_managed',
+        });
+        await expect(saveVideoQuote(context, SEEDANCE, quote(0.36, 0.45), model.state, null)).rejects.toMatchObject({
+            code: 'pricing_sale_rules_managed',
+        });
+        expect(state.puts).toEqual([]);
+    });
+
+    it('flags a stored quote that no longer matches what new-api bills', async () => {
+        state.costRules = [
+            {
+                id: 'cost-1',
+                model_id: '11111111-1111-4111-8111-111111111111',
+                tier: 'pool',
+                revision: 3,
+                channel_id: 13,
+                upstream_model: SEEDANCE,
+                updated_at: new Date('2026-11-06T00:00:00Z'),
+                config: {
+                    version: 1,
+                    basis: 'video',
+                    video_unit: 'million_tokens',
+                    currency: 'cny',
+                    credits_per_cny: 1,
+                    upstream_multiplier: 0.36,
+                    retail_multiplier: 0.45,
+                    markup_percent: 0,
+                    source_note: '',
+                    token_rates: { input: null, output: null, cache_read: null, cache_write: null },
+                    variants: COMBOS.map(([resolution, input], index) => ({
+                        key: `${resolution}-${input}`,
+                        label: `${resolution} ${input}`,
+                        resolution,
+                        audio: 'any',
+                        reference_video: input === 'video' ? 'with' : 'without',
+                        price: OFFICIAL[index],
+                        minimum_units: 1,
+                        step_units: 1,
+                    })),
+                },
+            },
+        ];
+        const view = await loadSimplePricing(admin);
+        const videoQuote = view.upstream_models.find((row) => row.name === SEEDANCE)!.video_quote!;
+        // The live formula still holds the old ÷7.5 coefficients, not 官方价 × 0.45.
+        expect(videoQuote.drift).toBe(true);
+        expect(videoQuote.rule).toMatchObject({ id: 'cost-1', revision: 3 });
+        expect(videoQuote.rule?.quote?.sell_discount).toBe(0.45);
+        expect(videoQuote.prefill).toBeNull();
     });
 });
