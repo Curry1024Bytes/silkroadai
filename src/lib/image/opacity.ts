@@ -72,7 +72,7 @@ export async function resolveOutputBackground(
     const want = requested.trim().toLowerCase();
     if (want === 'transparent') return { b64, background: 'transparent' };
     const buf = Buffer.from(b64, 'base64');
-    // 动图不走像素判定:sharp 只读首帧,压平会把 GIF 变成单帧静图。官方 GIF 不支持透明背景。
+    // 动图不走像素判定:sharp 只读首帧,压平会把 GIF 变成单帧静图。
     if (buf.toString('latin1', 0, 4) === 'GIF8') return { b64, background: 'opaque' };
     if ((await hasTransparentPixels(buf)) !== true) return { b64, background: 'opaque' };
     if (want === 'opaque') {

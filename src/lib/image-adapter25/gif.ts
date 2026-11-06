@@ -63,7 +63,8 @@ function intError(raw: string, param: string): Gpt26ParamError | null {
     };
 }
 
-/** 2.6 入参校验,都是换渠道也过不去的确定性错误。svg 两家上游都出不来,立即拒,不空跑 failover。 */
+/** 2.6 入参校验,都是换渠道也过不去的确定性错误。适配器这两家上游出不了 svg,立即拒,不空跑 failover
+ *  (官 key 分组不走适配器,SVG 可用)。 */
 export function gpt26ParamError(
     extras: Record<string, string>,
     hasMask: boolean,

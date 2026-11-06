@@ -38,6 +38,15 @@ export function sniffImageBytes(buf: Buffer): ImageFormat | '' {
     return '';
 }
 
+/** SVG 是文本,没有魔数:允许 BOM、XML 声明、注释、doctype 之后紧跟 <svg。只看开头 512 字节。 */
+export function isSvgBytes(buf: Buffer): boolean {
+    const head = buf
+        .subarray(0, 512)
+        .toString('utf8')
+        .replace(/^\uFEFF/, '');
+    return /^\s*(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!doctype svg[^>]*>\s*)?<svg[\s>]/i.test(head);
+}
+
 /** 客户 output_format 字符串 → 转码目标;png / 空 / 未知 → null(不转)。jpg 视为 jpeg。 */
 export function transcodeTargetOf(outputFormat: string | undefined | null): TranscodeTarget | null {
     const s = (outputFormat ?? '').trim().toLowerCase();

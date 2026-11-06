@@ -217,5 +217,10 @@ export function normalizeImageError(
 
     // 8. default:未识别的 4xx 原样透传(status 不动),仅抹上游品牌名(宁可保留原文也不误改写;
     //    分类 miss 靠内部日志按周 review 补正则)
-    return { body: text.replace(/\badobe\b/gi, 'the provider'), status: upstreamStatus };
+    //    new-api 型上游会加 `Provider API error:` 前缀,并把 svg.model 这类点号字段打码成 `***.model`。
+    const cleaned = text
+        .replace(/\badobe\b/gi, 'the provider')
+        .replace(/Provider API error:\s*/g, '')
+        .replace(/\*\*\*\.model/g, 'svg.model');
+    return { body: cleaned, status: upstreamStatus };
 }

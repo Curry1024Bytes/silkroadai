@@ -8,6 +8,7 @@ import {
     normalizeEchoBackground,
     normalizeEchoOutputFormat,
     sniffImageFormat,
+    gptImage26SvgError,
 } from '../[...path]/route';
 
 describe('normalizeEchoQuality — 官方枚举 low/medium/high,auto/standard→low', () => {
@@ -101,5 +102,47 @@ describe('normalizeEchoQuality — gpt-image-2.5 tier5 门控(xhigh/max 只对 2
         ['high', true, 'high'],
     ])('%s tier5=%s → %s', (input, tier5, expected) => {
         expect(normalizeEchoQuality(input, true, tier5)).toBe(expected);
+    });
+});
+
+describe('2.6 SVG 回显与校验', () => {
+    const svgB64 = (text: string) => Buffer.from(text).toString('base64');
+
+    it.each([
+        ['<svg viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg"></svg>'],
+        ['<?xml version="1.0" encoding="UTF-8"?>\n<svg width="8"></svg>'],
+        ['<!-- made by a model -->\n<svg></svg>'],
+        ['﻿  <svg>\n</svg>'],
+    ])('sniffImageFormat 认出 SVG 文本:%s', (text) => {
+        expect(sniffImageFormat([{ b64_json: svgB64(text) }])).toBe('svg');
+    });
+
+    it('普通 XML 和 HTML 不算 SVG', () => {
+        expect(sniffImageFormat([{ b64_json: svgB64('<?xml version="1.0"?><note/>') }])).toBe('');
+        expect(sniffImageFormat([{ b64_json: svgB64('<html><svg></svg></html>') }])).toBe('');
+    });
+
+    it('读不到字节时按请求回显 svg', () => {
+        expect(normalizeEchoOutputFormat('svg', true)).toBe('svg');
+    });
+
+    const ok = { svg: { model: 'gpt-5.5' }, n: undefined, stream: false, outputCompression: undefined };
+
+    it('合法入参通过', () => {
+        expect(gptImage26SvgError(ok)).toBeNull();
+        expect(gptImage26SvgError({ ...ok, n: 1 })).toBeNull();
+        expect(gptImage26SvgError({ ...ok, n: '1' })).toBeNull();
+    });
+
+    it.each([
+        [{ ...ok, svg: undefined }, 'svg.model', 'missing_required_parameter'],
+        [{ ...ok, svg: {} }, 'svg.model', 'missing_required_parameter'],
+        [{ ...ok, svg: { model: '  ' } }, 'svg.model', 'missing_required_parameter'],
+        [{ ...ok, svg: 'gpt-5.5' }, 'svg', 'invalid_type'],
+        [{ ...ok, n: 2 }, 'n', 'invalid_value'],
+        [{ ...ok, stream: true }, 'stream', 'invalid_value'],
+        [{ ...ok, outputCompression: 50 }, 'output_compression', 'invalid_value'],
+    ])('非法入参 400:%#', (params, param, code) => {
+        expect(gptImage26SvgError(params)).toMatchObject({ param, code });
     });
 });

@@ -62,6 +62,7 @@ import {
 import { newGenerationId } from '@/lib/image/generation-id';
 import { jsonMaskShapeError, maskDimensionError, multipartMaskShapeError } from '@/lib/image/mask';
 import { resolveOutputBackground } from '@/lib/image/opacity';
+import { isSvgBytes } from '@/lib/image/transcode';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -824,7 +825,9 @@ async function storeGeneratedImage(
           ? 'webp'
           : realMime.includes('gif')
             ? 'gif'
-            : 'png';
+            : realMime.includes('svg')
+              ? 'svg'
+              : 'png';
     // 按日期分子目录(客户诉求 2026-07-21):客户清理 OSS 时可整删过期日期目录。
     // 日期取北京时间(gotcha #20:容器 TZ=UTC,不显式指定会差 8h);en-CA locale = YYYY-MM-DD。
     const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
@@ -1411,6 +1414,7 @@ async function gptImageUpstream(
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
         for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
+        foldSvgFormFields(j);
         coerceImageIntFields(j);
         return fetchUpstreamJson(req, j, '/images/generations', search);
     }
@@ -1422,6 +1426,12 @@ async function gptImageUpstream(
     for (const [k, v] of Object.entries(b)) {
         if (k === 'image' || k === 'image_url' || k === 'images' || k === 'mask') continue;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
+    }
+    // svg 是对象,multipart 里官方要 svg[model] 形态(ch325 实测;整段 JSON 串会 400 invalid_type)
+    if (b.svg && typeof b.svg === 'object' && !Array.isArray(b.svg)) {
+        for (const [k, v] of Object.entries(b.svg as JsonRecord)) {
+            if (typeof v === 'string' || typeof v === 'number') f.append(`svg[${k}]`, String(v));
+        }
     }
     for (const img of imgs) {
         f.append(
@@ -1559,8 +1569,8 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
 function isGptImageModel(model: string): boolean {
     return model.startsWith('gpt-image') || model.startsWith('az-gpt-image');
 }
-/** gpt-image-2.6 flare / sunburst:走 image-adapter25,上游只有三档,xhigh / max 由适配器用 high 出图,回显计费按请求档。
- *  只认这两个名:`-c` 等后缀变体是别的渠道,不走适配器。 */
+/** gpt-image-2.6 flare / sunburst。多数分组走 image-adapter25(xhigh / max 由适配器用 high 出图,回显计费按请求档),
+ *  官 key 分组直连上游。只认这两个名:`-c` 等后缀变体是别的渠道。 */
 function isGptImage26Model(model: string): boolean {
     return model === 'gpt-image-2.6-flare' || model === 'gpt-image-2.6-sunburst';
 }
@@ -1964,6 +1974,55 @@ function gifStreamError(cap: CaptureCtx | null): NextResponse {
     });
 }
 
+interface Gpt26SvgParams {
+    /** JSON 里的 svg 字段;multipart 由 svg[model] 折回对象后传入。 */
+    svg: unknown;
+    n: unknown;
+    stream: boolean;
+    outputCompression: unknown;
+}
+
+/** 2.6 SVG 入参校验,文案取自官方实测。放在代理层:上游 400 的 `svg.model` 会被 new-api 打码成 `***.model`,
+ *  而且 SVG 走官 key 分组时没有适配器兜底。 */
+export function gptImage26SvgError(p: Gpt26SvgParams): { message: string; param: string; code: string } | null {
+    const invalid = (message: string, param: string) => ({ message, param, code: 'invalid_value' });
+    if (p.stream) return invalid("The 'stream' parameter is not supported for SVG generation.", 'stream');
+    if (p.n !== undefined && p.n !== null && String(p.n).trim() !== '' && Number(p.n) !== 1)
+        return invalid("The 'n' parameter is not supported for SVG generation. Use n=1.", 'n');
+    if (p.outputCompression !== undefined && p.outputCompression !== null && String(p.outputCompression).trim() !== '')
+        return invalid("The 'output_compression' parameter is not supported for SVG generation.", 'output_compression');
+    if (p.svg !== undefined && p.svg !== null && (typeof p.svg !== 'object' || Array.isArray(p.svg)))
+        return {
+            message: `Invalid type for 'svg': expected an object, but got ${jsTypeName(p.svg)} instead.`,
+            param: 'svg',
+            code: 'invalid_type',
+        };
+    const model = (p.svg as JsonRecord | null | undefined)?.model;
+    if (typeof model !== 'string' || !model.trim())
+        return {
+            message: "SVG generation requires 'svg.model'.",
+            param: 'svg.model',
+            code: 'missing_required_parameter',
+        };
+    return null;
+}
+
+function isGptImage26Svg(model: string, outputFormat: string): boolean {
+    return isGptImage26Model(model) && outputFormat.trim().toLowerCase() === 'svg';
+}
+
+/** multipart 的 svg[model] / svg[effort] 折回 JSON 的 svg 对象;就地改。 */
+function foldSvgFormFields(j: JsonRecord): void {
+    const svg: JsonRecord = {};
+    for (const k of Object.keys(j)) {
+        const m = /^svg\[(\w+)\]$/.exec(k);
+        if (!m) continue;
+        svg[m[1]] = j[k];
+        delete j[k];
+    }
+    if (Object.keys(svg).length > 0) j.svg = svg;
+}
+
 /** 客户打的是 /images/edits 却一张输入图都没带 → 官方 400 `missing_required_parameter`(2026-09-17 官方实测)。
  *  此前统一分流会把它当文生图打 generations 并计费(客户按官方对不上,且"漏传图"这种客户端 bug 被静默吞掉)。
  *  统一分流仍保留其余语义:/generations 带图照旧转 edits。 */
@@ -2106,22 +2165,22 @@ export function normalizeEchoBackground(requested: string, gptDefaults: boolean)
     return ''; // 非法值不回显(不鹦鹉学舌)
 }
 
-/** output_format 请求侧归一(仅在无法从字节 sniff 时兜底);官方枚举 png/jpeg/webp/gif。 */
+/** output_format 请求侧归一(仅在无法从字节 sniff 时兜底);官方枚举 png/jpeg/webp/gif/svg。 */
 export function normalizeEchoOutputFormat(requested: string, gptDefaults: boolean): string {
     const s = requested.trim().toLowerCase();
-    if (s === 'png' || s === 'jpeg' || s === 'webp' || s === 'gif') return s;
+    if (s === 'png' || s === 'jpeg' || s === 'webp' || s === 'gif' || s === 'svg') return s;
     if (s === 'jpg') return 'jpeg';
     return gptDefaults ? 'png' : '';
 }
 
-/** 按【返回图实际首字节魔数】判定 output_format(PNG/JPEG/WebP/GIF)——回显以字节为准,消解"请求
+/** 按【返回图实际首字节魔数】判定 output_format(PNG/JPEG/WebP/GIF/SVG)——回显以字节为准,消解"请求
  *  声称一种、上游出另一种"的不一致(F1/F2)。读不出(URL 模式无 b64 / 非常见格式)→ ''(退回请求侧)。 */
 export function sniffImageFormat(data: JsonRecord[]): string {
     const b64 = typeof data[0]?.b64_json === 'string' ? (data[0].b64_json as string) : '';
     if (!b64) return '';
     let head: Buffer;
     try {
-        head = Buffer.from(b64.slice(0, 24), 'base64');
+        head = Buffer.from(b64.slice(0, 684), 'base64'); // SVG 开头可能带 XML 声明和注释,多读一点
     } catch {
         return '';
     }
@@ -2130,7 +2189,14 @@ export function sniffImageFormat(data: JsonRecord[]): string {
     if (head.length >= 12 && head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
     if (head.length >= 4 && head.toString('latin1', 0, 4) === 'GIF8') return 'gif';
+    if (isSvgBytes(head)) return 'svg';
     return '';
+}
+
+/** GIF、SVG 读不出像素透明度,background 只能信上游回显(官方 SVG 缺省时透明、不透明两种都回过)。 */
+function upstreamBackground(j: JsonRecord): string {
+    const v = typeof j.background === 'string' ? j.background.trim().toLowerCase() : '';
+    return v === 'transparent' || v === 'opaque' ? v : '';
 }
 
 async function reshapeOpenAiImageResponse(
@@ -2243,7 +2309,8 @@ async function reshapeOpenAiImageResponse(
     // PNG 却约 1/3 像素全透明 —— 此前只按请求值回显。请求显式 opaque 而图带透明 → 白底压平兑现契约;
     // auto / 缺省 → 如实回显 transparent。请求 transparent 不动。url 形态(无字节)退回请求侧归一。
     let actualBackground: string | null = null;
-    if (echo?.gptDefaults) {
+    const deliveredFormat = sniffImageFormat(data);
+    if (echo?.gptDefaults && deliveredFormat !== 'svg') {
         for (const item of data) {
             if (typeof item.b64_json !== 'string' || !item.b64_json) continue;
             const r = await resolveOutputBackground(item.b64_json, echo.background);
@@ -2262,12 +2329,13 @@ async function reshapeOpenAiImageResponse(
     //  - background:opaque/transparent 枚举;非法值不回显,缺省补 opaque。
     // 覆盖上游带的非法值(不再 `undefined 才补`):上游把 quality 漏成 standard 等旧词也纠正。
     if (echo) {
-        const sniffed = sniffImageFormat(data);
         const q = normalizeEchoQuality(echo.quality, echo.gptDefaults, echo.tier5 === true);
         if (q) out.quality = q;
         const bg = normalizeEchoBackground(echo.background, echo.gptDefaults);
-        if (bg) out.background = actualBackground ?? bg;
-        const of = sniffed || normalizeEchoOutputFormat(echo.outputFormat, echo.gptDefaults);
+        const trustUpstream = deliveredFormat === 'svg' || deliveredFormat === 'gif';
+        const upstreamBg = trustUpstream ? upstreamBackground(j) : '';
+        if (bg) out.background = upstreamBg || (actualBackground ?? bg);
+        const of = deliveredFormat || normalizeEchoOutputFormat(echo.outputFormat, echo.gptDefaults);
         if (of) out.output_format = of;
     }
 
@@ -2421,6 +2489,19 @@ async function handleImagesDalle(
                     sizeRaw = String(form.get('size') ?? '');
                     const gif26 = isGptImage26Gif(model, String(form.get('output_format') ?? ''));
                     if (gif26 && wantStream) return gifStreamError(cap);
+                    if (isGptImage26Svg(model, String(form.get('output_format') ?? ''))) {
+                        const fields: JsonRecord = {};
+                        for (const [k, v] of form.entries()) if (typeof v === 'string') fields[k] = v;
+                        foldSvgFormFields(fields);
+                        const svgErr = gptImage26SvgError({
+                            svg: fields.svg,
+                            n: fields.n,
+                            stream: wantStream,
+                            outputCompression: fields.output_compression,
+                        });
+                        if (svgErr)
+                            return imageError(svgErr.message, 400, cap, { param: svgErr.param, code: svgErr.code });
+                    }
                     // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
                     const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw, gif26);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
@@ -2595,6 +2676,16 @@ async function handleImagesDalle(
                         typeof body.output_format === 'string' ? body.output_format : '',
                     );
                     if (gif26 && wantStream) return gifStreamError(cap);
+                    if (isGptImage26Svg(model, typeof body.output_format === 'string' ? body.output_format : '')) {
+                        const svgErr = gptImage26SvgError({
+                            svg: body.svg,
+                            n: body.n,
+                            stream: wantStream,
+                            outputCompression: body.output_compression,
+                        });
+                        if (svgErr)
+                            return imageError(svgErr.message, 400, cap, { param: svgErr.param, code: svgErr.code });
+                    }
                     // 官方尺寸约束默认生效(同 multipart 分支)
                     const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw, gif26);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
@@ -3113,6 +3204,7 @@ function sniffImageMime(buf: Buffer): string {
     if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
         return 'image/webp';
     if (buf.length >= 4 && buf.toString('ascii', 0, 4) === 'GIF8') return 'image/gif';
+    if (isSvgBytes(buf)) return 'image/svg+xml';
     return 'image/png';
 }
 

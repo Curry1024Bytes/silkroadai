@@ -2459,21 +2459,52 @@ curl ${OPENAI_BASE}/images/generations \\
                         <li>
                             尺寸:512×512 到 816×816 可用;1024×1024 放不下拼图,返回 400。13 帧及以上也可能因此返回 400。
                         </li>
-                        <li>GIF 不支持流式、透明背景、蒙版和 output_compression。</li>
-                        <li>改图接口也能输出 GIF,但只用默认的 9 帧、200 毫秒,传帧参数会返回 400。</li>
+                        <li>GIF 不支持流式、蒙版和 output_compression,也不保证携带 C2PA 内容凭证。</li>
+                        <li>
+                            透明背景仅 <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回 400。
+                        </li>
+                        <li>
+                            改图接口也能输出 GIF,默认 9 帧、200 毫秒。传帧参数仅{' '}
+                            <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回 400。
+                        </li>
                         <li>
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                                 complexity
                             </code>
                             :low / medium / high,PNG、WebP、JPEG、GIF 都可传。
                         </li>
+                    </ul>
+                    <p className="text-sm text-ink mb-2">
+                        <strong className="text-navy">生成 SVG</strong>:仅{' '}
+                        <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回
+                        400。文生图和改图都支持。
+                    </p>
+                    <ul className="text-sm text-ink mb-3 list-disc pl-5 space-y-1">
                         <li>
-                            暂不支持{' '}
+                            JSON 请求传{' '}
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                {'output_format: "svg"'}
+                                {'"output_format": "svg"'}
+                            </code>{' '}
+                            和{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {'"svg": {"model": "gpt-5.5"}'}
                             </code>
-                            ,请求会返回 400。
+                            ,缺少 svg.model 返回 400。multipart 改图把字段写成{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                svg[model]
+                            </code>
+                            。
                         </li>
+                        <li>SVG 文本经 base64 编码后放在 data[0].b64_json。</li>
+                        <li>
+                            响应另带{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                svg_usage
+                            </code>
+                            ,列出生成 SVG 所用模型和 token 数。
+                        </li>
+                        <li>只支持 n=1,不支持流式和 output_compression。</li>
+                        <li>size 的像素下限与普通出图相同,512×512 返回 400。不传 size 时尺寸由模型决定。</li>
                     </ul>
                 </section>
 

@@ -5660,6 +5660,118 @@ describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits
         expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    describe('2.6 SVG', () => {
+        const svgText = '<svg viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg"></svg>';
+        const svgReq = { model: 'gpt-image-2.6-sunburst', output_format: 'svg', svg: { model: 'gpt-5.5' } };
+        const upstreamSvg = (background: string) =>
+            new Response(
+                JSON.stringify({
+                    created: 1,
+                    background,
+                    data: [{ b64_json: Buffer.from(svgText).toString('base64') }],
+                    usage: { total_tokens: 824 },
+                    svg_usage: { model: 'gpt-5.5', total_tokens: 1716 },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+
+        it('缺 svg.model → 400 官方文案,不打上游', async () => {
+            const res = await POST(
+                gen({ model: 'gpt-image-2.6-sunburst', output_format: 'svg' }),
+                ctx('images', 'generations'),
+            );
+            expect(res.status).toBe(400);
+            const j = (await res.json()) as { error: { message: string; param: string; code: string } };
+            expect(j.error).toMatchObject({
+                message: "SVG generation requires 'svg.model'.",
+                param: 'svg.model',
+                code: 'missing_required_parameter',
+            });
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+
+        it('stream → 400,不开伪流式', async () => {
+            const res = await POST(gen({ ...svgReq, stream: true }), ctx('images', 'generations'));
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { param: string } }).error.param).toBe('stream');
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+
+        it.each(['transparent', 'opaque'])('回显 svg 和上游 background=%s,透传 svg_usage,不当图片处理', async (bg) => {
+            mockFetch.mockResolvedValueOnce(upstreamSvg(bg));
+            const res = await POST(gen({ ...svgReq, quality: 'low' }), ctx('images', 'generations'));
+            expect(res.status).toBe(200);
+            const j = (await res.json()) as {
+                output_format: string;
+                background: string;
+                svg_usage: { total_tokens: number };
+                data: Array<{ b64_json: string }>;
+            };
+            expect(j.output_format).toBe('svg');
+            expect(j.background).toBe(bg);
+            expect(j.svg_usage.total_tokens).toBe(1716);
+            expect(Buffer.from(j.data[0].b64_json, 'base64').toString()).toBe(svgText);
+            const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body)) as Record<string, unknown>;
+            expect(sent.svg).toEqual({ model: 'gpt-5.5' });
+        });
+
+        it('JSON 改图转 multipart 时 svg 变成 svg[model]', async () => {
+            mockFetch.mockResolvedValueOnce(upstreamSvg('transparent'));
+            const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+            await POST(
+                gen({ ...svgReq, images: [{ image_url: `data:image/png;base64,${png}` }] }),
+                ctx('images', 'edits'),
+            );
+            const form = mockFetch.mock.calls[0][1]?.body as FormData;
+            expect(form.get('svg[model]')).toBe('gpt-5.5');
+            expect(form.get('svg')).toBeNull();
+        });
+
+        it('multipart 无图走 generations 时 svg[model] 折回对象', async () => {
+            mockFetch.mockResolvedValueOnce(upstreamSvg('transparent'));
+            const fd = new FormData();
+            fd.append('model', 'gpt-image-2.6-sunburst');
+            fd.append('prompt', 'x');
+            fd.append('output_format', 'svg');
+            fd.append('svg[model]', 'gpt-5.5');
+            const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: fd });
+            await POST(req, ctx('images', 'generations'));
+            const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body)) as Record<string, unknown>;
+            expect(sent.svg).toEqual({ model: 'gpt-5.5' });
+            expect(sent['svg[model]']).toBeUndefined();
+        });
+
+        it('multipart 缺 svg[model] → 400', async () => {
+            const fd = new FormData();
+            fd.append('model', 'gpt-image-2.6-sunburst');
+            fd.append('prompt', 'x');
+            fd.append('output_format', 'svg');
+            fd.append('image', new Blob([Buffer.from('89504e47', 'hex')], { type: 'image/png' }), 'a.png');
+            const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: fd });
+            const res = await POST(req, ctx('images', 'edits'));
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { param: string } }).error.param).toBe('svg.model');
+        });
+    });
+
+    it('2.6 GIF 的 background 回显上游值', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    created: 1,
+                    background: 'transparent',
+                    data: [{ b64_json: Buffer.from('GIF89a').toString('base64') }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            gen({ model: 'gpt-image-2.6-sunburst', output_format: 'gif', background: 'transparent' }),
+            ctx('images', 'generations'),
+        );
+        expect(((await res.json()) as { background: string; output_format: string }).background).toBe('transparent');
+    });
+
     it('multipart→JSON 时 GIF 帧参数转成整数', async () => {
         const fd = new FormData();
         fd.append('model', 'gpt-image-2.6-flare');

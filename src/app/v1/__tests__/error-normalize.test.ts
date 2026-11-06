@@ -172,6 +172,19 @@ describe('normalizeImageError — default 桶(未识别 4xx 原样透传,仅抹�
         expect(r.retryAfter).toBeUndefined();
     });
 
+    it('去掉 Provider API error 前缀,还原被打码的 svg.model', () => {
+        const body = JSON.stringify({
+            error: {
+                message: "Provider API error: SVG generation requires '***.model'. (request id: 1)",
+                param: 'svg.model',
+                code: 'missing_required_parameter',
+            },
+        });
+        const r = normalizeImageError(body, 400);
+        expect(r.status).toBe(400);
+        expect(JSON.parse(r.body).error.message).toBe("SVG generation requires 'svg.model'. (request id: 1)");
+    });
+
     it('已是官方形的上游错误体原样透传', () => {
         const body = JSON.stringify({ error: { message: 'blocked', type: 'invalid_request_error', code: 'x_custom' } });
         expect(normalizeImageError(body, 400).body).toBe(body);
