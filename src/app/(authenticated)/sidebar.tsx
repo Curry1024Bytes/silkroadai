@@ -38,6 +38,8 @@ function baseNav(m: CommonMessages): NavItem[] {
         { href: '/tools', label: m.nav.tools },
         // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
         { href: '/settings/storage', label: m.nav.storage },
+        // 客诉工单(2026-11-07):客户提交 / 跟进,管理员在 /admin/tickets 处理。
+        { href: '/support', label: m.nav.support },
         { href: '/models', label: m.nav.models },
         // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
         // Claude Code Desktop / Python + Node SDK).

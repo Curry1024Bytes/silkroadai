@@ -193,3 +193,78 @@ https://silkroadai.io
 
     return { subject, text, html: brandShell({ heading: '重置密码', bodyHtml }) };
 }
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* tickets(客诉工单,2026-11-07 PR1)— 按客户站点语言出 zh / en 两版      */
+/* ─────────────────────────────────────────────────────────────────── */
+
+type TicketLocale = 'zh' | 'en';
+
+interface TicketMailOpts {
+    locale: TicketLocale;
+    /** 对客编号 T-000123 */
+    number: string;
+    subject: string;
+    ticketUrl: string;
+}
+
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export function ticketCreatedTemplate(o: TicketMailOpts): EmailContent {
+    const zh = o.locale === 'zh';
+    const subj = escapeHtml(o.subject);
+    const subject = zh
+        ? `[Silk Road AI] 工单 ${o.number} 已收到:${o.subject}`
+        : `[Silk Road AI] Ticket ${o.number} received: ${o.subject}`;
+    const text = (
+        zh
+            ? `我们已收到您的工单 ${o.number}「${o.subject}」。\n\n客服会在工作时间内尽快处理,有进展会邮件通知您,也可随时在后台查看:\n${o.ticketUrl}\n\n— Silk Road AI`
+            : `We have received your ticket ${o.number} "${o.subject}".\n\nSupport will follow up during working hours; you will get an email on every update, or check the ticket any time:\n${o.ticketUrl}\n\n— Silk Road AI`
+    ).trim();
+    const bodyHtml = zh
+        ? `<p style="margin:0 0 12px;font-size:14.5px;">我们已收到您的工单 <strong>${o.number}</strong>「${subj}」。</p>
+      <p style="margin:0 0 12px;font-size:14.5px;">客服会在工作时间内尽快处理,有进展会邮件通知您。</p>
+      ${ctaButton(o.ticketUrl, '查看工单')}
+      ${fallbackUrlBlock(o.ticketUrl)}`
+        : `<p style="margin:0 0 12px;font-size:14.5px;">We have received your ticket <strong>${o.number}</strong> &ldquo;${subj}&rdquo;.</p>
+      <p style="margin:0 0 12px;font-size:14.5px;">Support will follow up during working hours and you will be emailed on every update.</p>
+      ${ctaButton(o.ticketUrl, 'View ticket')}
+      ${fallbackUrlBlock(o.ticketUrl)}`;
+    return { subject, text, html: brandShell({ heading: zh ? '工单已收到' : 'Ticket received', bodyHtml }) };
+}
+
+export type TicketUpdateKind = 'staff_reply' | 'resolved' | 'closed';
+
+export function ticketUpdatedTemplate(o: TicketMailOpts & { kind: TicketUpdateKind; excerpt?: string }): EmailContent {
+    const zh = o.locale === 'zh';
+    const headings: Record<TicketUpdateKind, [string, string]> = {
+        staff_reply: ['客服回复了您的工单', 'Support replied to your ticket'],
+        resolved: ['工单已处理完成,请确认', 'Your ticket has been resolved'],
+        closed: ['工单已关闭', 'Your ticket has been closed'],
+    };
+    const heading = headings[o.kind][zh ? 0 : 1];
+    const subject = `[Silk Road AI] ${heading}:${o.number} ${o.subject}`;
+    const lead = zh
+        ? o.kind === 'resolved'
+            ? `工单 ${o.number}「${o.subject}」已处理完成。如问题已解决请在后台确认;若仍有问题,可点「仍未解决」重新打开,7 天无操作将自动关闭。`
+            : o.kind === 'closed'
+              ? `工单 ${o.number}「${o.subject}」已关闭。如仍有问题,欢迎提交新的工单。`
+              : `客服在工单 ${o.number}「${o.subject}」中回复了您。`
+        : o.kind === 'resolved'
+          ? `Ticket ${o.number} "${o.subject}" has been resolved. Please confirm in the console if the issue is fixed, or click "Still not resolved" to reopen; it closes automatically after 7 days.`
+          : o.kind === 'closed'
+            ? `Ticket ${o.number} "${o.subject}" has been closed. Open a new ticket if you still need help.`
+            : `Support replied to ticket ${o.number} "${o.subject}".`;
+    const excerptText = o.excerpt ? `\n\n${o.excerpt}` : '';
+    const text = `${lead}${excerptText}\n\n${o.ticketUrl}\n\n— Silk Road AI`.trim();
+    const excerptHtml = o.excerpt
+        ? `<blockquote style="margin:0 0 12px;padding:10px 14px;border-left:3px solid #c9a961;background:#faf7f2;font-size:14px;white-space:pre-wrap;">${escapeHtml(o.excerpt)}</blockquote>`
+        : '';
+    const bodyHtml = `<p style="margin:0 0 12px;font-size:14.5px;">${escapeHtml(lead)}</p>
+      ${excerptHtml}
+      ${ctaButton(o.ticketUrl, zh ? '查看工单' : 'View ticket')}
+      ${fallbackUrlBlock(o.ticketUrl)}`;
+    return { subject, text, html: brandShell({ heading, bodyHtml }) };
+}

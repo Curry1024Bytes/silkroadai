@@ -337,6 +337,7 @@ model User {
   keys                      NewApiToken[]
   orders                    Order[]
   recharges                 RechargeLog[]
+  tickets                   Ticket[]
   password_reset_tokens     PasswordResetToken[]
   email_verification_tokens EmailVerificationToken[]
   oauth_accounts            OAuthAccount[]
@@ -1605,4 +1606,122 @@ model BatchRequestResult {
   @@id([batch_id, line_no])
   @@index([batch_id])
   @@map("batch_request_results")
+}
+
+// ── 客诉工单(2026-11-07 PR1)──
+// 客户在 /support 提交;管理员在 /admin/tickets 处理(PR2)。状态机见 src/lib/tickets/status.ts。
+// number 是对客展示的短编号(T-000123),id 仍是 uuid(URL / 外键用)。
+model Ticket {
+  id        String  @id @default(uuid()) @db.Uuid
+  number    Int     @unique @default(autoincrement())
+  user_id   String  @db.Uuid
+  user      User    @relation(fields: [user_id], references: [id])
+  // 跟 User.tenant_id 冗余一份,partner 域 staff 按租户过滤队列(PR2)。
+  tenant_id String? @db.Uuid
+
+  category TicketCategory
+  status   TicketStatus   @default(open)
+  priority TicketPriority @default(normal)
+  subject  String         @db.VarChar(120)
+
+  // 客户填的 new-api request_id(X-Oneapi-Request-Id);命中日志后回填 model / token_id / disputed_cny。
+  request_id   String?  @db.VarChar(80)
+  // 充值类工单:客户选的订单(Order.id,cuid;不建外键,订单表归支付层)。
+  order_id     String?  @db.VarChar(40)
+  token_id     String?  @db.Uuid
+  model        String?  @db.VarChar(200)
+  disputed_cny Decimal? @db.Decimal(12, 4)
+
+  // 处置结果(PR2 管理员填):补额走 add_quota,credit_cny 记实补金额(¥)。
+  resolution   TicketResolution?
+  credit_cny   Decimal?          @db.Decimal(12, 4)
+  assignee     String?           @db.VarChar(80)
+  reopen_count Int               @default(0)
+
+  first_reply_at       DateTime?
+  resolved_at          DateTime?
+  closed_at            DateTime?
+  last_customer_msg_at DateTime?
+  last_staff_msg_at    DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  messages TicketMessage[]
+  events   TicketEvent[]
+
+  @@index([user_id, status])
+  @@index([status, updated_at])
+  @@index([request_id])
+  @@index([tenant_id])
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id          String       @id @default(uuid()) @db.Uuid
+  ticket_id   String       @db.Uuid
+  ticket      Ticket       @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  author_type TicketAuthor
+  // customer → User.id;staff → 管理员标识;system → null
+  author_id   String?      @db.VarChar(80)
+  body        String       @db.Text
+  // staff 内部备注,客户侧查询一律过滤掉
+  internal    Boolean      @default(false)
+  // [{ key, name, size, type }],R2 tickets/ 前缀(PR3 才开放上传)
+  attachments Json?
+  created_at  DateTime     @default(now())
+
+  @@index([ticket_id, created_at])
+  @@map("ticket_messages")
+}
+
+// 工单留痕:created / status_changed / request_located / credited / assigned / auto_closed …
+model TicketEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  ticket_id  String   @db.Uuid
+  ticket     Ticket   @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  type       String   @db.VarChar(40)
+  // customer:<user_id> | staff:<admin_id> | system
+  actor      String   @db.VarChar(100)
+  payload    Json?
+  created_at DateTime @default(now())
+
+  @@index([ticket_id, created_at])
+  @@map("ticket_events")
+}
+
+enum TicketCategory {
+  billing // 计费争议
+  api_error // 调用异常
+  recharge // 充值与余额
+  account // 账号与 Key
+  other
+}
+
+enum TicketStatus {
+  open // 等客服处理
+  waiting_customer // 客服已回复,等客户
+  resolved // 客服标记已解决,等客户确认 / 7 天自动关闭
+  closed
+}
+
+enum TicketPriority {
+  low
+  normal
+  high
+}
+
+enum TicketResolution {
+  credited // 已补额
+  refunded // 已退款(手工)
+  explained // 已说明,无需补偿
+  fixed // 故障已修复
+  rejected // 不成立
+  duplicate
+}
+
+enum TicketAuthor {
+  customer
+  staff
+  system
 }

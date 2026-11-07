@@ -1,6 +1,14 @@
 import * as Sentry from '@sentry/nextjs';
 import { getMailer } from './client';
-import { passwordResetTemplate, emailVerificationTemplate, balanceAlertTemplate, type EmailContent } from './templates';
+import {
+    passwordResetTemplate,
+    emailVerificationTemplate,
+    balanceAlertTemplate,
+    ticketCreatedTemplate,
+    ticketUpdatedTemplate,
+    type EmailContent,
+    type TicketUpdateKind,
+} from './templates';
 
 export interface SendResult {
     messageId: string;
@@ -118,4 +126,25 @@ export async function sendBalanceAlertEmail(opts: {
             settingsUrl: opts.settingsUrl,
         }),
     });
+}
+
+/* ── 客诉工单(2026-11-07 PR1)── */
+
+export interface TicketEmailOpts {
+    to: string;
+    locale: 'zh' | 'en';
+    number: string;
+    subject: string;
+    ticketUrl: string;
+}
+
+export async function sendTicketCreatedEmail(opts: TicketEmailOpts): Promise<SendResult | null> {
+    return sendTemplated({ to: opts.to, debugUrl: opts.ticketUrl, content: ticketCreatedTemplate(opts) });
+}
+
+/** PR2 管理员回复 / 解决 / 关闭时调用;excerpt 是回复正文前 300 字。 */
+export async function sendTicketUpdatedEmail(
+    opts: TicketEmailOpts & { kind: TicketUpdateKind; excerpt?: string },
+): Promise<SendResult | null> {
+    return sendTemplated({ to: opts.to, debugUrl: opts.ticketUrl, content: ticketUpdatedTemplate(opts) });
 }
