@@ -96,6 +96,31 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
                                 <time>{item.time}</time>
                             </header>
                             <p className="m-0 whitespace-pre-wrap break-words text-ink">{item.body}</p>
+                            {item.attachments.length > 0 ? (
+                                <ul className="m-0 mt-2 flex list-none flex-wrap gap-2 p-0" data-testid="attachments">
+                                    {item.attachments.map((a) => (
+                                        <li key={a.key}>
+                                            {a.url ? (
+                                                <a
+                                                    href={a.url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    title={a.name}
+                                                >
+                                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                    <img
+                                                        src={a.url}
+                                                        alt={a.name}
+                                                        className="h-20 w-20 rounded border border-brand-border object-cover"
+                                                    />
+                                                </a>
+                                            ) : (
+                                                <span className="text-xs text-muted-ink">{a.name}</span>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : null}
                         </article>
                     ),
                 )}

@@ -37,6 +37,7 @@ interface MessageDto {
     author_id: string | null;
     body: string;
     internal: boolean;
+    attachments?: Array<{ key: string; name: string; url: string | null }>;
     created_at: string;
 }
 interface EventDto {
@@ -336,6 +337,35 @@ function TicketDetail() {
                                                 <time>{fmtTime(x.at, locale)}</time>
                                             </header>
                                             <p className="m-0 whitespace-pre-wrap break-words">{x.item.body}</p>
+                                            {x.item.attachments && x.item.attachments.length > 0 ? (
+                                                <div
+                                                    className="mt-2 flex flex-wrap gap-2"
+                                                    data-testid="admin-attachments"
+                                                >
+                                                    {x.item.attachments.map((a) =>
+                                                        a.url ? (
+                                                            <a
+                                                                key={a.key}
+                                                                href={a.url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                title={a.name}
+                                                            >
+                                                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                                <img
+                                                                    src={a.url}
+                                                                    alt={a.name}
+                                                                    className="h-16 w-16 rounded border border-slate-300 object-cover"
+                                                                />
+                                                            </a>
+                                                        ) : (
+                                                            <span key={a.key} className={`text-xs ${muted}`}>
+                                                                {a.name}
+                                                            </span>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            ) : null}
                                         </article>
                                     ),
                                 )}

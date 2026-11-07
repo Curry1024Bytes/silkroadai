@@ -172,6 +172,6 @@ describe('/api/portal/tickets/[id]*', () => {
             ctx(TID),
         );
         expect(res.status).toBe(200);
-        expect(svc.reopenTicket).toHaveBeenCalledWith(TID, USER, 'still broken');
+        expect(svc.reopenTicket).toHaveBeenCalledWith(TID, USER, 'still broken', undefined);
     });
 });

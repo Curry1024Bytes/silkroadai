@@ -10,7 +10,7 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { getTicketAdmin, getTicketContext, updateTicketAdmin } from '@/lib/tickets/admin-service';
 import { adminTicketErrorResponse } from '@/lib/tickets/admin-http';
 import { readJson, UuidSchema } from '@/lib/tickets/http';
-import { serializeEvent, serializeTicket } from '@/lib/tickets/service';
+import { attachmentsWithUrl, serializeEvent, serializeTicket } from '@/lib/tickets/service';
 
 export const runtime = 'nodejs';
 
@@ -41,6 +41,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
                 author_id: m.author_id,
                 body: m.body,
                 internal: m.internal,
+                attachments: attachmentsWithUrl(m.attachments),
                 created_at: m.created_at.toISOString(),
             })),
             events: ticket.events.map((e) => ({ ...serializeEvent(e), actor: e.actor })),

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
+import { getTicketSlaStats } from '@/lib/tickets/sla';
 import { OrderStatus } from '@prisma/client';
 import { BIZ_TZ_NAME, getBizDayStartUTC, toBizDateStr } from '@/lib/time/biz-day';
 
@@ -162,8 +163,12 @@ export async function GET(request: NextRequest) {
     // Payment method total for percentage calc
     const paymentTotal = paymentMethodStats.reduce((sum, m) => sum + Number(m._sum?.amount || 0), 0);
 
+    // 工单 PR3:SLA 卡(best-effort,失败不影响其它卡)。
+    const tickets = await getTicketSlaStats(admin).catch(() => null);
+
     return NextResponse.json({
         summary: {
+            tickets,
             today: { amount: todayPaidAmount, orderCount: todayOrders, paidCount: todayPaidCount },
             total: { amount: totalPaidAmount, orderCount: totalOrders, paidCount: totalPaidCount },
             subscriptionToday: { amount: subTodayPaidAmount, orderCount: subTodayOrders, paidCount: subTodayPaidCount },

@@ -84,6 +84,10 @@ export async function register() {
     const { startRatioReconcileScheduler } = await import('@/lib/scheduler/ratio-reconcile');
     startRatioReconcileScheduler();
 
+    // 2026-11-07 工单 PR3:waiting_customer / resolved 超 7 天自动 resolved / closed,每小时。
+    const { startTicketAutoAdvanceScheduler } = await import('@/lib/scheduler/ticket-auto-advance');
+    startTicketAutoAdvanceScheduler();
+
     // OpenAI Batch API 兼容 worker:领 /v1/batches 批任务,逐行 self-fetch 重放
     // /v1/images/* 同步管线(计费在那条腿,worker 零计费逻辑)。5s cadence + 重入守卫。
     const { startBatchScheduler } = await import('@/lib/batch/worker');

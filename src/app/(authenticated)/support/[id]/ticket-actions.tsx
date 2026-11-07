@@ -8,6 +8,7 @@ import { FormError } from '@/components/ui/FormError';
 import { Label } from '@/components/ui/Label';
 import { useMessages } from '@/lib/i18n/client';
 import { ticketsMessages } from '@/lib/i18n/messages/tickets';
+import { AttachmentPicker, type PickedAttachment } from '../attachment-picker';
 
 const TEXTAREA_CLASSES =
     'w-full min-h-[100px] px-3.5 py-2.5 text-[15px] text-ink rounded-lg border border-brand-border bg-surface ' +
@@ -21,6 +22,7 @@ const TEXTAREA_CLASSES =
 export function TicketActions({ ticketId, status }: { ticketId: string; status: TicketStatus }) {
     const m = useMessages(ticketsMessages).detail;
     const [body, setBody] = useState('');
+    const [attachments, setAttachments] = useState<PickedAttachment[]>([]);
     const [reopenMode, setReopenMode] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -106,7 +108,10 @@ export function TicketActions({ ticketId, status }: { ticketId: string; status: 
                     onSubmit={(e) => {
                         e.preventDefault();
                         if (!canSend) return;
-                        void post(isReopen ? '/reopen' : '/messages', { body: body.trim() });
+                        void post(isReopen ? '/reopen' : '/messages', {
+                            body: body.trim(),
+                            attachments: attachments.map(({ key, name, size, type }) => ({ key, name, size, type })),
+                        });
                     }}
                 >
                     <Label htmlFor="ticket-reply-body">{m.reply.label}</Label>
@@ -118,6 +123,9 @@ export function TicketActions({ ticketId, status }: { ticketId: string; status: 
                         placeholder={isReopen ? m.reopenPlaceholder : m.reply.placeholder}
                         className={TEXTAREA_CLASSES}
                     />
+                    <div className="mt-3">
+                        <AttachmentPicker value={attachments} onChange={setAttachments} disabled={busy} />
+                    </div>
                     {error ? (
                         <div className="mt-2">
                             <FormError severity="banner">{error}</FormError>

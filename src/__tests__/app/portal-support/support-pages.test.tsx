@@ -23,6 +23,7 @@ vi.mock('@/lib/tickets/service', async () => {
 });
 const mockOrderFindMany = vi.fn();
 vi.mock('@/lib/db', () => ({ prisma: { order: { findMany: (...a: unknown[]) => mockOrderFindMany(...a) } } }));
+vi.mock('@/lib/r2/client', () => ({ getPublicUrl: (key: string) => `https://images.silkroadai.io/${key}` }));
 const mockGetLocale = vi.fn(async () => 'zh');
 vi.mock('@/lib/i18n/server', () => ({
     getLocale: () => mockGetLocale(),
@@ -63,6 +64,14 @@ const ticket = {
             author_type: 'customer',
             body: '返回空内容但扣了费',
             internal: false,
+            attachments: [
+                {
+                    key: `tickets/${USER.id}/0b0b0b0b-bbbb-4ccc-8ddd-eeeeeeeeeeee.png`,
+                    name: 'shot.png',
+                    size: 10,
+                    type: 'image/png',
+                },
+            ],
             created_at: new Date('2026-11-06T06:32:00Z'),
         },
         {
@@ -163,6 +172,8 @@ describe('/support/[id]', () => {
         expect(html).toContain('已定位到调用:gpt-5.5');
         expect(html).toContain('已补额 ¥0.50');
         expect(html).toContain('data-testid="ticket-resolved-actions"');
+        expect(html).toContain('data-testid="attachments"');
+        expect(html).toContain(`https://images.silkroadai.io/tickets/${USER.id}/`);
         expect(html).toContain('问题已解决');
         expect(html).toContain('仍未解决');
         // internal-ish event hidden
@@ -181,6 +192,7 @@ describe('/support/[id]', () => {
         expect(html).toContain('Call located: gpt-5.5');
         expect(html).toContain('Silk Road AI Support');
         expect(html).toContain('data-testid="ticket-reply"');
+        expect(html).toContain('data-testid="attachment-picker"');
     });
     it('404 for a non-uuid id and for someone else’s ticket', async () => {
         await expect(TicketDetailPage({ params: Promise.resolve({ id: 'abc' }) })).rejects.toThrow('NEXT_NOT_FOUND');

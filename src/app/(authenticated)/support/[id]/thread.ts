@@ -1,11 +1,20 @@
 /** 把消息 + 事件合成一条按时间排序的线程(server 侧,纯函数;事件文案按 locale 渲染)。 */
 import type { Prisma, TicketAuthor } from '@prisma/client';
-import type { TicketWithThread } from '@/lib/tickets/service';
+import { attachmentsWithUrl, type TicketWithThread } from '@/lib/tickets/service';
+import type { AttachmentMeta } from '@/lib/tickets/attachments';
 import type { TicketsMessages } from '@/lib/i18n/messages/tickets';
 import { formatDateTime } from '../session';
 
 export type ThreadItem =
-    | { kind: 'message'; id: string; author: TicketAuthor; body: string; time: string; at: number }
+    | {
+          kind: 'message';
+          id: string;
+          author: TicketAuthor;
+          body: string;
+          attachments: Array<AttachmentMeta & { url: string | null }>;
+          time: string;
+          at: number;
+      }
     | { kind: 'event'; id: string; type: string; text: string; time: string; at: number };
 
 function str(v: Prisma.JsonValue | undefined, key: string): string | null {
@@ -35,6 +44,7 @@ export function eventText(
         case 'status_changed': {
             const to = str(p, 'to');
             if (str(p, 'reason') === 'auto_closed') return m.detail.events.autoClosed;
+            if (str(p, 'reason') === 'auto_resolved') return m.detail.events.autoResolved;
             return to && to in m.status ? m.detail.events.statusChanged(m.status[to as keyof typeof m.status]) : null;
         }
         case 'credited':
@@ -54,6 +64,7 @@ export function buildThread(ticket: TicketWithThread, m: TicketsMessages, intl: 
             id: msg.id,
             author: msg.author_type,
             body: msg.body,
+            attachments: attachmentsWithUrl(msg.attachments),
             time: formatDateTime(msg.created_at, intl),
             at: msg.created_at.getTime(),
         });

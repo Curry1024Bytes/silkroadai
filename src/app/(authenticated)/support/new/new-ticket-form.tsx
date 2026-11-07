@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/Label';
 import { useMessages } from '@/lib/i18n/client';
 import { ticketsMessages } from '@/lib/i18n/messages/tickets';
 import { REQUEST_ID_PATTERN, requiresRequestId, TICKET_CATEGORIES } from '@/lib/tickets/status';
+import { AttachmentPicker, type PickedAttachment } from '../attachment-picker';
 
 export interface OrderOption {
     id: string;
@@ -32,6 +33,7 @@ export function NewTicketForm({ orders }: { orders: OrderOption[] }) {
     const [requestId, setRequestId] = useState('');
     const [orderId, setOrderId] = useState('');
     const [disputed, setDisputed] = useState('');
+    const [attachments, setAttachments] = useState<PickedAttachment[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +65,7 @@ export function NewTicketForm({ orders }: { orders: OrderOption[] }) {
                     request_id: requestId.trim() || undefined,
                     order_id: category === 'recharge' && orderId ? orderId : undefined,
                     disputed_cny: category === 'billing' && disputed.trim() !== '' ? Number(disputed) : undefined,
+                    attachments: attachments.map(({ key, name, size, type }) => ({ key, name, size, type })),
                 }),
             });
             const data = (await r.json().catch(() => ({}))) as { error?: string; ticket?: { id: string } };
@@ -199,6 +202,8 @@ export function NewTicketForm({ orders }: { orders: OrderOption[] }) {
                             className={TEXTAREA_CLASSES}
                         />
                     </div>
+
+                    <AttachmentPicker value={attachments} onChange={setAttachments} disabled={submitting} />
 
                     {error ? <FormError severity="banner">{error}</FormError> : null}
 

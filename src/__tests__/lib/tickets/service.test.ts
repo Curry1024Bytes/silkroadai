@@ -171,6 +171,32 @@ describe('createTicket', () => {
 });
 
 describe('customer actions', () => {
+    it('attachments: foreign key → attachment_not_owned; own keys stored on the message', async () => {
+        const own = {
+            key: `tickets/${user.id}/0b0b0b0b-bbbb-4ccc-8ddd-eeeeeeeeeeee.png`,
+            name: 'a.png',
+            size: 10,
+            type: 'image/png' as const,
+        };
+        const foreign = {
+            ...own,
+            key: 'tickets/0b0b0b0b-bbbb-4ccc-8ddd-eeeeeeeeeeee/0b0b0b0b-bbbb-4ccc-8ddd-eeeeeeeeeeee.png',
+        };
+        db.ticket.findFirst.mockResolvedValue({ ...baseTicket, status: 'open' });
+        await expect(addCustomerMessage(baseTicket.id, user, 'x', [foreign])).rejects.toMatchObject({
+            code: 'attachment_not_owned',
+            status: 400,
+        });
+        await addCustomerMessage(baseTicket.id, user, 'x', [own]);
+        expect(db.ticketMessage.create.mock.calls[0][0].data.attachments).toEqual([own]);
+        await expect(
+            createTicket(
+                user,
+                { category: 'other', subject: 'subj', body: 'y'.repeat(20), attachments: [foreign] },
+                opts,
+            ),
+        ).rejects.toMatchObject({ code: 'attachment_not_owned' });
+    });
     it('addCustomerMessage: waiting_customer → open + status_changed event', async () => {
         db.ticket.findFirst.mockResolvedValue({ ...baseTicket, status: 'waiting_customer' });
         await addCustomerMessage(baseTicket.id, user, 'more details');

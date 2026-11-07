@@ -12,6 +12,7 @@ import { adminTicketsMessages } from '@/lib/i18n/messages/admin-tickets';
 import { ticketsMessages } from '@/lib/i18n/messages/tickets';
 import { TICKET_CATEGORIES } from '@/lib/tickets/status';
 import type { AdminTicketRow } from '@/lib/tickets/admin-service';
+import type { TicketSlaStats } from '@/lib/tickets/sla';
 import { adminQuery, fmtTime, hoursSince, PRIORITY_PILL, STATUS_PILL } from './shared';
 
 type Tab = TicketStatus | 'all';
@@ -36,6 +37,44 @@ function TicketsQueue() {
     const [counts, setCounts] = useState<Record<string, number>>({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [sla, setSla] = useState<TicketSlaStats | null>(null);
+    const [slaEdit, setSlaEdit] = useState<{ firstReplyHours: string; resolveHours: string } | null>(null);
+    const [slaSaving, setSlaSaving] = useState(false);
+
+    const fetchSla = useCallback(async () => {
+        try {
+            const res = await fetch('/api/admin/tickets/sla', { credentials: 'same-origin' });
+            if (res.ok) setSla(((await res.json()) as { sla: TicketSlaStats }).sla);
+        } catch {
+            /* SLA 条是附属信息,失败静默 */
+        }
+    }, []);
+
+    async function saveSla() {
+        if (!slaEdit) return;
+        setSlaSaving(true);
+        try {
+            const res = await fetch('/api/admin/tickets/sla', {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    firstReplyHours: Number(slaEdit.firstReplyHours),
+                    resolveHours: Number(slaEdit.resolveHours),
+                }),
+            });
+            if (!res.ok) {
+                setError(m.sla.saveFailed);
+                return;
+            }
+            setSla(((await res.json()) as { sla: TicketSlaStats }).sla);
+            setSlaEdit(null);
+        } catch {
+            setError(m.sla.saveFailed);
+        } finally {
+            setSlaSaving(false);
+        }
+    }
 
     const fetchList = useCallback(async () => {
         setLoading(true);
@@ -68,6 +107,9 @@ function TicketsQueue() {
     useEffect(() => {
         void fetchList();
     }, [fetchList]);
+    useEffect(() => {
+        void fetchSla();
+    }, [fetchSla]);
 
     const btn = [
         'inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
@@ -103,6 +145,67 @@ function TicketsQueue() {
                     {error}
                 </div>
             )}
+
+            {sla ? (
+                <div className={`mb-3 flex flex-wrap items-center gap-3 text-xs ${muted}`} data-testid="sla-bar">
+                    <span className="font-medium">{m.sla.label}</span>
+                    {slaEdit ? (
+                        <>
+                            <label className="flex items-center gap-1">
+                                {m.sla.firstReply}
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={720}
+                                    value={slaEdit.firstReplyHours}
+                                    onChange={(e) => setSlaEdit({ ...slaEdit, firstReplyHours: e.target.value })}
+                                    className={`${input} w-20`}
+                                />
+                            </label>
+                            <label className="flex items-center gap-1">
+                                {m.sla.resolve}
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={720}
+                                    value={slaEdit.resolveHours}
+                                    onChange={(e) => setSlaEdit({ ...slaEdit, resolveHours: e.target.value })}
+                                    className={`${input} w-20`}
+                                />
+                            </label>
+                            <button type="button" className={btn} disabled={slaSaving} onClick={() => void saveSla()}>
+                                {m.sla.save}
+                            </button>
+                            <button type="button" className={btn} disabled={slaSaving} onClick={() => setSlaEdit(null)}>
+                                {m.sla.cancel}
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <span>{m.sla.summary(sla.firstReplyHours, sla.resolveHours)}</span>
+                            <span
+                                className={
+                                    sla.breachedFirstReply + sla.breachedResolve > 0 ? 'font-semibold text-red-500' : ''
+                                }
+                            >
+                                {m.sla.breached(sla.breachedFirstReply, sla.breachedResolve)}
+                            </span>
+                            <button
+                                type="button"
+                                className={btn}
+                                onClick={() =>
+                                    setSlaEdit({
+                                        firstReplyHours: String(sla.firstReplyHours),
+                                        resolveHours: String(sla.resolveHours),
+                                    })
+                                }
+                            >
+                                {m.sla.edit}
+                            </button>
+                        </>
+                    )}
+                </div>
+            ) : null}
 
             <div className="mb-3 flex flex-wrap items-center gap-2">
                 <div
@@ -242,7 +345,23 @@ function TicketsQueue() {
                                     </td>
                                     <td className="px-3 py-2 text-xs tabular-nums whitespace-nowrap">
                                         {t.status === 'open'
-                                            ? m.waitingFor(hoursSince(t.last_customer_msg_at ?? t.created_at))
+                                            ? (() => {
+                                                  const h = hoursSince(t.last_customer_msg_at ?? t.created_at);
+                                                  const overdue =
+                                                      !!sla &&
+                                                      ((!t.first_reply_at &&
+                                                          hoursSince(t.created_at) > sla.firstReplyHours) ||
+                                                          hoursSince(t.created_at) > sla.resolveHours);
+                                                  return (
+                                                      <span
+                                                          className={overdue ? 'font-semibold text-red-500' : ''}
+                                                          data-overdue={overdue || undefined}
+                                                      >
+                                                          {m.waitingFor(h)}
+                                                          {overdue ? ` · ${m.sla.overdue}` : ''}
+                                                      </span>
+                                                  );
+                                              })()
                                             : '—'}
                                     </td>
                                     <td className="px-3 py-2 text-xs tabular-nums">

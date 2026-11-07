@@ -9,6 +9,16 @@ interface Summary {
     subscriptionTotal?: { amount: number; orderCount: number; paidCount: number };
     successRate: number;
     avgAmount: number;
+    /** 工单 SLA(PR3);接口失败为 null / 缺省不渲染。 */
+    tickets?: {
+        open: number;
+        waitingCustomer: number;
+        breachedFirstReply: number;
+        breachedResolve: number;
+        firstReplyHours: number;
+        resolveHours: number;
+        oldestOpenHours: number;
+    } | null;
 }
 
 interface DashboardStatsProps {
@@ -59,6 +69,27 @@ export default function DashboardStats({ summary, dark, locale = 'zh' }: Dashboa
                 label: locale === 'en' ? 'Total Subscription Revenue' : '订阅总收入',
                 value: `${currency}${summary.subscriptionTotal!.amount.toLocaleString()}`,
                 accent: true,
+            },
+        );
+    }
+
+    if (summary.tickets) {
+        const t = summary.tickets;
+        cards.push(
+            {
+                label: locale === 'en' ? 'Open tickets' : '待处理工单',
+                value: `${t.open}${t.waitingCustomer ? ` (+${t.waitingCustomer} ${locale === 'en' ? 'waiting' : '等客户'})` : ''}`,
+                accent: t.open > 0,
+            },
+            {
+                label: locale === 'en' ? `No first reply > ${t.firstReplyHours}h` : `超 ${t.firstReplyHours}h 未首复`,
+                value: String(t.breachedFirstReply),
+                accent: t.breachedFirstReply > 0,
+            },
+            {
+                label: locale === 'en' ? `Unresolved > ${t.resolveHours}h` : `超 ${t.resolveHours}h 未解决`,
+                value: String(t.breachedResolve),
+                accent: t.breachedResolve > 0,
             },
         );
     }

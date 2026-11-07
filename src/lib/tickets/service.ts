@@ -16,6 +16,8 @@ import { prisma } from '@/lib/db';
 import type { Locale } from '@/lib/i18n';
 import { sendTicketCreatedEmail } from '@/lib/email/send';
 import { locateRequest, type LocatedRequest } from './lookup';
+import { attachmentsOwnedBy, parseAttachments, type AttachmentMeta } from './attachments';
+import { getPublicUrl } from '@/lib/r2/client';
 import {
     canTransition,
     ACTIVE_STATUSES,
@@ -27,6 +29,7 @@ import {
 } from './status';
 
 export type TicketErrorCode =
+    | 'attachment_not_owned'
     | 'request_id_required'
     | 'order_not_found'
     | 'too_many_open_tickets'
@@ -52,6 +55,7 @@ export interface CreateTicketInput {
     requestId?: string;
     orderId?: string;
     disputedCny?: number;
+    attachments?: AttachmentMeta[];
 }
 
 export type TicketListFilter = 'active' | 'resolved' | 'all';
@@ -89,6 +93,7 @@ export async function createTicket(
     if (requiresRequestId(input.category) && !input.requestId) {
         throw new TicketError('request_id_required', 400);
     }
+    if (!attachmentsOwnedBy(user.id, input.attachments)) throw new TicketError('attachment_not_owned', 400);
     if (input.orderId) {
         const order = await prisma.order.findFirst({
             where: { id: input.orderId, user_id: user.id },
@@ -119,7 +124,12 @@ export async function createTicket(
                 disputed_cny: input.disputedCny != null ? new Prisma.Decimal(input.disputedCny) : null,
                 last_customer_msg_at: now,
                 messages: {
-                    create: { author_type: 'customer', author_id: user.id, body: input.body },
+                    create: {
+                        author_type: 'customer',
+                        author_id: user.id,
+                        body: input.body,
+                        attachments: input.attachments?.length ? input.attachments : undefined,
+                    },
                 },
                 events: {
                     create: { type: 'created', actor: actorOf(user), payload: { category: input.category } },
@@ -243,14 +253,26 @@ async function requireOwnTicket(tx: Prisma.TransactionClient, ticketId: string, 
 }
 
 /** 客户追加留言:waiting_customer → open;resolved 状态下留言等同「未解决」走 reopen。 */
-export async function addCustomerMessage(ticketId: string, user: User, body: string): Promise<TicketMessage> {
+export async function addCustomerMessage(
+    ticketId: string,
+    user: User,
+    body: string,
+    attachments?: AttachmentMeta[],
+): Promise<TicketMessage> {
+    if (!attachmentsOwnedBy(user.id, attachments)) throw new TicketError('attachment_not_owned', 400);
     return prisma.$transaction(async (tx) => {
         const ticket = await requireOwnTicket(tx, ticketId, user.id);
         if (ticket.status === 'closed') throw new TicketError('invalid_state', 409);
         if (ticket.status === 'resolved') throw new TicketError('invalid_state', 409);
         const now = new Date();
         const message = await tx.ticketMessage.create({
-            data: { ticket_id: ticket.id, author_type: 'customer', author_id: user.id, body },
+            data: {
+                ticket_id: ticket.id,
+                author_type: 'customer',
+                author_id: user.id,
+                body,
+                attachments: attachments?.length ? attachments : undefined,
+            },
         });
         const nextStatus = ticket.status === 'waiting_customer' ? 'open' : ticket.status;
         await tx.ticket.update({
@@ -293,14 +315,26 @@ export async function confirmResolved(ticketId: string, user: User): Promise<Tic
 }
 
 /** 客户「仍未解决」→ open,附带说明;超过 MAX_REOPENS 次拒绝(只能客服关)。 */
-export async function reopenTicket(ticketId: string, user: User, body: string): Promise<Ticket> {
+export async function reopenTicket(
+    ticketId: string,
+    user: User,
+    body: string,
+    attachments?: AttachmentMeta[],
+): Promise<Ticket> {
+    if (!attachmentsOwnedBy(user.id, attachments)) throw new TicketError('attachment_not_owned', 400);
     return prisma.$transaction(async (tx) => {
         const ticket = await requireOwnTicket(tx, ticketId, user.id);
         if (!canTransition('customer', ticket.status, 'open')) throw new TicketError('invalid_state', 409);
         if (ticket.reopen_count >= MAX_REOPENS) throw new TicketError('reopen_limit', 409);
         const now = new Date();
         await tx.ticketMessage.create({
-            data: { ticket_id: ticket.id, author_type: 'customer', author_id: user.id, body },
+            data: {
+                ticket_id: ticket.id,
+                author_type: 'customer',
+                author_id: user.id,
+                body,
+                attachments: attachments?.length ? attachments : undefined,
+            },
         });
         const updated = await tx.ticket.update({
             where: { id: ticket.id },
@@ -342,7 +376,26 @@ export function serializeTicket(t: Ticket) {
 }
 
 export function serializeMessage(m: TicketMessage) {
-    return { id: m.id, author_type: m.author_type, body: m.body, created_at: m.created_at.toISOString() };
+    return {
+        id: m.id,
+        author_type: m.author_type,
+        body: m.body,
+        attachments: attachmentsWithUrl(m.attachments),
+        created_at: m.created_at.toISOString(),
+    };
+}
+
+/** Json 列 → 带公网 URL 的附件列表(R2 env 缺失时 url=null,只显示文件名)。 */
+export function attachmentsWithUrl(json: unknown): Array<AttachmentMeta & { url: string | null }> {
+    return parseAttachments(json).map((a) => {
+        let url: string | null = null;
+        try {
+            url = getPublicUrl(a.key);
+        } catch {
+            url = null;
+        }
+        return { ...a, url };
+    });
 }
 
 export function serializeEvent(e: TicketEvent) {

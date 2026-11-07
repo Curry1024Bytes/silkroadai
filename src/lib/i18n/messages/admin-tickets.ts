@@ -28,6 +28,18 @@ export const adminTicketsMessages = defineMessages(
         priority: { low: '低', normal: '普通', high: '高' },
         waitingFor: (hours: number) =>
             hours < 1 ? '< 1h' : hours < 48 ? `${Math.floor(hours)}h` : `${Math.floor(hours / 24)}d`,
+        sla: {
+            label: 'SLA',
+            summary: (first: number, resolve: number) => `首复 ${first}h · 解决 ${resolve}h`,
+            breached: (first: number, resolve: number) => `超时:未首复 ${first} · 未解决 ${resolve}`,
+            edit: '编辑',
+            firstReply: '首复(小时)',
+            resolve: '解决(小时)',
+            save: '保存',
+            cancel: '取消',
+            saveFailed: '保存失败(仅 superadmin 可改)',
+            overdue: '超时',
+        },
         prev: '上一页',
         next: '下一页',
         pageInfo: (page: number, total: number) => `第 ${page} 页 · 共 ${total} 条`,
@@ -60,6 +72,7 @@ export const adminTicketsMessages = defineMessages(
             thread: '对话',
             internal: '内部备注',
             author: { customer: '客户', staff: '客服', system: '系统' },
+            attachments: '附件',
             events: {
                 created: '工单已创建',
                 request_located: '系统已定位调用',
@@ -138,6 +151,18 @@ export const adminTicketsMessages = defineMessages(
         priority: { low: 'Low', normal: 'Normal', high: 'High' },
         waitingFor: (hours: number) =>
             hours < 1 ? '< 1h' : hours < 48 ? `${Math.floor(hours)}h` : `${Math.floor(hours / 24)}d`,
+        sla: {
+            label: 'SLA',
+            summary: (first: number, resolve: number) => `first reply ${first}h · resolve ${resolve}h`,
+            breached: (first: number, resolve: number) => `breached: no reply ${first} · unresolved ${resolve}`,
+            edit: 'Edit',
+            firstReply: 'First reply (hours)',
+            resolve: 'Resolve (hours)',
+            save: 'Save',
+            cancel: 'Cancel',
+            saveFailed: 'Save failed (superadmin only)',
+            overdue: 'overdue',
+        },
         prev: 'Prev',
         next: 'Next',
         pageInfo: (page: number, total: number) => `Page ${page} · ${total} total`,
@@ -170,6 +195,7 @@ export const adminTicketsMessages = defineMessages(
             thread: 'Thread',
             internal: 'Internal note',
             author: { customer: 'Customer', staff: 'Staff', system: 'System' },
+            attachments: 'Attachments',
             events: {
                 created: 'Ticket created',
                 request_located: 'Call located by system',

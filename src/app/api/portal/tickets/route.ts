@@ -13,6 +13,7 @@ import { getLocale } from '@/lib/i18n/server';
 import { createTicket, listTicketsForUser, serializeTicket, type TicketListFilter } from '@/lib/tickets/service';
 import { REQUEST_ID_PATTERN, TICKET_CATEGORIES } from '@/lib/tickets/status';
 import { appUrl, readJson, ticketErrorResponse } from '@/lib/tickets/http';
+import { AttachmentListSchema } from '@/lib/tickets/attachments';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +29,7 @@ export const CreateTicketSchema = z.object({
         (v) => (v === '' || v === null ? undefined : v),
         z.coerce.number().min(0).max(100000).optional(),
     ),
+    attachments: AttachmentListSchema,
 });
 
 const ListSchema = z.object({ status: z.enum(['active', 'resolved', 'all']).default('active') });
@@ -71,6 +73,7 @@ export async function POST(req: NextRequest) {
                 requestId: d.request_id,
                 orderId: d.order_id,
                 disputedCny: d.disputed_cny,
+                attachments: d.attachments,
             },
             { locale: await getLocale(), appUrl: appUrl() },
         );
