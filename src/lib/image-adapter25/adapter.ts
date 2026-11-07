@@ -38,6 +38,8 @@ import { alignTo16, isAutoSize, officialAutoDims } from '@/lib/image-adapter/aut
 import {
     GIF_DEFAULT_DIMS,
     gifDimensions,
+    gifFrameCount,
+    gifSheetDims,
     gifUpstreamDims,
     gpt26ParamError,
     GPT_IMAGE_26_EXTRAS,
@@ -78,6 +80,30 @@ export function officialOutputTokensNumerator25(w: number, h: number, quality: Q
 
 export function officialOutputTokens25(w: number, h: number, quality: Quality25): number {
     return Math.ceil(officialOutputTokensNumerator25(w, h, quality) / 4_000_000);
+}
+
+// ============ gpt-image-2.6 官方 token 口径 ============
+// 与官方计算器(developers.openai.com 的 GptImageTokenCalculator)同源,2026-11-07 用官 key ~150 个样本逐 token 验证:
+// 网格同 2.5,短边 patch 数四舍六入五取偶;原始 token 按 n 张取整后,low ×4.2、medium ×3.3 再向上取整
+// (计算器写 Math.round,真实响应是 ceil:196×4.2=823.2 → 824)。low 与 medium 比 2.5 贵,high 及以上同 2.5。
+/** 倍率以十分之一为单位,全程整数运算,避开 4.2 这类浮点误差。 */
+const GPT_IMAGE_26_MULTIPLIER_TENTHS: Record<Quality25, number> = { low: 42, medium: 33, high: 10, xhigh: 10, max: 10 };
+/** 请求 GIF 时官方在 text_tokens 上固定多计 22(与帧数、质量无关,generations 和 edits 相同)。 */
+export const GPT_IMAGE_26_GIF_TEXT_TOKENS = 22;
+
+function roundHalfEven(num: number, den: number): number {
+    const quotient = Math.floor(num / den);
+    const twiceRemainder = 2 * (num % den);
+    if (twiceRemainder === den) return quotient + (quotient % 2);
+    return twiceRemainder > den ? quotient + 1 : quotient;
+}
+
+/** n 张输出 token:官方先对 n 张合计取整,再乘倍率(n=2 low → ceil(391×4.2)=1643,不是 824×2)。 */
+export function officialOutputTokens26(w: number, h: number, quality: Quality25, n = 1): number {
+    const grid = QUALITY_GRID_25[quality];
+    const shortPatches = roundHalfEven(grid * Math.min(w, h), Math.max(w, h));
+    const raw = Math.ceil((n * grid * shortPatches * (2_000_000 + w * h)) / 4_000_000);
+    return Math.ceil((raw * GPT_IMAGE_26_MULTIPLIER_TENTHS[quality]) / 10);
 }
 
 /** 输入图 token(edits 输入侧)—— 走共享官方口径 `@/lib/tokens/image-input-tokens`。
@@ -204,6 +230,8 @@ export interface SynthUsageInput25 {
     inputImageDims: Array<{ w: number; h: number } | null>;
     /** 实际出图张数(按上游真实返回计)。 */
     imageCount: number;
+    /** 仅 gpt-image-2.6:走 2.6 官方口径;GIF 请求带帧数,按整张拼图计 output token。 */
+    gpt26?: { gifFrames: number | null };
 }
 
 /** 只发 OpenAI images 官方那套字段(input/output/total + *_details),不送 chat 形别名(2.0 教训:中继客户会加两遍)。 */
@@ -214,10 +242,15 @@ export const IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE = 10;
 export function synthUsage25(inp: SynthUsageInput25): Record<string, unknown> {
     const count = Math.max(1, inp.imageCount);
     // 官方 n 张语义同 2.0(见 image-adapter synthUsage):output 先乘 n 再 ceil;input(文本+输入图)×n。
-    const ct = Math.ceil((count * officialOutputTokensNumerator25(inp.w, inp.h, inp.quality)) / 4_000_000);
+    const gifFrames = inp.gpt26?.gifFrames ?? null;
+    const billed = gifFrames ? gifSheetDims(inp.w, inp.h, gifFrames) : inp;
+    const ct = inp.gpt26
+        ? officialOutputTokens26(billed.w, billed.h, inp.quality, count)
+        : Math.ceil((count * officialOutputTokensNumerator25(inp.w, inp.h, inp.quality)) / 4_000_000);
     // 2.5 独有(2026-09-19 官方 key 实测):edits 每张输入图额外 +10 文字 token(1 图 18、2 图 28;2.0 无此项)。
     const perImageText = inp.mode === 'edits' ? IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE * inp.inputImageDims.length : 0;
-    const textTokens = (estimateTextTokens(inp.prompt) + perImageText) * count;
+    const gifText = gifFrames ? GPT_IMAGE_26_GIF_TEXT_TOKENS : 0;
+    const textTokens = (estimateTextTokens(inp.prompt) + perImageText + gifText) * count;
     let imgTokens = 0;
     if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens25(d);
     imgTokens *= count;
@@ -1177,6 +1210,7 @@ export async function handleAdapter25Image(
         prompt: parsed.prompt,
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
         imageCount: items.length,
+        gpt26: isGpt26 ? { gifFrames: gifTarget ? gifFrameCount(parsed.extras) : null } : undefined,
     });
 
     // ---- output_format=jpeg / webp:官方原生支持已透传;上游未兑现(sniff 非目标格式)才服务端转码兜底(第 5 批加 webp)----

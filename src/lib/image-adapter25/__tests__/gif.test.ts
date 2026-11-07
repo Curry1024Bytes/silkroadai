@@ -8,6 +8,8 @@ import sharp from 'sharp';
 import { handleAdapter25Image, imageDimensions, sniffOutputFormat } from '@/lib/image-adapter25/adapter';
 import {
     gifDimensions,
+    gifFrameCount,
+    gifSheetDims,
     gifUpstreamDims,
     gpt26ParamError,
     pruneGpt26Extras,
@@ -32,6 +34,26 @@ const framesOf = async (b64: string) => {
     const m = await sharp(Buffer.from(b64, 'base64'), { animated: true }).metadata();
     return { pages: m.pages, delay: m.delay, w: m.width, h: m.pageHeight };
 };
+
+describe('gifSheetDims / gifFrameCount', () => {
+    it.each([
+        [512, 512, 2, 2048, 1024],
+        [512, 512, 8, 2048, 1024],
+        [512, 512, 9, 1536, 1536],
+        [512, 512, 10, 2048, 1536],
+        [512, 512, 13, 2048, 2048],
+        [768, 512, 2, 1536, 2048],
+        [512, 768, 2, 2048, 1536],
+        [768, 512, 12, 2304, 2048],
+    ])('%dx%d %d 帧 → %dx%d', (w, h, frames, sw, sh) => {
+        expect(gifSheetDims(w, h, frames)).toEqual({ w: sw, h: sh });
+    });
+
+    it('frame_count 缺省按 9 帧', () => {
+        expect(gifFrameCount({})).toBe(9);
+        expect(gifFrameCount({ frame_count: '4' })).toBe(4);
+    });
+});
 
 describe('gifUpstreamDims', () => {
     it.each([

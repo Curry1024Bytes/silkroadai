@@ -9,10 +9,12 @@ import {
     imageDimensions,
     URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
+    officialOutputTokens26,
     IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE,
     officialInputImageTokens25,
     normQuality25,
     synthUsage25,
+    type Quality25,
     sanitizeAdapterError25,
     estimateTextTokens,
 } from '@/lib/image-adapter25/adapter';
@@ -2865,8 +2867,8 @@ describe('gpt-image-2.6 两条线(ztyunjuan26 / wetokenasia26):缺 xhigh/max 用
 
     it('sunburst 三档原样发,按官方表计费', async () => {
         for (const [q, tokens] of [
-            ['low', 196],
-            ['medium', 439],
+            ['low', 824],
+            ['medium', 1449],
             ['high', 1756],
         ] as const) {
             fetchMock.mockReset();
@@ -2940,6 +2942,134 @@ describe('gpt-image-2.6 两条线(ztyunjuan26 / wetokenasia26):缺 xhigh/max 用
         );
         const res = await gen('wetokenasia26', { quality: 'high' });
         expect(res.status).toBe(503);
+    });
+
+    it('2.6 官方 token:low ×4.2、medium ×3.3 向上取整,high 及以上不变(官 key 实测值)', () => {
+        const cases: Array<[number, number, Quality25, number]> = [
+            [1024, 1024, 'low', 824],
+            [1536, 1024, 'low', 664],
+            [1792, 1024, 'low', 584],
+            [2048, 2048, 'low', 1668],
+            [3840, 2160, 'low', 1559],
+            [1024, 640, 'low', 450],
+            [1024, 1024, 'medium', 1449],
+            [1536, 1024, 'medium', 1132],
+            [2560, 1440, 'medium', 1578],
+            [2880, 2880, 'medium', 4894],
+            [1024, 1024, 'high', 1756],
+            [1536, 1024, 'high', 1372],
+            [1536, 1024, 'xhigh', 2459],
+            [1536, 1024, 'max', 5488],
+        ];
+        for (const [w, h, q, want] of cases) expect(officialOutputTokens26(w, h, q)).toBe(want);
+    });
+
+    it('2.6 短边 patch 五取偶:1024×672 low 10.5→10、1024×704 medium 16.5→16、1024×672 high 31.5→32', () => {
+        expect(officialOutputTokens26(1024, 672, 'low')).toBe(454);
+        expect(officialOutputTokens26(1024, 704, 'medium')).toBe(865);
+        expect(officialOutputTokens26(1024, 672, 'high')).toBe(1033);
+    });
+
+    it('2.6 n 张先合计取整再乘倍率', () => {
+        expect(officialOutputTokens26(1024, 1024, 'low', 2)).toBe(1643);
+        expect(officialOutputTokens26(1536, 1024, 'medium', 3)).toBe(3396);
+        expect(officialOutputTokens26(1024, 1024, 'high', 2)).toBe(3512);
+    });
+
+    it('2.6 GIF 按整张拼图计 output,input 固定多 22(官 key 实测值)', () => {
+        const usage = (w: number, h: number, quality: Quality25, gifFrames: number) =>
+            synthUsage25({
+                mode: 'generations',
+                w,
+                h,
+                quality,
+                prompt: 'a small red ball bouncing',
+                inputImageDims: [],
+                imageCount: 1,
+                gpt26: { gifFrames },
+            }) as { input_tokens: number; output_tokens: number };
+        const cases: Array<[number, number, Quality25, number, number]> = [
+            [512, 512, 'low', 2, 555],
+            [512, 512, 'low', 8, 555],
+            [512, 512, 'low', 9, 1172],
+            [512, 512, 'low', 10, 1038],
+            [512, 512, 'low', 12, 1038],
+            [512, 512, 'low', 13, 1668],
+            [512, 512, 'low', 16, 1668],
+            [816, 816, 'low', 4, 987],
+            [816, 816, 'low', 9, 2151],
+            [816, 816, 'low', 12, 2016],
+            [640, 640, 'low', 16, 2302],
+            [400, 400, 'low', 9, 929],
+            [960, 960, 'low', 2, 1260],
+            [512, 768, 'low', 2, 1038],
+            [768, 512, 'low', 2, 1038],
+            [512, 768, 'low', 9, 1025],
+            [768, 512, 'low', 9, 1025],
+            [512, 768, 'low', 12, 1584],
+            [768, 512, 'low', 12, 1584],
+            [512, 768, 'low', 16, 1533],
+            [768, 512, 'low', 16, 1533],
+            [1024, 512, 'low', 2, 1668],
+            [512, 1024, 'low', 9, 903],
+            [672, 992, 'low', 2, 1479],
+            [992, 672, 'low', 9, 1479],
+            [512, 512, 'medium', 4, 974],
+            [512, 512, 'medium', 9, 2073],
+            [816, 816, 'medium', 4, 1743],
+            [512, 512, 'high', 4, 1180],
+            [512, 512, 'high', 9, 2511],
+            [512, 512, 'xhigh', 4, 2098],
+            [512, 512, 'xhigh', 9, 4464],
+            [512, 512, 'max', 4, 4720],
+            [512, 512, 'max', 9, 10044],
+        ];
+        for (const [w, h, q, frames, want] of cases) {
+            const u = usage(w, h, q, frames);
+            expect(u.output_tokens).toBe(want);
+            expect(u.input_tokens).toBe(33);
+        }
+    });
+
+    it('2.6 改图 GIF 同样 +22,普通图不加', () => {
+        const base = {
+            mode: 'edits' as const,
+            w: 512,
+            h: 512,
+            quality: 'low' as Quality25,
+            prompt: 'make it blue',
+            inputImageDims: [{ w: 1024, h: 1024 }],
+            imageCount: 1,
+        };
+        const gif = synthUsage25({ ...base, gpt26: { gifFrames: 9 } }) as {
+            input_tokens_details: { text_tokens: number; image_tokens: number };
+            output_tokens: number;
+        };
+        expect(gif.input_tokens_details).toEqual({ text_tokens: 41, image_tokens: 1024 });
+        expect(gif.output_tokens).toBe(1172);
+        const plain = synthUsage25({ ...base, w: 1024, h: 1024, gpt26: { gifFrames: null } }) as {
+            input_tokens_details: { text_tokens: number };
+            output_tokens: number;
+        };
+        expect(plain.input_tokens_details.text_tokens).toBe(19);
+        expect(plain.output_tokens).toBe(824);
+    });
+
+    it('端到端:2.6 走官方口径,2.5 同参数不变', async () => {
+        upstreamOk();
+        const r26 = await gen('wetokenasia26', { quality: 'low' });
+        expect(((await r26.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(824);
+        const r25 = await handleAdapter25Image(
+            jsonReq('http://portal.test/image-adapter25/wetokenasia25/v1/images/generations', {
+                model: 'gpt-image-2.5-flare',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(((await r25.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(196);
     });
 
     it('模型白名单隔离:2.5 名打 2.6 线、2.6 名打 2.5 线都 503 让路,不打上游', async () => {

@@ -23,6 +23,7 @@ export const GPT_IMAGE_26_EXTRAS = ['frame_count', 'frame_duration_ms', 'complex
 const GIF_ONLY_EXTRAS = ['frame_count', 'frame_duration_ms'] as const;
 
 export const GIF_DEFAULT_DIMS = { w: 512, h: 512 };
+const GIF_DEFAULT_FRAME_COUNT = 9;
 
 export interface Gpt26ParamError {
     detail: string;
@@ -100,7 +101,7 @@ export function gpt26ParamError(
         const v = Number(extras.frame_count);
         if (v < MIN_FRAME_COUNT || v > MAX_FRAME_COUNT)
             return {
-                detail: `Invalid 'frame_count' for GIF output. Received ${v}. Use an integer from ${MIN_FRAME_COUNT} to ${MAX_FRAME_COUNT}, or omit 'frame_count' to use 9.`,
+                detail: `Invalid 'frame_count' for GIF output. Received ${v}. Use an integer from ${MIN_FRAME_COUNT} to ${MAX_FRAME_COUNT}, or omit 'frame_count' to use ${GIF_DEFAULT_FRAME_COUNT}.`,
                 param: 'frame_count',
                 code: 'invalid_value',
             };
@@ -130,6 +131,21 @@ export function gpt26ParamError(
         };
     if (hasMask) return { detail: 'Masks are not supported for GIF output.', param: 'mask', code: 'invalid_value' };
     return null;
+}
+
+/** 计费帧数按请求值,不传取默认 9;官方实际交付的帧数偶尔比请求多,不影响计费。 */
+export function gifFrameCount(extras: Record<string, string>): number {
+    return extras.frame_count === undefined ? GIF_DEFAULT_FRAME_COUNT : Number(extras.frame_count);
+}
+
+/** 官方把 GIF 帧排进一张拼图出图,按拼图尺寸计 token。2026-11-07 官 key 全帧数实测:2-8 帧 4×2、9 帧 3×3、
+ *  10-12 帧 4×3、13-16 帧 4×4,行列方向取拼图更接近正方形的一种(768×512 的 2 帧是 1536×2048,不是 3072×1024)。 */
+export function gifSheetDims(w: number, h: number, frames: number): { w: number; h: number } {
+    const [a, b] = frames <= 8 ? [4, 2] : frames === 9 ? [3, 3] : frames <= 12 ? [4, 3] : [4, 4];
+    const wide = { w: w * a, h: h * b };
+    const tall = { w: w * b, h: h * a };
+    const aspect = (d: { w: number; h: number }) => Math.max(d.w, d.h) / Math.min(d.w, d.h);
+    return aspect(wide) <= aspect(tall) ? wide : tall;
 }
 
 /** 发给上游的尺寸:不低于最低像素的原样;低于的同比放大并对齐 16 倍数(与 ztyunjuan 的放大结果一致)。 */

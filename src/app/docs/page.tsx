@@ -2410,7 +2410,8 @@ curl ${OPENAI_BASE}/images/generations \\
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             gpt-image-2.6-sunburst
                         </code>{' '}
-                        即可,token 口径也与 2.5 一致。
+                        即可。token 按官方 2.6 口径计:网格与 2.5 相同,low 再乘 4.2、medium 再乘 3.3,high 及以上不变,例如
+                        1024×1024 的 low 为 824、medium 为 1449、high 为 1756。
                     </p>
                     <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         ⚠️ <strong className="text-navy">与 2.5 的区别</strong>:① 2.6 只有{' '}
@@ -2458,6 +2459,11 @@ curl ${OPENAI_BASE}/images/generations \\
                         </li>
                         <li>
                             尺寸:512×512 到 816×816 可用;1024×1024 放不下拼图,返回 400。13 帧及以上也可能因此返回 400。
+                        </li>
+                        <li>
+                            计费:帧排成一张拼图生成,按拼图尺寸计 output token,不按单帧。2–8 帧排 4×2、9 帧排 3×3、10–12
+                            帧排 4×3、13–16 帧排 4×4。512×512 的 low 档:2–8 帧 555、9 帧 1172、10–12 帧 1038、13–16 帧
+                            1668。请求 GIF 时 input token 固定多 22。
                         </li>
                         <li>GIF 不支持流式、蒙版和 output_compression,也不保证携带 C2PA 内容凭证。</li>
                         <li>
