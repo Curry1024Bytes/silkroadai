@@ -18,6 +18,8 @@ const NAV_ITEMS: NavItem[] = [
     { path: '/admin/orders', label: { zh: '订单管理', en: 'Orders' } },
     // P6b-2: read-only customer view — visible to ALL admins (partner backend main page).
     { path: '/admin/customers', label: { zh: '客户管理', en: 'Customers' } },
+    // 客诉工单(2026-11-07 PR2):所有 admin 可见,partner admin 按租户过滤。
+    { path: '/admin/tickets', label: { zh: '客诉工单', en: 'Tickets' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' }, superadminOnly: true },
     { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' }, superadminOnly: true },
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },

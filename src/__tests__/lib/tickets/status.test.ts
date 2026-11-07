@@ -17,12 +17,13 @@ describe('ticket status machine', () => {
         expect(canTransition('customer', 'open', 'resolved')).toBe(false);
         expect(canTransition('customer', 'closed', 'open')).toBe(false);
     });
-    it('staff can resolve / close from any live state but closed is terminal', () => {
+    it('staff can resolve / close from any live state and reopen a closed ticket', () => {
         expect(canTransition('staff', 'open', 'waiting_customer')).toBe(true);
         expect(canTransition('staff', 'open', 'resolved')).toBe(true);
         expect(canTransition('staff', 'waiting_customer', 'closed')).toBe(true);
         expect(canTransition('staff', 'resolved', 'open')).toBe(true);
-        expect(canTransition('staff', 'closed', 'open')).toBe(false);
+        expect(canTransition('staff', 'closed', 'open')).toBe(true);
+        expect(canTransition('staff', 'closed', 'resolved')).toBe(false);
     });
     it('system only auto-advances waiting_customer → resolved → closed', () => {
         expect(canTransition('system', 'waiting_customer', 'resolved')).toBe(true);

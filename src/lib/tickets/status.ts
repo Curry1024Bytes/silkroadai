@@ -4,7 +4,7 @@
  *   open ──staff 回复──▶ waiting_customer ──客户回复──▶ open
  *   open / waiting_customer ──staff 解决──▶ resolved ──客户确认 / 7 天无异议──▶ closed
  *   resolved ──客户「未解决」──▶ open(reopen_count+1,超过 MAX_REOPENS 只能 staff 关)
- *   任何状态 ──staff──▶ closed(PR2:必须填 resolution)
+ *   任何状态 ──staff──▶ closed(PR2:必须填 resolution);closed ──staff──▶ open(误关重开)
  *
  * system = 定时任务(PR3):waiting_customer 7 天无回复 → resolved;resolved 7 天 → closed。
  */
@@ -44,7 +44,8 @@ const TRANSITIONS: Record<TicketActor, Partial<Record<TicketStatus, readonly Tic
         open: ['waiting_customer', 'resolved', 'closed'],
         waiting_customer: ['open', 'resolved', 'closed'],
         resolved: ['closed', 'open'],
-        closed: [],
+        // 误关可由客服重开;客户侧 closed 是终态。
+        closed: ['open'],
     },
     system: {
         waiting_customer: ['resolved'],
