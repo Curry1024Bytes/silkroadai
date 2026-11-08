@@ -5741,6 +5741,218 @@ describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits
             expect(sent['svg[model]']).toBeUndefined();
         });
 
+        describe('适配器线不支持原生 SVG → 参考图 + 作者模型两步生成', () => {
+            const json = (body: unknown, status = 200) =>
+                new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+            const nativeRejected = () =>
+                json(
+                    {
+                        error: {
+                            message: "Invalid value: 'svg'. Supported values are: 'png', 'jpeg', 'webp', and 'gif'.",
+                            type: 'invalid_request_error',
+                            param: 'output_format',
+                            code: 'invalid_value',
+                        },
+                    },
+                    400,
+                );
+            const models = (...ids: string[]) => json({ object: 'list', data: ids.map((id) => ({ id })) });
+            let png = '';
+            beforeEach(async () => {
+                const sharp = (await import('sharp')).default;
+                png = (
+                    await sharp({ create: { width: 64, height: 48, channels: 3, background: '#c00' } })
+                        .png()
+                        .toBuffer()
+                ).toString('base64');
+            });
+            const reference = () =>
+                json({
+                    created: 7,
+                    data: [{ b64_json: png }],
+                    size: '64x48',
+                    quality: 'low',
+                    usage: { input_tokens: 10, output_tokens: 824, total_tokens: 834 },
+                });
+            const authored = (content: string) =>
+                json({
+                    model: 'gpt-5.5-2026-04-23',
+                    choices: [{ message: { content }, finish_reason: 'stop' }],
+                    usage: {
+                        prompt_tokens: 1550,
+                        completion_tokens: 166,
+                        total_tokens: 1716,
+                        completion_tokens_details: { reasoning_tokens: 12 },
+                    },
+                });
+            const goodSvg =
+                '```svg\n<svg viewBox="0 0 64 48" width="64" height="48"><title>Red</title>' +
+                '<circle cx="32" cy="24" r="20" fill="red"/></svg>\n```';
+            const callUrl = (i: number) => String(mockFetch.mock.calls[i][0]);
+            const callJson = (i: number) =>
+                JSON.parse(String(mockFetch.mock.calls[i][1]?.body)) as Record<string, unknown>;
+
+            it('出 png 参考图,再让 svg.model 写 SVG;响应按官方形回 usage 与 svg_usage', async () => {
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5', 'gpt-image-2.6-sunburst'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(authored(goodSvg));
+                const res = await POST(
+                    makeReq('/images/generations', {
+                        body: {
+                            ...svgReq,
+                            prompt: 'a red circle',
+                            quality: 'low',
+                            svg: { model: 'gpt-5.5', reasoning: { effort: 'low' } },
+                        },
+                        headers: { authorization: 'Bearer sk-customer' },
+                    }),
+                    ctx('images', 'generations'),
+                );
+                expect(res.status).toBe(200);
+                const j = (await res.json()) as {
+                    output_format: string;
+                    background: string;
+                    size: string;
+                    quality: string;
+                    usage: { output_tokens: number };
+                    svg_usage: Record<string, unknown>;
+                    data: Array<{ b64_json: string }>;
+                };
+                expect(j).toMatchObject({ output_format: 'svg', background: 'transparent', size: '64x48' });
+                expect(j.quality).toBe('low');
+                expect(j.usage.output_tokens).toBe(824);
+                expect(j.svg_usage).toEqual({
+                    input_tokens: 1550,
+                    model: 'gpt-5.5-2026-04-23',
+                    output_tokens: 166,
+                    reasoning_tokens: 12,
+                    total_tokens: 1716,
+                });
+                const svg = Buffer.from(j.data[0].b64_json, 'base64').toString();
+                expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
+                expect(svg).toContain('<circle');
+
+                expect(callUrl(1)).toMatch(/\/v1\/models$/);
+                const ref = callJson(2);
+                expect(ref.output_format).toBe('png');
+                expect(ref.svg).toBeUndefined();
+                expect(callUrl(3)).toMatch(/\/v1\/chat\/completions$/);
+                const chat = callJson(3);
+                expect(chat).toMatchObject({ model: 'gpt-5.5', reasoning_effort: 'low' });
+                expect(JSON.stringify(chat)).toContain('viewBox=\\"0 0 64 48\\"');
+                const auth = new Headers(mockFetch.mock.calls[3][1]?.headers as HeadersInit).get('authorization');
+                expect(auth).toBe('Bearer sk-customer');
+            });
+
+            it('请求透明背景:参考图不带 background,作者被要求留透明', async () => {
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(authored(goodSvg));
+                const res = await POST(gen({ ...svgReq, background: 'transparent' }), ctx('images', 'generations'));
+                expect(((await res.json()) as { background: string }).background).toBe('transparent');
+                expect(callJson(2).background).toBeUndefined();
+                expect(JSON.stringify(callJson(3))).toContain('Leave the background transparent');
+                expect(callJson(3).reasoning_effort).toBeUndefined();
+            });
+
+            it('SVG 先铺满画布的 rect → 回显 opaque', async () => {
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(
+                        authored(
+                            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 48"><title>t</title>' +
+                                '<rect width="100%" height="100%" fill="#012"/><circle cx="9" cy="9" r="4"/></svg>',
+                        ),
+                    );
+                const res = await POST(gen(svgReq), ctx('images', 'generations'));
+                expect(((await res.json()) as { background: string }).background).toBe('opaque');
+            });
+
+            it('分组里调不到 svg.model → 400,不出参考图', async () => {
+                mockFetch.mockResolvedValueOnce(nativeRejected()).mockResolvedValueOnce(models('gpt-5.4'));
+                const res = await POST(gen(svgReq), ctx('images', 'generations'));
+                expect(res.status).toBe(400);
+                const j = (await res.json()) as { error: { param: string; code: string } };
+                expect(j.error).toMatchObject({ param: 'svg.model', code: 'model_not_found' });
+                expect(mockFetch).toHaveBeenCalledTimes(2);
+            });
+
+            it('推理强度不在官方枚举 → 400,不出参考图', async () => {
+                mockFetch.mockResolvedValueOnce(nativeRejected());
+                const res = await POST(
+                    gen({ ...svgReq, svg: { model: 'gpt-5.5', reasoning: { effort: 'turbo' } } }),
+                    ctx('images', 'generations'),
+                );
+                expect(res.status).toBe(400);
+                expect(((await res.json()) as { error: { param: string } }).error.param).toBe('svg.reasoning.effort');
+                expect(mockFetch).toHaveBeenCalledTimes(1);
+            });
+
+            it('作者两次都写出带脚本的 SVG → 502,不交付', async () => {
+                const bad = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(authored(bad))
+                    .mockResolvedValueOnce(authored(bad));
+                const res = await POST(gen(svgReq), ctx('images', 'generations'));
+                expect(res.status).toBe(502);
+                expect(mockFetch).toHaveBeenCalledTimes(5);
+            });
+
+            it('作者 4xx(如余额不足)→ 按图片错误归一告诉客户,不重试', async () => {
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(json({ error: { message: 'insufficient quota' } }, 403));
+                const res = await POST(gen(svgReq), ctx('images', 'generations'));
+                expect(res.status).toBeGreaterThanOrEqual(400);
+                expect(res.status).not.toBe(502);
+                expect(mockFetch).toHaveBeenCalledTimes(4);
+            });
+
+            it('其它 400(如审核拒绝)原样返回,不走两步', async () => {
+                mockFetch.mockResolvedValueOnce(
+                    json({ error: { message: 'Your request was rejected by the safety system.' } }, 400),
+                );
+                const res = await POST(gen(svgReq), ctx('images', 'generations'));
+                expect(res.status).toBe(400);
+                expect(mockFetch).toHaveBeenCalledTimes(1);
+            });
+
+            it('multipart 改图:svg[reasoning][effort] 折回,参考图走 edits 且不带 svg 字段', async () => {
+                mockFetch
+                    .mockResolvedValueOnce(nativeRejected())
+                    .mockResolvedValueOnce(models('gpt-5.5'))
+                    .mockResolvedValueOnce(reference())
+                    .mockResolvedValueOnce(authored(goodSvg));
+                const fd = new FormData();
+                fd.append('model', 'gpt-image-2.6-sunburst');
+                fd.append('prompt', 'make it blue');
+                fd.append('output_format', 'svg');
+                fd.append('svg[model]', 'gpt-5.5');
+                fd.append('svg[reasoning][effort]', 'high');
+                fd.append('image', new Blob([Buffer.from(png, 'base64')], { type: 'image/png' }), 'a.png');
+                const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: fd });
+                const res = await POST(req, ctx('images', 'edits'));
+                expect(res.status).toBe(200);
+                expect(callUrl(2)).toMatch(/\/v1\/images\/edits/);
+                const refForm = mockFetch.mock.calls[2][1]?.body as FormData;
+                expect(refForm.get('output_format')).toBe('png');
+                expect(refForm.get('svg[model]')).toBeNull();
+                expect(refForm.get('image')).toBeInstanceOf(Blob);
+                expect(callJson(3).reasoning_effort).toBe('high');
+            });
+        });
+
         it('multipart 缺 svg[model] → 400', async () => {
             const fd = new FormData();
             fd.append('model', 'gpt-image-2.6-sunburst');

@@ -63,6 +63,18 @@ import { newGenerationId } from '@/lib/image/generation-id';
 import { jsonMaskShapeError, maskDimensionError, multipartMaskShapeError } from '@/lib/image/mask';
 import { resolveOutputBackground } from '@/lib/image/opacity';
 import { isSvgBytes } from '@/lib/image/transcode';
+import {
+    buildSvgAuthorBody,
+    extractSvg,
+    isNativeSvgUnsupported,
+    normalizeSvgBackground,
+    readSvgAuthorParams,
+    svgEffortError,
+    svgPaintsCanvas,
+    svgRenders,
+    svgSafetyError,
+    toSvgUsage,
+} from '@/lib/image/svg-author';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -554,6 +566,18 @@ async function forwardToNewApi(
 class ImageUrlError extends Error {}
 /** 蒙版(`mask`)解析 / 尺寸校验失败 → 400 param=mask(其余 ImageUrlError 归 param=image)。 */
 class MaskImageError extends ImageUrlError {}
+/** SVG 两步生成自己判定的错误:直接按这里的状态码和文案回客户,不过图片错误归一。 */
+class SvgAuthorError extends Error {
+    constructor(
+        message: string,
+        readonly status: number,
+        readonly param: string | null,
+        readonly code: string | null,
+        readonly type = 'invalid_request_error',
+    ) {
+        super(message);
+    }
+}
 
 /** SSRF 基础守门:只放 http(s) + 拒 localhost / 私网 IPv4 字面量 / IPv6 字面量。
  *  DNS 解析到私网的域名(rebinding)不在本层防护范围 — Phase 3 hardening。 */
@@ -1431,6 +1455,9 @@ async function gptImageUpstream(
     if (b.svg && typeof b.svg === 'object' && !Array.isArray(b.svg)) {
         for (const [k, v] of Object.entries(b.svg as JsonRecord)) {
             if (typeof v === 'string' || typeof v === 'number') f.append(`svg[${k}]`, String(v));
+            else if (v && typeof v === 'object' && !Array.isArray(v))
+                for (const [kk, vv] of Object.entries(v as JsonRecord))
+                    if (typeof vv === 'string' || typeof vv === 'number') f.append(`svg[${k}][${kk}]`, String(vv));
         }
     }
     for (const img of imgs) {
@@ -1521,6 +1548,183 @@ async function gptImageUpstreamWithSizeRetry(
     if (form) form.set('size', explicit);
     else if (body) body.size = explicit;
     return gptImageUpstream(req, form, body, search);
+}
+
+/** 客户 key 所在分组能不能调到作者模型。/v1/models 拿不到(网络 / 非 2xx)→ null,不拦。 */
+async function svgAuthorModelAvailable(req: NextRequest, model: string): Promise<boolean | null> {
+    try {
+        const headers = forwardHeaders(req);
+        headers.delete('content-type');
+        const r = await fetch(`${NEWAPI_BASE_URL}/v1/models`, { headers, signal: AbortSignal.timeout(10_000) });
+        if (!r.ok) return null;
+        const j = (await r.json()) as { data?: Array<{ id?: unknown }> };
+        if (!Array.isArray(j.data)) return null;
+        return j.data.some((m) => m.id === model);
+    } catch {
+        return null;
+    }
+}
+
+/** 参考图请求:去掉 SVG 专有字段,改出 png;透明背景交给作者模型处理(适配器线不一定出得了透明 png)。 */
+function svgReferenceRequest(
+    form: FormData | null,
+    body: JsonRecord | null,
+    dropBackground: boolean,
+): { form: FormData | null; body: JsonRecord | null } {
+    const skip = (k: string) =>
+        k === 'output_format' ||
+        k === 'output_compression' ||
+        k.startsWith('svg[') ||
+        k === 'svg' ||
+        (dropBackground && k === 'background');
+    if (form) {
+        const f = new FormData();
+        for (const [k, v] of form.entries()) if (!skip(k)) f.append(k, v);
+        f.set('output_format', 'png');
+        return { form: f, body: null };
+    }
+    const b: JsonRecord = {};
+    for (const [k, v] of Object.entries(body ?? {})) if (!skip(k)) b[k] = v;
+    b.output_format = 'png';
+    return { form: null, body: b };
+}
+
+const SVG_AUTHOR_ATTEMPTS = 2;
+
+/** gpt-image-2.6 SVG。先原样发上游:官 key 分组原生支持,直接用上游结果。适配器线(ch326 / ch327)会立即回
+ *  「Invalid value: 'svg'」,这时改走官方同款两步:用客户自己的 key 出一张 png 参考图,再让 svg.model 照着写
+ *  SVG(@/lib/image/svg-author)。两步都经 new-api、按客户分组倍率各计一笔;响应拼成官方形,
+ *  usage = 参考图 token,svg_usage = 作者模型 token。 */
+async function gptImage26SvgUpstream(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+): Promise<Response> {
+    const native = await gptImageUpstreamWithSizeRetry(req, form, body, search);
+    if (native.ok || native.status !== 400) return native;
+    const nativeText = await native.text();
+    if (!isNativeSvgUnsupported(nativeText))
+        return new Response(nativeText, { status: native.status, headers: native.headers });
+
+    const fields: JsonRecord = {};
+    if (form) {
+        for (const [k, v] of form.entries()) if (typeof v === 'string') fields[k] = v;
+        foldSvgFormFields(fields);
+    } else Object.assign(fields, body);
+    const params = readSvgAuthorParams(fields.svg);
+    const effortErr = svgEffortError(params.effort);
+    if (effortErr) throw new SvgAuthorError(effortErr, 400, 'svg.reasoning.effort', 'invalid_value');
+    if ((await svgAuthorModelAvailable(req, params.model)) === false)
+        throw new SvgAuthorError(
+            `The model '${params.model}' is not available for SVG generation.`,
+            400,
+            'svg.model',
+            'model_not_found',
+        );
+    const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    const background = normalizeSvgBackground(typeof fields.background === 'string' ? fields.background : '');
+    const startedAt = Date.now();
+
+    // ---- 第一步:参考图(照常按图片计费)----
+    const refReq = svgReferenceRequest(form, body, background === 'transparent');
+    const ref = await gptImageUpstreamWithSizeRetry(req, refReq.form, refReq.body, search);
+    if (!ref.ok) return ref;
+    const refText = await ref.text();
+    const refHeaders = new Headers(ref.headers);
+    refHeaders.delete('content-encoding');
+    refHeaders.delete('content-length');
+    let refJson: JsonRecord;
+    try {
+        refJson = JSON.parse(refText) as JsonRecord;
+    } catch {
+        return new Response(refText, { status: ref.status, headers: refHeaders });
+    }
+    const item = Array.isArray(refJson.data) ? (refJson.data[0] as JsonRecord | undefined) : undefined;
+    let refB64 = typeof item?.b64_json === 'string' ? item.b64_json : '';
+    if (!refB64 && typeof item?.url === 'string')
+        refB64 = (await fetchStrippedImage(item.url))?.toString('base64') ?? '';
+    if (!refB64) return new Response(refText, { status: ref.status, headers: refHeaders });
+    const refBuf = Buffer.from(refB64, 'base64');
+    const sized = /^(\d+)x(\d+)$/.exec(typeof refJson.size === 'string' ? refJson.size : '');
+    const dims =
+        imageDimensions(refBuf) ?? (sized ? { w: Number(sized[1]), h: Number(sized[2]) } : { w: 1024, h: 1024 });
+
+    // ---- 第二步:作者模型写 SVG(按客户分组里的 GPT 文本渠道计费)----
+    const authorBody = JSON.stringify(
+        buildSvgAuthorBody({
+            params,
+            prompt,
+            w: dims.w,
+            h: dims.h,
+            background,
+            referenceB64: refB64,
+            referenceMime: sniffImageMime(refBuf),
+        }),
+    );
+    for (let attempt = 1; attempt <= SVG_AUTHOR_ATTEMPTS; attempt++) {
+        let r: Response;
+        try {
+            r = await fetch(`${NEWAPI_BASE_URL}/v1/chat/completions`, {
+                method: 'POST',
+                headers: jsonForwardHeaders(req),
+                body: authorBody,
+                signal: AbortSignal.timeout(UPSTREAM_IMAGE_TIMEOUT_MS),
+            });
+        } catch (e) {
+            console.warn('[svg-author] request failed', { attempt, err: e instanceof Error ? e.message : String(e) });
+            continue;
+        }
+        const t = await r.text();
+        if (!r.ok) {
+            // 4xx(余额不足、模型参数不收等)换一次也一样 → 不重试,交给图片错误归一后告诉客户
+            if (r.status < 500 && r.status !== 429) return new Response(t, { status: r.status, headers: r.headers });
+            console.warn('[svg-author] upstream error', { attempt, status: r.status, body: t.slice(0, 300) });
+            continue;
+        }
+        let chat: JsonRecord;
+        try {
+            chat = JSON.parse(t) as JsonRecord;
+        } catch {
+            console.warn('[svg-author] non-json reply', { attempt });
+            continue;
+        }
+        const choice = (chat.choices as Array<{ message?: { content?: unknown }; finish_reason?: unknown }>)?.[0];
+        const content = typeof choice?.message?.content === 'string' ? choice.message.content : '';
+        const svg = extractSvg(content);
+        const why = !svg ? 'no svg' : (svgSafetyError(svg) ?? ((await svgRenders(svg)) ? null : 'unrenderable'));
+        if (!svg || why) {
+            console.warn('[svg-author] rejected output', { attempt, why, finish: choice?.finish_reason });
+            continue;
+        }
+        const out: JsonRecord = {
+            created: typeof refJson.created === 'number' ? refJson.created : Math.floor(Date.now() / 1000),
+            background:
+                background === 'auto' ? (svgPaintsCanvas(svg, dims.w, dims.h) ? 'opaque' : 'transparent') : background,
+            data: [{ b64_json: Buffer.from(svg).toString('base64') }],
+            output_format: 'svg',
+            quality: refJson.quality,
+            size: typeof refJson.size === 'string' ? refJson.size : `${dims.w}x${dims.h}`,
+            usage: refJson.usage,
+            svg_usage: toSvgUsage(chat, params.model),
+        };
+        console.log('[svg-author] ok', {
+            author: params.model,
+            effort: params.effort,
+            attempt,
+            ms: Date.now() - startedAt,
+            bytes: Buffer.byteLength(svg),
+        });
+        refHeaders.set('content-type', 'application/json');
+        return new Response(JSON.stringify(out), { status: 200, headers: refHeaders });
+    }
+    throw new SvgAuthorError(
+        'The server had an error while generating the SVG. Please retry your request.',
+        502,
+        null,
+        null,
+        'server_error',
+    );
 }
 
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
@@ -2011,13 +2215,17 @@ function isGptImage26Svg(model: string, outputFormat: string): boolean {
     return isGptImage26Model(model) && outputFormat.trim().toLowerCase() === 'svg';
 }
 
-/** multipart 的 svg[model] / svg[effort] 折回 JSON 的 svg 对象;就地改。 */
+/** multipart 的 svg[model] / svg[reasoning][effort] 折回 JSON 的 svg 对象;就地改。 */
 function foldSvgFormFields(j: JsonRecord): void {
     const svg: JsonRecord = {};
     for (const k of Object.keys(j)) {
-        const m = /^svg\[(\w+)\]$/.exec(k);
+        const m = /^svg\[(\w+)\](?:\[(\w+)\])?$/.exec(k);
         if (!m) continue;
-        svg[m[1]] = j[k];
+        if (m[2]) {
+            const inner = (svg[m[1]] && typeof svg[m[1]] === 'object' ? svg[m[1]] : {}) as JsonRecord;
+            inner[m[2]] = j[k];
+            svg[m[1]] = inner;
+        } else svg[m[1]] = j[k];
         delete j[k];
     }
     if (Object.keys(svg).length > 0) j.svg = svg;
@@ -2525,9 +2733,11 @@ async function handleImagesDalle(
                     try {
                         // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                         // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
-                        const upstream = isGptImageModel(model)
-                            ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
-                            : await fetchUpstreamMultipart(req, form, path, search);
+                        const upstream = isGptImage26Svg(model, String(form.get('output_format') ?? ''))
+                            ? await gptImage26SvgUpstream(req, form, null, search)
+                            : isGptImageModel(model)
+                              ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
+                              : await fetchUpstreamMultipart(req, form, path, search);
                         return await reshapeOpenAiImageResponse(
                             upstream,
                             prompt,
@@ -2540,6 +2750,12 @@ async function handleImagesDalle(
                             transcodeCompression,
                         );
                     } catch (e) {
+                        if (e instanceof SvgAuthorError)
+                            return imageError(e.message, e.status, cap, {
+                                param: e.param,
+                                code: e.code,
+                                type: e.type,
+                            });
                         if (e instanceof ImageUrlError)
                             return imageError(e.message, 400, cap, {
                                 code: 'invalid_image',
@@ -2701,9 +2917,14 @@ async function handleImagesDalle(
                 const run = async (): Promise<NextResponse> => {
                     try {
                         // 统一入口:gpt-image body 里带 images/image/image_url → 图生图 edits;否则文生图 generations。
-                        const upstream = isGptImageModel(model)
-                            ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
-                            : await fetchUpstreamJson(req, body, seedream ? '/images/generations' : path, search);
+                        const upstream = isGptImage26Svg(
+                            model,
+                            typeof body.output_format === 'string' ? body.output_format : '',
+                        )
+                            ? await gptImage26SvgUpstream(req, null, body, search)
+                            : isGptImageModel(model)
+                              ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
+                              : await fetchUpstreamJson(req, body, seedream ? '/images/generations' : path, search);
                         return await reshapeOpenAiImageResponse(
                             upstream,
                             prompt,
@@ -2716,6 +2937,12 @@ async function handleImagesDalle(
                             transcodeCompression,
                         );
                     } catch (e) {
+                        if (e instanceof SvgAuthorError)
+                            return imageError(e.message, e.status, cap, {
+                                param: e.param,
+                                code: e.code,
+                                type: e.type,
+                            });
                         if (e instanceof ImageUrlError)
                             return imageError(e.message, 400, cap, {
                                 code: 'invalid_image',

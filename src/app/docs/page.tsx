@@ -2481,9 +2481,8 @@ curl ${OPENAI_BASE}/images/generations \\
                         </li>
                     </ul>
                     <p className="text-sm text-ink mb-2">
-                        <strong className="text-navy">生成 SVG</strong>:仅{' '}
-                        <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回
-                        400。文生图和改图都支持。
+                        <strong className="text-navy">生成 SVG</strong>:文生图和改图都支持。模型先画一张参考图,再由
+                        svg.model 指定的文本模型照着它写出 SVG 代码。
                     </p>
                     <ul className="text-sm text-ink mb-3 list-disc pl-5 space-y-1">
                         <li>
@@ -2507,8 +2506,16 @@ curl ${OPENAI_BASE}/images/generations \\
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                                 svg_usage
                             </code>
-                            ,列出生成 SVG 所用模型和 token 数。
+                            ,列出生成 SVG 所用模型和 token 数,这部分按该模型的价格计费;usage 是参考图的 token。
                         </li>
+                        <li>
+                            svg.model 必须是你的分组里能调用的模型,否则返回 400。可选{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {'"svg": {"reasoning": {"effort": "low"}}'}
+                            </code>
+                            ,取值 none / minimal / low / medium / high / xhigh / max,不传用该模型默认值。
+                        </li>
+                        <li>复杂画面的 SVG 代码较长,整次请求可能需要 1–2 分钟,请把客户端超时设长一些。</li>
                         <li>只支持 n=1,不支持流式和 output_compression。</li>
                         <li>size 的像素下限与普通出图相同,512×512 返回 400。不传 size 时尺寸由模型决定。</li>
                     </ul>
