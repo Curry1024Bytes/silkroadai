@@ -46,6 +46,9 @@ import {
     pruneGpt26Extras,
     requestedOutputFormat,
     resizeGifB64,
+    retimeGifB64,
+    takeEditsGifFrameParams,
+    type GifRetime,
 } from './gif';
 import { GPT_IMAGE_26_MODELS, IMAGE_PROVIDERS_25, type AsyncTaskTransport, type ImageProvider25 } from './providers';
 
@@ -1036,9 +1039,17 @@ export async function handleAdapter25Image(
     const dims = autoSize ? null : parseSize(parsed.size);
     // ---- 2.6 GIF:低于最低像素的尺寸放大发上游、收图后缩回;auto 按官方示例 512×512(规则见 gif.ts)----
     const gifTarget = isGpt26 && requestedOutputFormat(parsed.extras) === 'gif' ? (dims ?? GIF_DEFAULT_DIMS) : null;
+    // 计费帧数按客户请求;改图的帧参数不发上游,收图后本地抽帧 / 改时长(gif.ts takeEditsGifFrameParams)
+    const gifFrames = gifTarget ? gifFrameCount(parsed.extras) : null;
+    let gifRetime: GifRetime | null = null;
     if (gifTarget) {
         const up = gifUpstreamDims(gifTarget);
         parsed = { ...parsed, size: `${up.w}x${up.h}` };
+        if (mode === 'edits') {
+            const taken = takeEditsGifFrameParams(parsed.extras);
+            parsed = { ...parsed, extras: taken.upstreamExtras };
+            gifRetime = taken.retime;
+        }
     }
     const quality = normQuality25(parsed.quality);
     // ---- 上游缺档:只把发给上游的档位换成最近的真档(2.6 xhigh/max → high);quality 留在请求档,回显与计费都按它 ----
@@ -1165,6 +1176,7 @@ export async function handleAdapter25Image(
     }
 
     if (gifTarget) for (const it of items) it.b64_json = await resizeGifB64(it.b64_json, gifTarget);
+    if (gifRetime) for (const it of items) it.b64_json = await retimeGifB64(it.b64_json, gifRetime);
 
     // ---- 计费尺寸 = 回显 size:优先【返回图实际像素】(防上游静默降级超收;auto 由模型选尺寸,只能按实际);
     //      读不出 → 显式 size 按请求值 / auto 无从计费 → 让路 ----
@@ -1210,7 +1222,7 @@ export async function handleAdapter25Image(
         prompt: parsed.prompt,
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
         imageCount: items.length,
-        gpt26: isGpt26 ? { gifFrames: gifTarget ? gifFrameCount(parsed.extras) : null } : undefined,
+        gpt26: isGpt26 ? { gifFrames } : undefined,
     });
 
     // ---- output_format=jpeg / webp:官方原生支持已透传;上游未兑现(sniff 非目标格式)才服务端转码兜底(第 5 批加 webp)----

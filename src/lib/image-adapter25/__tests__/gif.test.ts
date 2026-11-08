@@ -12,15 +12,18 @@ import {
     gifSheetDims,
     gifUpstreamDims,
     gpt26ParamError,
+    pickFrameIndices,
     pruneGpt26Extras,
     resizeGifB64,
+    retimeGifB64,
+    takeEditsGifFrameParams,
 } from '@/lib/image-adapter25/gif';
 import { resolveOutputBackground } from '@/lib/image/opacity';
 
 async function animatedGif(size: number, frames: number, delayMs: number): Promise<Buffer> {
     const pages = await Promise.all(
         Array.from({ length: frames }, (_, i) =>
-            sharp({ create: { width: size, height: size, channels: 3, background: { r: 40 * i, g: 80, b: 120 } } })
+            sharp({ create: { width: size, height: size, channels: 3, background: { r: 25 * i, g: 80, b: 120 } } })
                 .png()
                 .toBuffer(),
         ),
@@ -91,9 +94,24 @@ describe('gpt26ParamError', () => {
     it('GIF 不收蒙版', () => {
         expect(gpt26ParamError({ output_format: 'gif' }, true)?.param).toBe('mask');
     });
-    it.each(['frame_count', 'frame_duration_ms'])('改图出 GIF 不收 %s', (param) => {
-        expect(gpt26ParamError({ output_format: 'gif', [param]: '4' }, false, true)?.param).toBe(param);
+    it('改图出 GIF:frame_count 2-9、frame_duration_ms 放行(本地处理),10-16 说明改图上限', () => {
+        expect(gpt26ParamError({ output_format: 'gif', frame_count: '3' }, false, true)).toBeNull();
+        expect(gpt26ParamError({ output_format: 'gif', frame_count: '9' }, false, true)).toBeNull();
+        expect(gpt26ParamError({ output_format: 'gif', frame_duration_ms: '100' }, false, true)).toBeNull();
         expect(gpt26ParamError({ output_format: 'gif' }, false, true)).toBeNull();
+        expect(gpt26ParamError({ output_format: 'gif', frame_count: '12' }, false, true)).toEqual({
+            detail: "Invalid 'frame_count' for GIF output from image edits. Received 12. Use an integer from 2 to 9, or omit 'frame_count' to use 9.",
+            param: 'frame_count',
+            code: 'invalid_value',
+        });
+        // 文生图不受改图上限影响;越过官方 2-16 仍是官方文案
+        expect(gpt26ParamError({ output_format: 'gif', frame_count: '12' }, false, false)).toBeNull();
+        expect(gpt26ParamError({ output_format: 'gif', frame_count: '17' }, false, true)?.detail).toMatch(
+            /^Invalid 'frame_count' for GIF output\. Received 17/,
+        );
+        expect(gpt26ParamError({ output_format: 'gif', frame_duration_ms: '10' }, false, true)?.code).toBe(
+            'integer_below_min_value',
+        );
     });
     it('合法组合放行;帧时长没有上限(上游实测 3000ms 通过)', () => {
         expect(gif({ frame_count: '16', frame_duration_ms: '3000', complexity: 'low' })).toBeNull();
@@ -117,6 +135,66 @@ describe('pruneGpt26Extras', () => {
     });
     it('非 2.6 模型一个都不发上游', () => {
         expect(pruneGpt26Extras(extras, false)).toEqual({ output_format: 'gif' });
+    });
+});
+
+describe('改图 GIF 帧参数本地处理', () => {
+    it('takeEditsGifFrameParams:帧参数不发上游,交给本地', () => {
+        const extras = { output_format: 'gif', frame_count: '3', frame_duration_ms: '100', complexity: 'low' };
+        expect(takeEditsGifFrameParams(extras)).toEqual({
+            upstreamExtras: { output_format: 'gif', complexity: 'low' },
+            retime: { frames: 3, durationMs: 100 },
+        });
+        expect(takeEditsGifFrameParams({ output_format: 'gif', frame_duration_ms: '50' }).retime).toEqual({
+            frames: null,
+            durationMs: 50,
+        });
+        const none = { output_format: 'gif' };
+        expect(takeEditsGifFrameParams(none)).toEqual({ upstreamExtras: none, retime: null });
+    });
+    it.each([
+        [9, 3, [0, 3, 6]],
+        [9, 2, [0, 4]],
+        [9, 4, [0, 2, 4, 6]],
+        [9, 9, [0, 1, 2, 3, 4, 5, 6, 7, 8]],
+        [9, 12, [0, 1, 2, 3, 4, 5, 6, 7, 8]],
+    ])('pickFrameIndices(%i, %i) = %j', (total, n, want) => {
+        expect(pickFrameIndices(total, n)).toEqual(want);
+    });
+    it('retimeGifB64 抽帧 + 改时长:9 帧取 3 帧,取的是第 0/3/6 帧', async () => {
+        const b64 = (await animatedGif(32, 9, 200)).toString('base64');
+        const out = await retimeGifB64(b64, { frames: 3, durationMs: 100 });
+        expect(await framesOf(out)).toEqual({ pages: 3, delay: [100, 100, 100], w: 32, h: 32 });
+        const reds = await Promise.all(
+            [0, 1, 2].map(async (page) => {
+                const { data } = await sharp(Buffer.from(out, 'base64'), { page })
+                    .raw()
+                    .toBuffer({ resolveWithObject: true });
+                return data[0];
+            }),
+        );
+        // animatedGif 第 i 帧 r = 25·i → 0 / 75 / 150(GIF 调色板量化允许小误差)
+        reds.forEach((r, k) => expect(Math.abs(r - [0, 75, 150][k])).toBeLessThanOrEqual(8));
+    });
+    it('只改时长:帧数不变;只抽帧:时长取官方默认 200', async () => {
+        const b64 = (await animatedGif(32, 9, 200)).toString('base64');
+        expect(await framesOf(await retimeGifB64(b64, { frames: null, durationMs: 50 }))).toMatchObject({
+            pages: 9,
+            delay: Array(9).fill(50),
+        });
+        expect(await framesOf(await retimeGifB64(b64, { frames: 4, durationMs: null }))).toMatchObject({
+            pages: 4,
+            delay: [200, 200, 200, 200],
+        });
+    });
+    it('不是 GIF / 单帧 → 原样', async () => {
+        expect(await retimeGifB64('iVBORw0KGgo=', { frames: 3, durationMs: 100 })).toBe('iVBORw0KGgo=');
+        const single = (
+            await sharp({ create: { width: 8, height: 8, channels: 3, background: '#f00' } })
+                .gif()
+                .toBuffer()
+        ).toString('base64');
+        expect(await retimeGifB64(single, { frames: 3, durationMs: 100 })).toBe(single);
     });
 });
 
@@ -224,6 +302,70 @@ describe('适配器 GIF 全流程', () => {
         const { error } = (await res.json()) as { error: { message: string; param: string } };
         expect(error.param).toBe('size');
         expect(error.message).toBe('No supported sheet fits 4 GIF frames at the requested size.');
+    });
+
+    const postEdit = async (provider: string, fields: Record<string, string>) => {
+        const form = new FormData();
+        for (const [k, v] of Object.entries({
+            model: 'gpt-image-2.6-flare',
+            prompt: 'x',
+            output_format: 'gif',
+            quality: 'low',
+            ...fields,
+        }))
+            form.append(k, v);
+        const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#c33' } })
+            .png()
+            .toBuffer();
+        form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'i.png');
+        return handleAdapter25Image(
+            new NextRequest(`http://portal.test/image-adapter25/${provider}/v1/images/edits`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer sk-upstream-test' },
+                body: form,
+            }),
+            'edits',
+            provider,
+        );
+    };
+
+    it.each(['ztyunjuan26', 'wetokenasia26'])(
+        '%s 改图 GIF:帧参数不发上游,本地抽成 3 帧 100ms,按 3 帧拼图计费',
+        async (provider) => {
+            upstreamReturns((await animatedGif(816, 9, 200)).toString('base64'));
+            const res = await postEdit(provider, { size: '512x512', frame_count: '3', frame_duration_ms: '100' });
+            expect(res.status).toBe(200);
+            const f = fetchMock.mock.calls[0][1]?.body as FormData;
+            expect(f.get('frame_count')).toBeNull();
+            expect(f.get('frame_duration_ms')).toBeNull();
+            expect(f.get('output_format')).toBe('gif');
+            expect(f.get('size')).toBe('816x816');
+            const j = (await res.json()) as {
+                size: string;
+                output_format: string;
+                usage: { output_tokens: number };
+                data: Array<{ b64_json: string }>;
+            };
+            expect(j).toMatchObject({ size: '512x512', output_format: 'gif' });
+            expect(await framesOf(j.data[0].b64_json)).toEqual({ pages: 3, delay: [100, 100, 100], w: 512, h: 512 });
+            expect(j.usage.output_tokens).toBe(555); // 512² low,2-8 帧拼 4×2,与官方一致
+        },
+    );
+
+    it('改图 GIF 不带帧参数:上游的 9 帧原样交付', async () => {
+        upstreamReturns((await animatedGif(816, 9, 200)).toString('base64'));
+        const res = await postEdit('ztyunjuan26', { size: '816x816' });
+        const j = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(await framesOf(j.data[0].b64_json)).toMatchObject({ pages: 9, w: 816, h: 816 });
+    });
+
+    it('改图 GIF frame_count=12 → 400 说明改图上限 9,不打上游', async () => {
+        const res = await postEdit('ztyunjuan26', { size: '512x512', frame_count: '12' });
+        expect(res.status).toBe(400);
+        const { error } = (await res.json()) as { error: { message: string; param: string } };
+        expect(error.param).toBe('frame_count');
+        expect(error.message).toContain('from 2 to 9');
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('svg 立即 400,不打上游', async () => {

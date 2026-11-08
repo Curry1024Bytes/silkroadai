@@ -2470,8 +2470,10 @@ curl ${OPENAI_BASE}/images/generations \\
                             透明背景仅 <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回 400。
                         </li>
                         <li>
-                            改图接口也能输出 GIF,默认 9 帧、200 毫秒。传帧参数仅{' '}
-                            <strong className="text-navy">oai高价官k渠道</strong> 分组可用,其它分组返回 400。
+                            改图接口也能输出 GIF,默认 9 帧、200 毫秒,frame_count 和 frame_duration_ms 都可传。
+                            <strong className="text-navy">oai高价官k渠道</strong> 分组与官方一致,frame_count
+                            2–16;其它分组 frame_count 为 2–9(从 9 帧动画里均匀取帧,动作相同,节奏更粗),传 10–16 返回 400;
+                            frame_duration_ms 各分组都与官方一致。计费按你请求的帧数。
                         </li>
                         <li>
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">

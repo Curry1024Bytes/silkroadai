@@ -7,7 +7,10 @@
  *
  * 帧数 / 帧时长 / 压缩的规则与上游原文一致(ztyunjuan 透出的官方错误):frame_count 2-16、frame_duration_ms ≥ 20、
  * GIF 不收 output_compression。提前拦截省一次 25s 的上游往返。流式 GIF 官方不支持,在代理层拦(适配器看不到 stream)。
- * 改图出 GIF 只能用默认帧参数:ztyunjuan 带任一帧参数恒回 503 `Unknown internal error`(multipart / JSON 各 2-9 帧实测),不带才出图。
+ * 改图出 GIF:两家上游带任一帧参数都出不了图(ztyunjuan 恒 503 `Unknown internal error`,we-token 408 限流 / 超时;
+ * 2026-11-06 与 11-08 multipart / JSON 复测一致),不带才出图(9 帧 200ms)。官方改图端点支持这两个参数(11-07 官 key 实测),
+ * 所以改图请求不把帧参数发上游,收图后本地改:frame_duration_ms 改写每帧时长(与官方一致);frame_count 2-9 从 9 帧里
+ * 均匀抽帧(动作相同、节奏更粗;官方是直接生成 N 帧);10-16 上游给不出,400 说明上限,不复制帧凑数。
  */
 import { loadSharp } from '@/lib/image/transcode';
 
@@ -24,6 +27,9 @@ const GIF_ONLY_EXTRAS = ['frame_count', 'frame_duration_ms'] as const;
 
 export const GIF_DEFAULT_DIMS = { w: 512, h: 512 };
 const GIF_DEFAULT_FRAME_COUNT = 9;
+const GIF_DEFAULT_FRAME_DURATION_MS = 200;
+/** 改图出 GIF 本地抽帧的上限 = 上游默认帧数。 */
+export const EDITS_GIF_MAX_FRAME_COUNT = GIF_DEFAULT_FRAME_COUNT;
 
 export interface Gpt26ParamError {
     detail: string;
@@ -86,15 +92,6 @@ export function gpt26ParamError(
             code: 'invalid_value',
         };
     if (format !== 'gif') return null;
-    if (isEdits) {
-        const param = GIF_ONLY_EXTRAS.find((k) => extras[k] !== undefined);
-        if (param)
-            return {
-                detail: `'${param}' is not supported for GIF output from image edits.`,
-                param,
-                code: 'invalid_value',
-            };
-    }
     if (extras.frame_count !== undefined) {
         const err = intError(extras.frame_count, 'frame_count');
         if (err) return err;
@@ -102,6 +99,12 @@ export function gpt26ParamError(
         if (v < MIN_FRAME_COUNT || v > MAX_FRAME_COUNT)
             return {
                 detail: `Invalid 'frame_count' for GIF output. Received ${v}. Use an integer from ${MIN_FRAME_COUNT} to ${MAX_FRAME_COUNT}, or omit 'frame_count' to use ${GIF_DEFAULT_FRAME_COUNT}.`,
+                param: 'frame_count',
+                code: 'invalid_value',
+            };
+        if (isEdits && v > EDITS_GIF_MAX_FRAME_COUNT)
+            return {
+                detail: `Invalid 'frame_count' for GIF output from image edits. Received ${v}. Use an integer from ${MIN_FRAME_COUNT} to ${EDITS_GIF_MAX_FRAME_COUNT}, or omit 'frame_count' to use ${GIF_DEFAULT_FRAME_COUNT}.`,
                 param: 'frame_count',
                 code: 'invalid_value',
             };
@@ -173,6 +176,63 @@ export async function resizeGifB64(b64: string, target: { w: number; h: number }
         return out.toString('base64');
     } catch (e) {
         console.warn('[image-adapter25] gif resize failed', e instanceof Error ? e.message : e);
+        return b64;
+    }
+}
+
+export interface GifRetime {
+    /** 目标帧数;null = 不抽帧。 */
+    frames: number | null;
+    /** 每帧毫秒;null = 官方默认 200。 */
+    durationMs: number | null;
+}
+
+/** 改图出 GIF:帧参数从发上游的字段里拿掉(上游带了出不了图),交给 retimeGifB64 本地处理。没传帧参数 → retime 为 null。 */
+export function takeEditsGifFrameParams(extras: Record<string, string>): {
+    upstreamExtras: Record<string, string>;
+    retime: GifRetime | null;
+} {
+    const fc = extras.frame_count;
+    const fd = extras.frame_duration_ms;
+    if (fc === undefined && fd === undefined) return { upstreamExtras: extras, retime: null };
+    const upstreamExtras = { ...extras };
+    for (const k of GIF_ONLY_EXTRAS) delete upstreamExtras[k];
+    return {
+        upstreamExtras,
+        retime: { frames: fc === undefined ? null : Number(fc), durationMs: fd === undefined ? null : Number(fd) },
+    };
+}
+
+/** 从 total 帧里均匀取 n 帧(按循环等分,不重复首尾):9 取 3 → 0、3、6。 */
+export function pickFrameIndices(total: number, n: number): number[] {
+    if (n >= total) return Array.from({ length: total }, (_, i) => i);
+    return Array.from({ length: n }, (_, i) => Math.floor((i * total) / n));
+}
+
+/** 动图按 retime 抽帧 + 改每帧时长。不是动图 / sharp 不可用 / 失败 → 原样返回(打 warn),永不抛。 */
+export async function retimeGifB64(b64: string, retime: GifRetime): Promise<string> {
+    const buf = Buffer.from(b64, 'base64');
+    if (!isGifBytes(buf)) return b64;
+    const sharp = await loadSharp();
+    if (!sharp) return b64;
+    try {
+        const meta = await sharp(buf, { animated: true }).metadata();
+        const pages = meta.pages ?? 1;
+        const w = meta.width ?? 0;
+        const ph = meta.pageHeight ?? meta.height ?? 0;
+        if (pages < 2 || !w || !ph) return b64;
+        const idx = pickFrameIndices(pages, retime.frames ?? pages);
+        const delay = retime.durationMs ?? GIF_DEFAULT_FRAME_DURATION_MS;
+        // 合成后的整帧(处理掉 disposal / 局部矩形),再按选中的帧重编码
+        const { data } = await sharp(buf, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        const frameBytes = w * ph * 4;
+        const frames = Buffer.concat(idx.map((i) => data.subarray(i * frameBytes, (i + 1) * frameBytes)));
+        const out = await sharp(frames, { raw: { width: w, height: ph * idx.length, channels: 4, pageHeight: ph } })
+            .gif({ delay: idx.map(() => delay), loop: meta.loop ?? 0 })
+            .toBuffer();
+        return out.toString('base64');
+    } catch (e) {
+        console.warn('[image-adapter25] gif retime failed', e instanceof Error ? e.message : e);
         return b64;
     }
 }
