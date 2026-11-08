@@ -120,11 +120,11 @@ describe('svg-author', () => {
         expect(svgPaintsCanvas(svg, 1024, 1024)).toBe(want);
     });
 
-    it('作者 usage 换成官方 svg_usage', () => {
+    it('作者 usage 换成官方 svg_usage;model 回显请求名,不暴露渠道映射后的上游名', () => {
         expect(
             toSvgUsage(
                 {
-                    model: 'gpt-5.5-2026-04-23',
+                    model: 'gpt-5.6-sol',
                     usage: {
                         prompt_tokens: 1550,
                         completion_tokens: 166,
@@ -136,7 +136,7 @@ describe('svg-author', () => {
             ),
         ).toEqual({
             input_tokens: 1550,
-            model: 'gpt-5.5-2026-04-23',
+            model: 'gpt-5.5',
             output_tokens: 166,
             reasoning_tokens: 0,
             total_tokens: 1716,

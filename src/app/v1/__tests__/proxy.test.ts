@@ -5825,7 +5825,7 @@ describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits
                 expect(j.usage.output_tokens).toBe(824);
                 expect(j.svg_usage).toEqual({
                     input_tokens: 1550,
-                    model: 'gpt-5.5-2026-04-23',
+                    model: 'gpt-5.5',
                     output_tokens: 166,
                     reasoning_tokens: 12,
                     total_tokens: 1716,

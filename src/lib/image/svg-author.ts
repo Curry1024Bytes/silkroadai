@@ -166,8 +166,12 @@ export function svgPaintsCanvas(svg: string, w: number, h: number): boolean {
     return fullLength(attrs.width, w) && fullLength(attrs.height, h) && atOrigin(attrs.x) && atOrigin(attrs.y);
 }
 
-/** 作者回复 usage → 官方 svg_usage 形。 */
-export function toSvgUsage(chat: Record<string, unknown>, fallbackModel: string): Record<string, unknown> {
+/**
+ * 作者回复 usage → 官方 svg_usage 形。
+ * model 回显客户请求的 svg.model,不用上游回包里的名字:渠道 model_mapping 会把请求名换成别的模型
+ * (如 gpt-5.5 → gpt-5.6-sol),回包名会把映射暴露给客户;计费日志同样记请求名。
+ */
+export function toSvgUsage(chat: Record<string, unknown>, requestedModel: string): Record<string, unknown> {
     const u = (chat.usage ?? {}) as Record<string, unknown>;
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
     const details = (u.completion_tokens_details ?? {}) as Record<string, unknown>;
@@ -175,7 +179,7 @@ export function toSvgUsage(chat: Record<string, unknown>, fallbackModel: string)
     const output = num(u.completion_tokens);
     return {
         input_tokens: input,
-        model: typeof chat.model === 'string' && chat.model ? chat.model : fallbackModel,
+        model: requestedModel,
         output_tokens: output,
         reasoning_tokens: num(details.reasoning_tokens),
         total_tokens: num(u.total_tokens) || input + output,
