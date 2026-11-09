@@ -56,7 +56,6 @@ const REQUIRES_GUARD = [
     // Structured catalog rules share the same server-side currency configuration.
     'catalog-sync-advanced.ts',
     // Independent MySQL Prisma reader; exposes only four persisted pricing options.
-    'persisted-pricing.ts',
     // 日志导出:pg 直连 new-api 日志库(NEWAPI_LOGS_DATABASE_URL)。
     'logs-db.ts',
     // dashboard 明细日志的 30s 进程内缓存:包着 server-only 的 client.queryLogs,

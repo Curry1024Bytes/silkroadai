@@ -167,7 +167,7 @@ W1 走 LiteLLM(15 模型),W2 D3 切 new-api,W3 补齐 Auth 与 OAuth,W4 充值�
 
 **定价页 `/admin/pricing`(同步写,首选)**:事务内加定价互斥锁 → 读 new-api 现值与页面打开时比对(乐观锁)→ 只写变化的 key → **回读逐项核对** → 写 `CatalogPrice` 快照 + `AdminAuditLog`。回读不一致就报错且不更新目录。
 
-**签名任务发布链路(V1–V7,基本不可用)**:持久化核验只接受 `mysql://`,而生产 new-api 已是 PostgreSQL 15,所以这条链路在生产大概率起不来。`durable journal` 的设计是:每次 PUT 前在**独立连接**的事务里写 `in_flight`,收到明确成功再写 `acknowledged`。**只要存在 `in_flight`,任务必须保留发布锁,不能自动补写或宣告成功** —— HTTP 超时后旧请求可能仍在 new-api 执行,迟到的整表 PUT 会覆盖下一次发布。解除要人工核验旧进程确实退出,工具 `scripts/resolve-pricing-write.ts` 只记录人工声明。
+**签名任务发布链路(V1–V7)**:**2026-11-08 已拆除**(见 `docs/2026-11-08-拆除签名发布链路.md`)。它的持久化核验只接受 `mysql://` 而生产 new-api 是 PostgreSQL,调度器也因 `NEWAPI_PRICING_DATABASE_URL` 未配置而从未启动,三张发布表在生产一直是空的。改价只有定价页这一条路。
 
 ### 四、`/v1/*` 代理
 

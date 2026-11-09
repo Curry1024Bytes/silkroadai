@@ -1,25 +1,13 @@
-import type { OfficialPriceQuoteSnapshot } from './global-model-pricing-types';
-
-/** Public pricing publication contracts. All monetary values use CNY numbers, never Decimal strings. */
-export interface PricingPublishAmounts {
-    input_cny_per_1m: number | null;
-    output_cny_per_1m: number | null;
-    per_image_cny: number | null;
-}
-
-export interface PricingPublishInput extends PricingPublishAmounts {
-    model_id: string;
-    tier: string;
-    cost_cny_per_1m: number | null;
-    /** Only the cost workflow may explicitly adjust an already configured resolution SKU. */
-    pricing_mode?: 'standard' | 'fixed_image';
-    /** Explicit cached-token target; only a verified tiered expression can publish this. */
-    cache_read_cny_per_1m?: number;
-    cache_write_cny_per_1m?: number;
-    cache_write_1h_cny_per_1m?: number;
-}
-
-/** Recurring customer-price multiplier copied from new-api billing settings. */
+/**
+ * Catalog price shapes shared by the pricing page, the catalog readers and the
+ * public pricing views. All monetary values are CNY numbers, never Decimal
+ * strings.
+ *
+ * This file used to carry the V1–V7 publication contracts too; those went with
+ * that chain on 2026-11-08 (docs/2026-11-08-拆除签名发布链路.md). Only the
+ * tiered-token shape and its scheduled discount are still in use, so the name
+ * is now historical.
+ */
 export interface ScheduledDiscountWindowDetails {
     start: string;
     end: string;
@@ -58,63 +46,4 @@ export interface TieredPricingDetails {
         };
     }>;
     scheduled_discount?: ScheduledDiscountDetails;
-}
-
-export interface PricingPublishPreviewRow {
-    model_id: string;
-    model_name: string;
-    tier: string;
-    group: string;
-    before: PricingPublishAmounts | null;
-    after: PricingPublishAmounts;
-    before_details?: TieredPricingDetails | null;
-    after_details?: TieredPricingDetails;
-    /** Structured billing metadata for ordinary publications, including media rules. */
-    after_billing_details?: unknown;
-}
-
-export interface PricingPublishPreview {
-    preview_token: string;
-    expires_at: string;
-    upstream_model: string;
-    basis: 'token' | 'request';
-    rows: PricingPublishPreviewRow[];
-    warnings: string[];
-    global_quote_snapshot?: OfficialPriceQuoteSnapshot;
-    batch?: { count: number; upstream_models: string[] };
-    publication_mode?: 'tiered_token' | 'uniform_token' | 'group';
-    unchanged?: boolean;
-    customer_request_overrides?: Array<{
-        model_id: string;
-        model_name: string;
-        group: string;
-        ratio: number;
-        public_ratio: number;
-        count: number;
-        before_per_image_cny: number;
-        after_per_image_cny: number;
-    }>;
-    customer_overrides?: Array<{
-        model_id?: string;
-        model_name?: string;
-        group: string;
-        ratio: number;
-        public_ratio: number;
-        count: number;
-        before: TieredPricingDetails;
-        after: TieredPricingDetails;
-    }>;
-}
-
-export type PricingPublishJobStatus = 'queued' | 'retry_wait' | 'conflict' | 'failed' | 'succeeded' | 'cancelled';
-
-export interface PricingPublishJob {
-    id: string;
-    status: PricingPublishJobStatus;
-    message: string;
-    attempts: number;
-    created_at: string;
-    updated_at: string;
-    next_attempt_at: string | null;
-    upstream_model: string;
 }

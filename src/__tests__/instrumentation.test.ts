@@ -25,9 +25,7 @@ const startBatchScheduler = vi.fn();
 const startEnterpriseReqlogCleanupScheduler = vi.fn();
 const startRequestLogCleanupScheduler = vi.fn();
 const startEnterpriseReconcileSweepScheduler = vi.fn();
-const startPricingPublishScheduler = vi.fn();
 const startSaleRuleScheduler = vi.fn();
-vi.mock('@/lib/scheduler/pricing-publish', () => ({ startPricingPublishScheduler }));
 vi.mock('@/lib/scheduler/sale-rules', () => ({ startSaleRuleScheduler }));
 vi.mock('@/lib/scheduler/enterprise-reconcile-sweep', () => ({ startEnterpriseReconcileSweepScheduler }));
 vi.mock('@/lib/order/timeout', () => ({ startTimeoutScheduler }));
@@ -44,7 +42,6 @@ const installDrainHook = vi.fn();
 vi.mock('@/lib/server/drain', () => ({ installDrainHook }));
 
 const ALL_SCHEDULERS = [
-    startPricingPublishScheduler,
     startSaleRuleScheduler,
     startEnterpriseReconcileSweepScheduler,
     startTimeoutScheduler,
@@ -94,7 +91,7 @@ describe('instrumentation register()', () => {
         expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
     });
 
-    it('nodejs runtime(主站,无门)→ 8 个调度器全部启动', async () => {
+    it('nodejs runtime(主站,无门)→ 全部调度器启动', async () => {
         process.env.NEXT_RUNTIME = 'nodejs';
         const { register } = await import('../instrumentation');
         await register();
