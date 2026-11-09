@@ -1,3 +1,4 @@
+import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish-lock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 import type { PricingGroupCatalog } from '@/lib/admin/pricing-group-types';
@@ -28,6 +29,9 @@ vi.mock('@/lib/admin/pricing-cost-publication-guard', async (original) => ({
 vi.mock('@/lib/admin/pricing-publish', () => ({
     previewPricingBatch: m.preview,
     enqueuePricingBatch: m.enqueue,
+}));
+vi.mock('@/lib/admin/pricing-publish-lock', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/admin/pricing-publish-lock')>()),
     pricingPublishErrorResponse: (error: { code?: string; message?: string; status?: number }) => ({
         status: error.status ?? 409,
         body: { error: error.code ?? 'pricing_error', message: error.message ?? 'error' },

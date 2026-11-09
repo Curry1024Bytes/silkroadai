@@ -51,3 +51,44 @@ export async function assertPricingCatalogWritable(
     }
     await assertNoRetirementJob(tx, options);
 }
+
+/**
+ * Map a pricing error to a response. Lives here rather than beside the
+ * publication chain because the live pricing routes need it and that chain is
+ * being removed (docs/2026-11-08-拆除签名发布链路.md).
+ */
+export function pricingPublishErrorResponse(error: unknown): {
+    body: { error: string; message: string };
+    status: number;
+} {
+    if (error instanceof PricingPublishError)
+        return { body: { error: error.code, message: error.message }, status: error.status };
+    if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code))) {
+        return {
+            body: { error: 'pricing_publish_busy', message: '价格发布或目录更新正在处理中，请稍后刷新任务状态。' },
+            status: 409,
+        };
+    }
+    if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        typeof error.code === 'string' &&
+        error.code.startsWith('persisted_pricing_')
+    ) {
+        return {
+            body: {
+                error: error.code,
+                message: '尚不能核对 new-api 已保存的价格。请让维护人员配置并检查价格只读核验连接；当前未发布修改。',
+            },
+            status: 503,
+        };
+    }
+    return {
+        body: {
+            error: 'pricing_publish_unavailable',
+            message: '价格核验暂不可用，请稍后重试；未确认生效前请查看发布任务状态。',
+        },
+        status: 503,
+    };
+}

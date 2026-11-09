@@ -1,3 +1,4 @@
+import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish-lock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 

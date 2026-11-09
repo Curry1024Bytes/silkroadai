@@ -1,3 +1,4 @@
+import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish-lock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -20,7 +21,8 @@ vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: m.auth }));
 vi.mock('@/lib/admin-auth', () => ({
     unauthorizedResponse: () => NextResponse.json({ error: 'unauthorized' }, { status: 401 }),
 }));
-vi.mock('@/lib/admin/pricing-publish', () => ({
+vi.mock('@/lib/admin/pricing-publish-lock', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/admin/pricing-publish-lock')>()),
     pricingPublishErrorResponse: (error: { code?: string; message?: string; status?: number }) => ({
         status: error.status ?? 500,
         body: { error: error.code ?? 'pricing_error', message: error.message ?? 'error' },

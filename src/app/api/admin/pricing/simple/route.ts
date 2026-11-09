@@ -1,9 +1,9 @@
+import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { extractClientIP } from '@/lib/auth/extract-ip';
-import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish';
 import { basePriceSchema, SimplePricingError } from '@/lib/admin/pricing-simple-core';
 import { VIDEO_TOKEN_INPUTS, VIDEO_TOKEN_RESOLUTIONS } from '@/lib/admin/pricing-video-token-expression';
 import {

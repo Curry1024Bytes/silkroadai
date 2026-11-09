@@ -1,8 +1,9 @@
+import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
-import { changePricingJob, pricingPublishErrorResponse } from '@/lib/admin/pricing-publish';
+import { changePricingJob } from '@/lib/admin/pricing-publish';
 
 export const runtime = 'nodejs';
 
