@@ -16,10 +16,12 @@ function PricingWorkspace({
     isDark,
     locale,
     initialSection,
+    showLegacy,
 }: {
     isDark: boolean;
     locale: Locale;
     initialSection: PricingSection;
+    showLegacy: boolean;
 }) {
     const en = locale === 'en';
     const [section, setSection] = useState<PricingSection>(initialSection);
@@ -136,13 +138,26 @@ function PricingWorkspace({
 
     return (
         <div>
+            <p className={`mb-4 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                {en
+                    ? 'Customer price = model price × tier ratio. Change one model in Current pricing → Model base prices; change a whole tier in Tiers & margin. A single model priced differently inside one tier needs its own billing group.'
+                    : '客户实付 = 模型价格 × 档次倍率。改单个模型:「现有定价」→「模型基础价」;改整档:同页「档次与利润」。某模型要在某档单独定价,只能给它拆独立计费分组。'}
+            </p>
             <div role="tablist" aria-label={en ? 'Pricing tools' : '定价工具'} className="mb-5 flex flex-wrap gap-2">
                 {(
                     [
-                        ['cost', en ? 'Cost-based pricing' : '按成本加价'],
                         ['simple', en ? 'Current pricing' : '现有定价'],
                         ['rules', en ? 'Sale rules' : '售卖规则'],
-                        ['jobs', en ? 'Publication tasks' : '发布任务'],
+                        // 「按成本加价」与「发布任务」走 V1–V7 签名发布链路,其持久化核验只接受
+                        // mysql://,而生产 new-api 是 PostgreSQL,该链路起不来(调度器也因
+                        // NEWAPI_PRICING_DATABASE_URL 未配置而从未启动)。保留标签只会让人
+                        // 以为能用,所以默认藏起来;加 ?show_legacy=1 仍可打开查看。
+                        ...(showLegacy
+                            ? ([
+                                  ['cost', en ? 'Cost-based pricing (legacy)' : '按成本加价(已停用)'],
+                                  ['jobs', en ? 'Publication tasks (legacy)' : '发布任务(已停用)'],
+                              ] as const)
+                            : []),
                     ] as const
                 ).map(([key, label]) => (
                     <button
@@ -245,7 +260,21 @@ function PricingContent() {
     const locale = resolveLocale(searchParams.get('lang'));
     const en = locale === 'en';
     const view = searchParams.get('view');
-    const initialSection: PricingSection = view === 'simple' ? 'simple' : view === 'rules' ? 'rules' : 'cost';
+    // The legacy tabs stay reachable by link for anyone who needs to look at a
+    // historical publication job, but they are no longer offered by default.
+    const showLegacy = searchParams.get('show_legacy') === '1';
+    const requested: PricingSection =
+        view === 'simple'
+            ? 'simple'
+            : view === 'rules'
+              ? 'rules'
+              : view === 'jobs'
+                ? 'jobs'
+                : view === 'cost'
+                  ? 'cost'
+                  : 'simple';
+    const initialSection: PricingSection =
+        !showLegacy && (requested === 'cost' || requested === 'jobs') ? 'simple' : requested;
 
     return (
         <PayPageLayout
@@ -260,7 +289,7 @@ function PricingContent() {
             }
             locale={locale}
         >
-            <PricingWorkspace isDark={isDark} locale={locale} initialSection={initialSection} />
+            <PricingWorkspace isDark={isDark} locale={locale} initialSection={initialSection} showLegacy={showLegacy} />
         </PayPageLayout>
     );
 }
