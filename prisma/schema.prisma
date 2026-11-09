@@ -988,31 +988,10 @@ model PricingCostRuleRevision {
   @@map("pricing_cost_rule_revisions")
 }
 
-// An acknowledged publication is durable before any remote price write. CatalogPrice
-// only receives verified versions; snapshots contain pricing metadata, never credentials.
-model PricingPublishJob {
-  id              String    @id @default(uuid()) @db.Uuid
-  tenant_id       String?   @db.Uuid
-  requested_by    String?   @db.Uuid
-  model_id        String    @db.Uuid
-  upstream_model  String
-  preview_hash    String    @unique
-  status          String    @default("queued")
-  plan            Json
-  attempts        Int       @default(0)
-  message         String
-  next_attempt_at DateTime?
-  applied_at      DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
-
-  @@index([status, next_attempt_at])
-  @@index([tenant_id, created_at])
-  @@map("pricing_publish_jobs")
-}
-
-// One coordinator for the whole new-api instance: even different model writes
-// replace a shared option dictionary. Updating this row takes a transaction lock.
+// Retained after the V1–V7 publication chain was removed (2026-11-08): the live
+// pricing path takes a transaction lock on this row as its mutex, and the model
+// catalog uses `revision` as its cache key. The job and write tables that stood
+// beside it are gone; `active_job_id` is now always null.
 model PricingPublishCoordinator {
   id            String  @id
   revision      Int     @default(0)
@@ -1024,21 +1003,6 @@ model PricingPublishCoordinator {
 // A PUT's intent is committed independently of the publisher transaction. No
 // relation/FK to the job: its row must not contend with the outer transaction.
 // Unacknowledged writes remain uncertain even when both price reads match.
-model PricingPublishWrite {
-  id              String    @id @default(uuid()) @db.Uuid
-  job_id          String    @db.Uuid
-  key             String
-  request_hash    String
-  status          String    @default("in_flight")
-  created_at      DateTime  @default(now())
-  acknowledged_at DateTime?
-  resolved_at     DateTime?
-  resolved_by     String?
-  resolution_note String?
-
-  @@index([job_id, status, created_at])
-  @@map("pricing_publish_writes")
-}
 
 // Durable, explicitly confirmed group retirement. Remote revocation is not
 // reversible; all nonterminal jobs keep the tier frozen until completion.
