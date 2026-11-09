@@ -334,7 +334,6 @@ function VendorPriceSection({ block, m, locale }: { block: VendorBlock; m: Prici
                                                 )}
                                             >
                                                 <div className="font-medium text-navy">{mb.displayName}</div>
-                                                <code className="text-xs text-minor-ink">{mb.slug}</code>
                                             </td>
                                         )}
                                         <td className="py-2.5 pr-4 text-muted-ink">

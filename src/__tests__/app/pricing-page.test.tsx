@@ -205,7 +205,9 @@ describe('<PricingPage /> SSR', () => {
         expect(html).toContain('Claude官方稳定');
         // 生图按张:¥0.1
         expect(html).toContain('¥0.1');
-        expect(html).toContain('gemini-3.1-flash-image-preview');
+        // 模型名用 CatalogModel.display_name;slug 不再渲染(2026-11-09:对客只显示展示名)
+        expect(html).toContain('Gemini 3.1 Flash Image Preview');
+        expect(html).not.toContain('gemini-3.1-flash-image-preview');
     });
 
     it('skips HIDDEN_MODELS, disabled tiers, and models with no displayable price', async () => {
@@ -221,11 +223,12 @@ describe('<PricingPage /> SSR', () => {
         ]);
         const html = renderToString(await PricingPage());
 
-        expect(html).toContain('gpt-5.5');
-        expect(html).not.toContain('codex-spark');
+        // 断言用展示名:slug 不再渲染,所以排除项也按展示名核
+        expect(html).toContain('Gpt 5.5');
+        expect(html).not.toContain('Codex Spark');
         expect(html).not.toContain('1.04');
-        expect(html).not.toContain('gpt-image-2-4k');
-        expect(html).not.toContain('gpt-5.2');
+        expect(html).not.toContain('Gpt Image 2 4k');
+        expect(html).not.toContain('Gpt 5.2');
         // 已标价模型计数只数上表的(JSX 文本节点间有 <!-- --> 注释,用正则)
         expect(html).toMatch(/共 (<!-- -->)?1(<!-- -->)? 个已标价模型/);
     });
