@@ -13,7 +13,7 @@
 - **角色**: new-api 客户层(Customer Portal)— W2 D3 已切到 B3 路线
 - **来源**: Fork 自 [touwaeriol/sub2apipay](https://github.com/touwaeriol/sub2apipay)(已归档)
 - **站点域名**: `llmroute.club`
-- **客户 API**: `api.llmroute.club`(公网路由待完成)
+- **客户 API**: `api.llmroute.club`(已上线,只开放 `/v1/*`、`/v1beta/*` 与方舟视频路径)
 - **资源域名**: `images.llmroute.club`(平台 R2 待完成)
 
 > 2026-07-24 品牌由 Silk Road AI 迁移为 LLmRoute。历史进度中的旧域名保留作审计记录;
@@ -55,7 +55,7 @@
 
 ---
 
-## 当前生产环境与发布规则(2026-08-03)— 必读
+## 当前生产环境与发布规则(2026-11-09 核对)— 必读
 
 当前生产操作以 [`deploy/部署与运维手册.md`](deploy/部署与运维手册.md)为唯一权威手册。
 `docs/W5-DEPLOY-RUNBOOK.md` 是旧 `23.27.113.88` / `portal.silkroadai.io` / Caddy 环境的历史归档,
@@ -65,13 +65,15 @@
 - `dev`:开发集成、合并 `main`、解决冲突、类型检查和完整测试。
 - `prod`:唯一生产发布分支,只接收测试通过的 `dev` fast-forward;VPS 只部署 `prod`。
 - 上游同步必须先输出北京时间/SHA/行为/migration/env/基础设施/冲突报告,再执行 `main -> dev`。
-- 当前 VPS:`82.29.71.122`,AlmaLinux 9.7,SSH 22,项目 `/opt/silkroadai-portal`。
+- 当前 VPS:`103.240.199.146`(SSH 别名 `llmroute-prod`),CentOS Stream 9,SSH 22,项目 `/opt/silkroadai-portal`。
+  `82.29.71.122`(AlmaLinux)是上一台服务器,不要再连。
 - 当前入口:Cloudflare Full (strict) → 宿主机 Nginx → Portal `127.0.0.1:3002`。
-- new-api:`172.17.0.1:3000`,网络 `new-api_new-api-net`,MySQL 8;Portal 走
-  `http://host.docker.internal:3000`。
-- 已验收:apex/`www`、Google OAuth、GitHub OAuth、zpayz 支付宝充值和余额入账。
-- 未完成:SMTP、平台 R2/OSS、Sentry、Tavily、`api.llmroute.club` 公网路由、SSH key-only、异机备份演练。
-- 当前 new-api 是 MySQL;`NEWAPI_LOGS_DATABASE_URL` 的 PostgreSQL 直连模式不可用,保持 unset 并走 10,000 行 fallback。
+- new-api:`172.17.0.1:3000`,网络 `new-api_new-api-net`,数据库是 PostgreSQL 15(容器 `postgres`,库 `new-api`);
+  Portal 走 `http://host.docker.internal:3000`。
+- 已验收:apex/`www`、`api.llmroute.club`(只开 `/v1/*`、`/v1beta/*` 和方舟视频两条路径,见手册 6.3)、
+  Google OAuth、GitHub OAuth、zpayz 支付宝充值和余额入账。
+- 未完成:SMTP、平台 R2/OSS、Sentry、Tavily、SSH key-only、异机备份与恢复演练。
+- `NEWAPI_LOGS_DATABASE_URL` 保持 unset,用量日志走 10,000 行 fallback。
 - compose 含 API 副本和 Seedance 服务,当前服务器部署必须显式指定 `portal`,禁止裸 `docker compose up`。
 - 2026-08-03 待发布:客服微信 `LLmRoute` 的 forward migration/重建,以及 `main@da510e7` 的 10 个上游提交。
 - rc.22 开户兼容:优先使用登录响应 `data.access_token`,仅旧版 `session=` cookie fallback;
@@ -202,8 +204,7 @@ SSE 两件套在 `src/lib/sse/stream-guard.ts`:上游静默 >15s 注 `: keep-ali
 
 | 问题                                | 位置                                   | 影响                                                                                         |
 | ----------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| 签名发布链路要 MySQL                | `src/lib/newapi/persisted-pricing.ts`  | V1–V7 在 PostgreSQL 生产上大概率不可用,改价只能走定价页                                      |
-| 基础价调整不列受影响客户            | `saveModel`、V1–V5                     | 纳管分组里有折扣的客户会同比例变价,预览不提示,违反规格第 6 节                                |
+| 基础价调整不列受影响客户            | `saveModel`                            | 纳管分组里有折扣的客户会同比例变价,预览不提示,违反规格第 6 节                                |
 | 不支持取消纳管                      | `pricing-rules/`                       | 分组一旦纳管只能前进                                                                         |
 | 同 new-api 分组被多档共用时拒绝纳管 | 同上                                   | 含跨租户共用                                                                                 |
 | `catalog-discounts.ts` 无调用方     | `src/lib/billing/catalog-discounts.ts` | 通用目录折扣逻辑只有测试在用,未接任何扣款入口                                                |
@@ -498,8 +499,8 @@ pnpm prisma migrate reset                       # ⚠️ 危险:清库重建
 pnpm vitest                                     # watch 模式
 pnpm vitest run                                 # 单次
 pnpm vitest run src/lib/newapi                  # 跑某目录(B3 之后)
-# 真实 new-api 烟雾测试需要 SSH 隧道:
-ssh -4 -fN -L 3000:127.0.0.1:3000 -o ServerAliveInterval=60 root@82.29.71.122
+# 真实 new-api 烟雾测试需要 SSH 隧道(~/.ssh/config 的 llmroute-prod 已配好 3000/5432 转发与 ControlMaster):
+ssh -fN llmroute-prod
 
 # 渠道 model_mapping 重建(防 gotcha #15 回归)
 pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id>           # dry-run 看 diff
@@ -516,19 +517,13 @@ EMAIL_DEBUG_LOG=/tmp/mail-debug.log pnpm dev
 pnpm tsc --noEmit
 pnpm lint
 
-# 部署到当前 VPS(上线后)
-# ⚠️ CI 实际**不**自动部署 — `.github/workflows/ci.yml` 只跑 typecheck/lint/test;
-#    `release.yml` 仅在 `v*` tag 触发 Docker 镜像 push 到 dockerhub。
-#    prod 更新后必须手动 deploy(W7 D4 PR-R 实测确认 — 2026-05-09):
-ssh -4 root@82.29.71.122
-# 登录后按 deploy/部署与运维手册.md 执行备份,再显式 build/up portal:
-cd /opt/silkroadai-portal
-git switch prod && git pull --ff-only origin prod
-docker compose -f docker-compose.prod.yml build --build-arg APP_URL=https://llmroute.club portal
-docker compose -f docker-compose.prod.yml up -d portal
-# 注:实际 VPS 路径是 /opt/silkroadai-portal(不是 silkroad-portal),
-#     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。线上不从 main 发布。
-#     禁止省略 portal 服务名,否则会误启动 compose 中的 API 副本/Seedance 服务。
+# 部署到当前 VPS
+# ⚠️ CI 不自动部署。发布按本文「五、发布流程」和 deploy/部署与运维手册.md 最近一次发布记录走:
+#    钉 VERIFIED_SOURCE_SHA → GitHub 原生 amd64 构建 → 先打回滚标签 → 备份 → 服务器用签名链接取产物并核对
+#    → 有 migration 时在备份副本上试跑 → nohup setsid 跑切换脚本(只重启 portal)→ 验收。
+#    **禁止在 4GB 生产机上 docker compose build**;也禁止裸 `docker compose up`(会误启 API 副本/Seedance)。
+#    上一次发布的脚本在服务器 /opt/llmroute-releases/<sha8>/(backup.sh、fetch.sh、migtrial.sh、switch.sh)。
+ssh llmroute-prod
 ```
 
 上线前配置检查提醒:
@@ -554,7 +549,7 @@ docker compose -f docker-compose.prod.yml up -d portal
 DATABASE_URL="postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev"
 
 # new-api 后端(B3 主链路)— 本地通过 SSH 隧道:
-#   ssh -4 -fN -L 3000:127.0.0.1:3000 -o ServerAliveInterval=60 root@82.29.71.122
+#   ssh -fN llmroute-prod
 NEWAPI_BASE_URL="http://localhost:3000"
 NEWAPI_ADMIN_TOKEN="<在当前 new-api 后台个人设置生成,密码管理器存档>"
 NEWAPI_ADMIN_USER_ID=1                            # root 通常是 1
@@ -580,8 +575,8 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 ## 项目外部依赖说明
 
-- **new-api**: 当前部署在 `82.29.71.122`,容器端口发布到宿主机 `172.17.0.1:3000`,Portal 通过
-  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 路由尚未完成
+- **new-api**: 当前部署在 `103.240.199.146`,容器端口发布到宿主机 `172.17.0.1:3000`,Portal 通过
+  `host.docker.internal:3000` 访问;客户经 `api.llmroute.club` 进入 Portal 的 `/v1/*` 代理,不直连 new-api
 - ~~**LiteLLM**~~ — Stopped at W3 D1 (2026-05-02), container deprecated, config archived
 - **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
 - **易支付**: zpayz (`https://zpayz.cn`),支付宝充值/callback 已在当前生产验证;PID/KEY 只放生产 `.env`
