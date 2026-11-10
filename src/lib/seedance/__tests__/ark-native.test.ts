@@ -28,7 +28,13 @@ vi.mock('@/lib/reqlog/capture', () => ({
     captureJsonResponse: (...a: unknown[]) => mockCaptureJsonResponse(...a),
 }));
 
-import { handleArkNativeVideo, hasCallbackUrl, matchArkNativeVideoPath, rewriteUpstreamModel } from '../ark-native';
+import {
+    handleArkNativeVideo,
+    hasCallbackUrl,
+    maskSupplierAccountError,
+    matchArkNativeVideoPath,
+    rewriteUpstreamModel,
+} from '../ark-native';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -321,5 +327,81 @@ describe('handleArkNativeVideo', () => {
             expect(res.status).toBe(404);
             expect(mockFetch).toHaveBeenCalledTimes(1);
         });
+    });
+});
+
+/** new-api 转来的上游报错:外层 message 是整段上游 JSON(2026-11-10 生产原文)。 */
+function relayed(code: string, inner: string, outerCode = 'invalid_request'): string {
+    return JSON.stringify({
+        error: {
+            code: outerCode,
+            message: JSON.stringify({ error: { code, message: inner, type: 'api_error' } }),
+        },
+    });
+}
+const PREFREEZE = '账户余额不足，视频生成按秒预扣冻结：1.2元/秒 × 5秒 = 6元';
+const LOW_BALANCE = '当前余额较低，任务过多，请充值';
+
+describe('maskSupplierAccountError', () => {
+    it('402 预扣冻结 → 503 中性提示,不带金额和「充值」', () => {
+        const out = maskSupplierAccountError(402, relayed('402', PREFREEZE));
+        expect(out?.status).toBe(503);
+        const text = JSON.stringify(out?.body);
+        expect(text).not.toMatch(/余额|充值|元|1\.2/);
+        expect(out?.body.error.code).toBe('service_unavailable');
+    });
+
+    it('上游 429 → 仍是 429,只换成中性文案', () => {
+        const out = maskSupplierAccountError(429, relayed('429', LOW_BALANCE, 'rate_limit_exceeded'));
+        expect(out?.status).toBe(429);
+        expect(out?.body.error.code).toBe('rate_limit_exceeded');
+        expect(JSON.stringify(out?.body)).not.toMatch(/余额|充值/);
+    });
+
+    it('上游 401/403(供应商 Key 失效)→ 503,不让客户以为是自己的 Key', () => {
+        for (const status of [401, 403])
+            expect(maskSupplierAccountError(status, relayed(String(status), 'invalid api key'))?.status).toBe(503);
+    });
+
+    it('其他状态码只在提到余额、充值时改写', () => {
+        expect(maskSupplierAccountError(400, relayed('400', '余额不足'))?.status).toBe(503);
+        expect(maskSupplierAccountError(500, relayed('500', 'insufficient balance'))?.status).toBe(503);
+        expect(maskSupplierAccountError(400, relayed('400', 'resolution 480p is not supported'))).toBeNull();
+        expect(maskSupplierAccountError(400, relayed('400', 'content violates the safety policy'))).toBeNull();
+    });
+
+    it('new-api 自己的报错(普通文本 message)原样透传,包括客户余额不足', () => {
+        for (const [status, body] of [
+            [403, '{"error":{"code":"insufficient_user_quota","message":"用户额度不足","type":"new_api_error"}}'],
+            [401, '{"error":{"code":"invalid_api_key","message":"bad key"}}'],
+            [503, '{"error":{"code":"model_not_found","message":"no available channel"}}'],
+            [429, '{"error":{"code":"rate_limit","message":"too many requests"}}'],
+        ] as const)
+            expect(maskSupplierAccountError(status, body)).toBeNull();
+    });
+
+    it('成功响应、非 JSON、缺字段都不改', () => {
+        expect(maskSupplierAccountError(200, relayed('402', PREFREEZE))).toBeNull();
+        expect(maskSupplierAccountError(402, 'payment required')).toBeNull();
+        expect(maskSupplierAccountError(402, '{"error":"x"}')).toBeNull();
+        expect(maskSupplierAccountError(402, '{"error":{"message":"not json"}}')).toBeNull();
+    });
+
+    it('接入提交:客户拿到中性报错,原文只进服务端日志', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockFetch.mockResolvedValueOnce(
+            new Response(relayed('402', PREFREEZE), { status: 402, headers: { 'content-type': 'application/json' } }),
+        );
+        const res = await handleArkNativeVideo(makeReq('POST', '/contents/generations/tasks', SUBMIT_BODY), {
+            kind: 'submit',
+        });
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(text).not.toMatch(/余额|充值|预扣/);
+        expect(warn).toHaveBeenCalledWith(
+            '[ark-native] supplier account error masked',
+            expect.objectContaining({ status: 402, body: expect.stringContaining('预扣冻结') }),
+        );
+        warn.mockRestore();
     });
 });

@@ -7,13 +7,15 @@
  * 整个火山方舟请求体原样交给上游,客户按火山官方格式(甚至官方 SDK)调用即可。
  *
  * 本模块基本只做转发:请求体和 Authorization 原样带过去,鉴权、限流、选渠道、按真实 usage 计费全在
- * new-api。只在三处介入:
+ * new-api。只在四处介入:
  *  - 提交带 `callback_url` → 400。插件会把它原样交给上游,上游回调会带上游任务号和上游模型名
  *    (泄露中间层身份,#271 同一条规则),而我们没有自己的回调投递。
  *  - 查询响应里的 `model`:new-api 返回的是上游原始返回体,只替换了任务号,`model` 会是上游模型名
  *    (artsdance-*,厂商标识,不对客)。按 UPSTREAM_TO_CLIENT_MODEL 改回对客名。
  *  - 查询响应缺 `status` 时补上。插件只在轮询拿到上游返回体后才更新任务数据:首次轮询前只有
  *    `{id}`;轮询阶段判失败(上游 404、超时)时数据也不更新。不补的话客户永远等不到终态。
+ *  - 供应商账户类报错(余额不足、预扣冻结、上游限流)改成中性提示,见 `maskSupplierAccountError`。
+ *    原文是「账户余额不足」「请充值」,客户会以为是自己没钱,而且带出供应商的按秒价格。
  *
  * 与火山官方的差异(见《视频模型兼容1.0》):
  *  - 任务号是 new-api 的 `task_` 加 32 位字符,不是火山的 `cgt-` 形。官方 SDK 不校验格式。
@@ -150,6 +152,53 @@ export async function fillMissingStatus(text: string, req: NextRequest, taskId: 
     return JSON.stringify(filled);
 }
 
+/** 供应商自己账户的问题(余额、欠费、预扣冻结、上游 Key 失效)。与客户账户无关,客户也处理不了。 */
+const SUPPLIER_ACCOUNT_STATUSES = new Set([401, 402, 403]);
+const SUPPLIER_ACCOUNT_WORDS = /余额|充值|欠费|预扣|冻结|balance|recharge|top[ -]?up|arrear|insufficient/i;
+
+/**
+ * 上游(供应商)报错经 new-api 转来时,外层 `error.message` 是一整段 JSON 字符串;new-api 自己的报错
+ * (客户 Key 无效、客户余额不足 `insufficient_user_quota`、无可用渠道)是普通文本,不在此列。
+ * 只改写供应商账户类报错:它们会让客户以为是自己没钱,还带出供应商的按秒价格。参数错误、
+ * 内容审核等客户需要看到的上游报错原样透传。返回 null 表示原样返回。
+ */
+export function maskSupplierAccountError(
+    status: number,
+    text: string,
+): { status: number; body: { error: { code: string; message: string; type: string } } } | null {
+    if (status < 400) return null;
+    const outer = parseRecord(text)?.error;
+    if (!outer || typeof outer !== 'object' || Array.isArray(outer)) return null;
+    const message = (outer as Record<string, unknown>).message;
+    if (typeof message !== 'string') return null;
+    const inner = parseRecord(message)?.error;
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return null;
+    const innerMessage = (inner as Record<string, unknown>).message;
+    const words = typeof innerMessage === 'string' && SUPPLIER_ACCOUNT_WORDS.test(innerMessage);
+    if (status === 429)
+        return {
+            status: 429,
+            body: {
+                error: {
+                    code: 'rate_limit_exceeded',
+                    message: 'video generation is busy, please retry later',
+                    type: 'api_error',
+                },
+            },
+        };
+    if (!SUPPLIER_ACCOUNT_STATUSES.has(status) && !words) return null;
+    return {
+        status: 503,
+        body: {
+            error: {
+                code: 'service_unavailable',
+                message: 'video generation is temporarily unavailable, please retry later',
+                type: 'api_error',
+            },
+        },
+    };
+}
+
 export async function handleArkNativeVideo(req: NextRequest, route: ArkNativeVideoRoute): Promise<NextResponse> {
     const clientPath = route.kind === 'submit' ? TASKS_PATH : `${TASKS_PATH}/${route.taskId}`;
     const upstreamUrl =
@@ -200,6 +249,17 @@ export async function handleArkNativeVideo(req: NextRequest, route: ArkNativeVid
     upstream.headers.forEach((value, key) => {
         if (!STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     });
+    const masked = maskSupplierAccountError(upstream.status, text);
+    if (masked) {
+        // 原文只进服务端日志,方便 operator 知道该给供应商充值了。
+        console.warn('[ark-native] supplier account error masked', {
+            route: route.kind,
+            status: upstream.status,
+            body: text.slice(0, 500),
+        });
+        if (cap) captureJsonResponse(cap, masked.status, masked.body);
+        return NextResponse.json(masked.body, { status: masked.status });
+    }
     if (route.kind === 'query' && upstream.ok) text = await fillMissingStatus(text, req, route.taskId);
     // 204/205/304 不允许带响应体,构造 Response 会抛错。
     const finalBody = NULL_BODY_STATUSES.has(upstream.status) ? null : (rewriteUpstreamModel(text) ?? text);
