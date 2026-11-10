@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const mockResolveAdmin = vi.fn();
 const mockUserFindFirst = vi.fn();
 const mockGroupFindMany = vi.fn();
+const mockGroupFindFirst = vi.fn();
 const mockNewApiTokenCount = vi.fn();
 const mockGetGroupRatios = vi.fn();
 const mockList = vi.fn();
@@ -17,7 +18,10 @@ vi.mock('@/lib/admin-auth', () => ({
 vi.mock('@/lib/db', () => ({
     prisma: {
         user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
-        channelGroup: { findMany: (...args: unknown[]) => mockGroupFindMany(...args) },
+        channelGroup: {
+            findMany: (...args: unknown[]) => mockGroupFindMany(...args),
+            findFirst: (...args: unknown[]) => mockGroupFindFirst(...args),
+        },
         newApiToken: { count: (...args: unknown[]) => mockNewApiTokenCount(...args) },
         pricingBillingGroup: { findMany: async () => [{ newapi_group: 'managed-group' }] },
     },
@@ -56,8 +60,14 @@ beforeEach(() => {
     mockResolveAdmin.mockResolvedValue(ADMIN);
     mockUserFindFirst.mockResolvedValue({ id: 'u-1', tenant_id: 'tenant-1', newapi_user_id: 12 });
     mockGroupFindMany.mockResolvedValue([
-        { key: 'gpt-pro20x', display_name: 'GPT-Pro20x（企业级）', newapi_group: 'GPT-Pro20x(企业级)' },
+        {
+            key: 'gpt-pro20x',
+            display_name: 'GPT-Pro20x（企业级）',
+            newapi_group: 'GPT-Pro20x(企业级)',
+            purchase_rate: '0.13',
+        },
     ]);
+    mockGroupFindFirst.mockResolvedValue({ display_name: 'GPT-Pro20x（企业级）', purchase_rate: '0.13' });
     mockGetGroupRatios.mockResolvedValue({ 'GPT-Pro20x(企业级)': 0.2 });
     mockNewApiTokenCount.mockResolvedValue(2);
     mockList.mockResolvedValue([
@@ -122,6 +132,7 @@ describe('admin customer rate overrides', () => {
                 key: 'gpt-pro20x',
                 display_name: 'GPT-Pro20x（企业级）',
                 public_multiplier: 0.2,
+                purchase_rate: 0.13,
                 sale_rules_managed: false,
                 effective_multiplier: 0.18,
             },
@@ -139,6 +150,7 @@ describe('admin customer rate overrides', () => {
                 key: 'gpt-pro20x',
                 display_name: 'GPT-Pro20x（企业级）',
                 public_multiplier: 0.2,
+                purchase_rate: 0.13,
                 sale_rules_managed: false,
                 effective_multiplier: 0.2,
             },
@@ -182,5 +194,52 @@ describe('admin customer rate overrides', () => {
             user: { id: 'u-1', tenant_id: 'tenant-1', newapi_user_id: 12 },
             overrideId: 'override-1',
         });
+    });
+
+    it('refuses a rate below the buy rate until the operator confirms it, without touching new-api', async () => {
+        const refused = await PUT(req('PUT', { tier_key: 'gpt-pro20x', multiplier: 0.12 }), { params: params() });
+        expect(refused.status).toBe(409);
+        const body = await refused.json();
+        expect(body).toMatchObject({ code: 'below_cost', purchase_rate: 0.13, multiplier: 0.12 });
+        expect(body.error).toContain('进货率 0.13');
+        expect(mockSave).not.toHaveBeenCalled();
+        // The lookup stays inside the customer's tenant and enabled tiers.
+        expect(mockGroupFindFirst).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { tenant_id: 'tenant-1', key: 'gpt-pro20x', enabled: true } }),
+        );
+
+        const confirmed = await PUT(
+            req('PUT', { tier_key: 'gpt-pro20x', multiplier: 0.12, confirm_below_cost: true }),
+            {
+                params: params(),
+            },
+        );
+        expect(confirmed.status).toBe(200);
+        expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ tierKey: 'gpt-pro20x', multiplier: 0.12 }));
+    });
+
+    it('saves at or above the buy rate, and when no buy rate is recorded, without confirmation', async () => {
+        expect((await PUT(req('PUT', { tier_key: 'gpt-pro20x', multiplier: 0.13 }), { params: params() })).status).toBe(
+            200,
+        );
+        mockGroupFindFirst.mockResolvedValue({ display_name: 'SD官转', purchase_rate: null });
+        expect((await PUT(req('PUT', { tier_key: 'gpt-pro20x', multiplier: 0.9 }), { params: params() })).status).toBe(
+            200,
+        );
+        // An unknown tier is left to the sync service, which reports it.
+        mockGroupFindFirst.mockResolvedValue(null);
+        mockSave.mockRejectedValueOnce(new UserTierMultiplierError('Selected Portal tier is unavailable', 400));
+        expect((await PUT(req('PUT', { tier_key: 'gone', multiplier: 0.01 }), { params: params() })).status).toBe(400);
+    });
+
+    it('rejects a non-boolean confirmation flag', async () => {
+        const response = await PUT(
+            req('PUT', { tier_key: 'gpt-pro20x', multiplier: 0.12, confirm_below_cost: 'yes' }),
+            {
+                params: params(),
+            },
+        );
+        expect(response.status).toBe(400);
+        expect(mockSave).not.toHaveBeenCalled();
     });
 });

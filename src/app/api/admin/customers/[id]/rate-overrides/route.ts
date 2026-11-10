@@ -16,6 +16,8 @@ export const runtime = 'nodejs';
 const RateOverrideSchema = z.object({
     tier_key: z.string().trim().min(1).max(100),
     multiplier: z.coerce.number().finite().positive().max(100),
+    /** Set only after the operator has seen that this rate sells the tier below its recorded buy rate. */
+    confirm_below_cost: z.boolean().optional(),
 });
 
 async function scopedCustomer(request: NextRequest, id: string) {
@@ -39,7 +41,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         prisma.channelGroup.findMany({
             where: { tenant_id: customer.tenant_id ?? PLATFORM_TENANT_ID, enabled: true },
             orderBy: { tier_level: 'asc' },
-            select: { key: true, display_name: true, newapi_group: true },
+            select: { key: true, display_name: true, newapi_group: true, purchase_rate: true },
         }),
         getGroupRatios(),
         prisma.newApiToken.count({ where: { user_id: customer.id, status: 'active' } }),
@@ -65,6 +67,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             key: tier.key,
             display_name: tier.display_name,
             public_multiplier: ratios[tier.newapi_group] ?? null,
+            purchase_rate: tier.purchase_rate === null ? null : Number(tier.purchase_rate),
             sale_rules_managed: managedGroups.has(tier.newapi_group),
             effective_multiplier: overrideByTier.has(tier.key)
                 ? Number(overrideByTier.get(tier.key)!.multiplier)
@@ -91,6 +94,25 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         return NextResponse.json(
             { error: '档次和倍率格式无效', issues: parsed.error.flatten().fieldErrors },
             { status: 400 },
+        );
+    }
+
+    // A dedicated rate replaces the tier's sell rate outright. Below the recorded buy rate every request
+    // loses money, so the operator must confirm it explicitly; nothing reaches new-api until then.
+    const tier = await prisma.channelGroup.findFirst({
+        where: { tenant_id: customer.tenant_id ?? PLATFORM_TENANT_ID, key: parsed.data.tier_key, enabled: true },
+        select: { display_name: true, purchase_rate: true },
+    });
+    const purchaseRate = tier?.purchase_rate == null ? null : Number(tier.purchase_rate);
+    if (purchaseRate !== null && parsed.data.multiplier < purchaseRate && parsed.data.confirm_below_cost !== true) {
+        return NextResponse.json(
+            {
+                error: `倍率 ${parsed.data.multiplier} 低于「${tier!.display_name}」的进货率 ${purchaseRate}，按此价格每次调用都会亏损，需要确认后才能保存。`,
+                code: 'below_cost',
+                purchase_rate: purchaseRate,
+                multiplier: parsed.data.multiplier,
+            },
+            { status: 409 },
         );
     }
 

@@ -7,6 +7,8 @@ interface RateTier {
     display_name: string;
     public_multiplier: number | null;
     effective_multiplier: number | null;
+    /** Recorded buy rate (¥ per official $1); a dedicated rate below it loses money. Null = not recorded. */
+    purchase_rate?: number | null;
     /** Priced by sale rules; edit it in the 售卖折扣 panel. */
     sale_rules_managed?: boolean;
 }
@@ -45,6 +47,16 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     const selected = tierByKey.get(selectedTier);
     const activeOverride = overrides.find((override) => override.tier_key === selectedTier);
     const managedTier = !!selected?.sale_rules_managed;
+    const draft = Number(multiplier);
+    const draftValid = multiplier.trim() !== '' && Number.isFinite(draft) && draft > 0;
+    const purchaseRate = selected?.purchase_rate ?? null;
+    const belowCost = draftValid && purchaseRate !== null && draft < purchaseRate;
+    // The dedicated rate replaces the public sell rate; show what that means as a discount and a margin.
+    const discount =
+        draftValid && selected?.public_multiplier
+            ? Math.round((draft / selected.public_multiplier) * 1000) / 100
+            : null;
+    const margin = draftValid && purchaseRate !== null ? Math.round((1 - purchaseRate / draft) * 1000) / 10 : null;
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -94,6 +106,17 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
             );
             return;
         }
+        const cost = selected?.purchase_rate ?? null;
+        const confirmBelowCost = cost !== null && value < cost;
+        if (
+            confirmBelowCost &&
+            !window.confirm(
+                zh
+                    ? `倍率 ${value} 低于「${selected?.display_name ?? selectedTier}」的进货率 ${cost}。\n\n按这个价格，该客户在这一档的每次调用都会亏损。确定要保存吗？`
+                    : `Rate ${value} is below the buy rate ${cost} of “${selected?.display_name ?? selectedTier}”.\n\nEvery request from this customer in this tier will lose money. Save anyway?`,
+            )
+        )
+            return;
         setSaving(true);
         setError('');
         setNotice('');
@@ -102,10 +125,18 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                 method: 'PUT',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tier_key: selectedTier, multiplier: value }),
+                body: JSON.stringify({
+                    tier_key: selectedTier,
+                    multiplier: value,
+                    ...(confirmBelowCost ? { confirm_below_cost: true } : {}),
+                }),
             });
-            const data = (await response.json().catch(() => ({}))) as { error?: string };
-            if (!response.ok) throw new Error(data.error || 'sync failed');
+            const data = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+            if (!response.ok) {
+                // The buy rate changed since this page loaded; reload so the warning reflects it.
+                if (data.code === 'below_cost') void load();
+                throw new Error(data.error || 'sync failed');
+            }
             setNotice(zh ? '已同步到 new-api' : 'Synced to new-api');
             await load();
         } catch (err) {
@@ -264,7 +295,34 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                     : 'This tier is priced by sale rules. Set discounts in the panel below; only key migration is available here.'}
                             </div>
                         )}
-                        <div className={`grid gap-3 text-sm sm:grid-cols-3 ${muted}`}>
+                        {draftValid && !managedTier && (
+                            <div
+                                role={belowCost ? 'alert' : undefined}
+                                className={`text-xs ${belowCost ? (isDark ? 'text-red-400' : 'text-red-600') : muted}`}
+                            >
+                                {discount !== null &&
+                                    (discount === 10
+                                        ? zh
+                                            ? '与公共价相同'
+                                            : 'Same as the public rate'
+                                        : zh
+                                          ? `相当于公共价的 ${discount} 折`
+                                          : `${Math.round(discount * 10)}% of the public rate`)}
+                                {discount !== null && (zh ? '；' : '; ')}
+                                {purchaseRate === null
+                                    ? zh
+                                        ? '该档未填进货率，无法核对是否亏本（在「模型定价 → 档次与利润」中填写）。'
+                                        : 'No buy rate recorded for this tier, so cost cannot be checked (set it in Pricing → Tiers & margin).'
+                                    : belowCost
+                                      ? zh
+                                          ? `低于进货率 ${purchaseRate}，每次调用都会亏损。`
+                                          : `Below the buy rate ${purchaseRate}; every request loses money.`
+                                      : zh
+                                        ? `进货率 ${purchaseRate}，毛利 ${margin}%。`
+                                        : `Buy rate ${purchaseRate}, margin ${margin}%.`}
+                            </div>
+                        )}
+                        <div className={`grid gap-3 text-sm sm:grid-cols-4 ${muted}`}>
                             <div>
                                 <div className="text-xs">{zh ? '公共倍率' : 'Public rate'}</div>
                                 <div className={`mt-1 font-medium ${value}`}>
@@ -275,6 +333,12 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                 <div className="text-xs">{zh ? '当前生效倍率' : 'Effective rate'}</div>
                                 <div className={`mt-1 font-medium ${value}`}>
                                     {formatMultiplier(selected?.effective_multiplier ?? null)}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-xs">{zh ? '进货率' : 'Buy rate'}</div>
+                                <div className={`mt-1 font-medium ${value}`}>
+                                    {purchaseRate === null ? (zh ? '未填' : 'Not set') : purchaseRate}
                                 </div>
                             </div>
                             <div>
