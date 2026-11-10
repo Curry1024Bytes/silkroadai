@@ -43,6 +43,7 @@ import {
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 import {
     parseCatalogBillingDetails,
+    primaryTokenRates,
     scaleCatalogBillingDetails,
     type CatalogBillingDetails,
 } from '@/lib/models/catalog-pricing-details';
@@ -183,7 +184,7 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
             }
             const publicDetails = parseCatalogBillingDetails(p.billing_details);
             const billingDetails = publicDetails ? scaleCatalogBillingDetails(publicDetails, multiplierScale) : null;
-            const tokenRates = billingDetails?.mode === 'tiered_token' ? billingDetails.tiers[0].rates : null;
+            const tokenRates = primaryTokenRates(billingDetails);
             rows.push({
                 tierKey: p.tier,
                 tierLabel: tierLabel.get(p.tier)!,

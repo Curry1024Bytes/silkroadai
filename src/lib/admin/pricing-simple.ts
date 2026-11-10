@@ -49,6 +49,7 @@ import {
     planVideoTokenWrites,
     readBasePrice,
     hasStructuredMediaPrice,
+    hasTimeOfDayPrice,
     sameNumber,
     unverifiedWrites,
     type BasePrice,
@@ -111,6 +112,8 @@ export interface SimpleUpstreamModel {
     base: BasePrice | null;
     error: string | null;
     read_only?: boolean;
+    /** Why `read_only`: structured image/video pricing, or a peak/off-peak formula kept in new-api. */
+    read_only_kind?: 'media' | 'time_of_day';
     /** Optimistic-lock token for save_model. */
     state: string;
     /** new-api forces output = input × this ratio for token pricing. */
@@ -296,7 +299,14 @@ function buildView(
                         name: upstream_model,
                         base,
                         error,
-                        read_only: hasStructuredMediaPrice(options, upstream_model),
+                        read_only:
+                            hasStructuredMediaPrice(options, upstream_model) ||
+                            hasTimeOfDayPrice(options, upstream_model),
+                        read_only_kind: hasTimeOfDayPrice(options, upstream_model)
+                            ? 'time_of_day'
+                            : hasStructuredMediaPrice(options, upstream_model)
+                              ? 'media'
+                              : undefined,
                         state: modelOptionState(options, upstream_model),
                         locked_completion: meta?.locked === true && typeof meta.ratio === 'number' ? meta.ratio : null,
                         notes: notesFor(options, upstream_model),
@@ -1016,6 +1026,13 @@ export async function verifyRuntime(names: string[]): Promise<{ models: RuntimeC
     const [options, runtime] = await Promise.all([getPricingPublishOptions(), getPricingRuntimeModels(names)]);
     const models = runtime.models.map((row): RuntimeCheck => {
         const diffs: string[] = [];
+        if (hasTimeOfDayPrice(options, row.model_name)) {
+            // Portal never writes these; only check that new-api's runtime holds the configured formula.
+            const expression = optionDict(options, EXPR_KEY, true)[row.model_name];
+            if (row.billing_mode !== 'tiered_expr' || row.billing_expr !== expression)
+                diffs.push('分时段公式与配置不一致。');
+            return { name: row.model_name, ok: diffs.length === 0, diffs };
+        }
         const base = safeBase(options, row.model_name).base;
         if (!base) diffs.push('Portal 读不到该模型的基础价。');
         else if (base.mode === 'per_call') {

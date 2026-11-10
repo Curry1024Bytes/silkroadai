@@ -107,16 +107,71 @@ describe('catalog synchronization of new-api billing rules', () => {
         expect(details.cells[7]).toEqual({ resolution: '4k', video_input: 'video', price: amount(2.07) });
         expect(catalogDetailLines(details).join(' ')).toContain('480p');
     });
-    it('still refuses a time-conditioned token expression', () => {
-        // Verbatim shape from prod new-api 2026-11-06: deepseek-v4.1-flash (aipg peak/off-peak).
+    it('imports a peak/off-peak formula with both tiers, the weekly schedule and future-only exceptions', () => {
+        // Verbatim from prod new-api 2026-11-10: deepseek-v4-flash (channel 14, aipg peak/off-peak).
+        const v4 =
+            'let holidayNow = now(); (!(holidayNow >= date("2026-10-01T00:00:00+08:00") && holidayNow < date("2026-10-08T00:00:00+08:00")) && ((weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18))))) ? tier("peak", p * 3 + cr * 0.1 + c * 9) : tier("off_peak", p * 1.5 + cr * 0.05 + c * 4.5)';
+        const result = read({
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': { test: v4 },
+        });
+        expect(result.reason).toBeNull();
+        expect(result.basis).toBe('token');
+        const details = result.price!.billing_details!;
+        if (details.mode !== 'time_token') throw Error('wrong mode');
+        expect(details.window.rates).toEqual({
+            input: amount(3),
+            output: amount(9),
+            cache_read: amount(0.1),
+            cache_write: null,
+            cache_write_1h: null,
+        });
+        expect(details.otherwise.rates.input).toBe(amount(1.5));
+        // Scalar columns carry the dearer tier, so no summary undersells.
+        expect(result.price).toMatchObject({
+            input_cny_per_1m: Number(amount(3).toFixed(4)),
+            output_cny_per_1m: Number(amount(9).toFixed(4)),
+        });
+        // Round-trips through the persisted schema.
+        expect(parseCatalogBillingDetails(JSON.parse(JSON.stringify(details)))).toEqual(details);
+
+        const before = catalogDetailLines(details, false, Date.parse('2026-09-15T00:00:00Z'));
+        expect(before[0]).toBe(
+            `高峰时段（北京时间 周一至周五 09:00–12:00、14:00–18:00）：输入 ¥${amount(3)}，缓存读取 ¥${amount(0.1)}，输出 ¥${amount(9)} / 百万 token`,
+        );
+        expect(before[1]).toContain('非高峰时段：');
+        expect(before[2]).toBe('2026-10-01 至 2026-10-07：全天按非高峰时段计价');
+        // Once the holiday is over it no longer changes any charge and is not shown.
+        const after = catalogDetailLines(details, false, Date.parse('2026-11-10T00:00:00Z'));
+        expect(after).toHaveLength(2);
+        expect(catalogDetailLines(details, true, Date.parse('2026-09-15T00:00:00Z')).join('\n')).toContain(
+            'Peak hours (Beijing time, Mon–Fri 09:00–12:00, 14:00–18:00)',
+        );
+        const scaled = scaleCatalogBillingDetails(details, 2);
+        if (scaled.mode !== 'time_token') throw Error('wrong mode');
+        expect(scaled.otherwise.rates.output).toBe(amount(4.5) * 2);
+        expect(
+            syncModelModality(
+                syncPricesFromOptions(
+                    options({
+                        'billing_setting.billing_mode': { test: 'tiered_expr' },
+                        'billing_setting.billing_expr': { test: v4 },
+                    }),
+                ),
+                'test',
+                'chat',
+            ),
+        ).toBe('chat');
+    });
+    it('still refuses time formulas outside the supported shape', () => {
         const result = read({
             'billing_setting.billing_mode': { test: 'tiered_expr' },
             'billing_setting.billing_expr': {
-                test: 'weekday("Asia/Shanghai") >= 1 && hour("Asia/Shanghai") < 12 ? tier("peak", p * 2 + cr * 0.04 + c * 8) : tier("off_peak", p * 1 + cr * 0.02 + c * 4)',
+                test: 'minute("Asia/Shanghai") < 30 ? tier("peak", p * 2 + c * 8) : tier("off_peak", p * 1 + c * 4)',
             },
         });
         expect(result.price).toBeNull();
-        expect(result.reason).toMatch(/计费规则无法同步/);
+        expect(result.reason).toMatch(/计费规则无法同步：.*minute/);
     });
     it('refuses a task expression that is not the accepted matrix instead of guessing', () => {
         const result = read({

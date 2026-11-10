@@ -1,9 +1,11 @@
 import 'server-only';
 import { parseTieredPricingExpression } from '@/lib/admin/pricing-tiered-expression';
 import { isTaskUsageExpression, parseVideoTokenExpression } from '@/lib/admin/pricing-video-token-expression';
+import { isTimeOfDayExpression, parseTimeTokenExpression } from '@/lib/admin/pricing-time-token-expression';
 import { IMAGE_FX } from './pricing-sync';
 import {
     parseCatalogBillingDetails,
+    primaryTokenRates,
     scaleCatalogBillingDetails,
     type CatalogBillingDetails,
 } from '@/lib/models/catalog-pricing-details';
@@ -101,7 +103,21 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
                     cells: parseVideoTokenExpression(expression).cells,
                 })!;
             } else if (/\bimg(?:_cr)?\b/.test(expression)) details = componentExpression(expression);
-            else
+            else if (isTimeOfDayExpression(expression)) {
+                // Only the strict peak/off-peak shape (weekday/hour in Asia/Shanghai, optional date range);
+                // minute(), other zones or more than two tiers still fail here.
+                const parsed = parseTimeTokenExpression(expression);
+                details = parseCatalogBillingDetails({
+                    version: 1,
+                    mode: 'time_token',
+                    unit: 'cny_per_million_tokens',
+                    timezone: parsed.timezone,
+                    window: parsed.window,
+                    otherwise: parsed.otherwise,
+                    schedule: parsed.schedule,
+                    exceptions: parsed.exceptions,
+                })!;
+            } else
                 details = parseCatalogBillingDetails({
                     version: 1,
                     mode: 'tiered_token',
@@ -150,13 +166,13 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
         }
         if (!Number.isFinite(IMAGE_FX) || IMAGE_FX <= 0) throw new Error('价格换算配置无效');
         details = scaleCatalogBillingDetails(details, groupRatio * IMAGE_FX);
-        const input = details.mode === 'tiered_token' ? Number(details.tiers[0].rates.input.toFixed(4)) : null;
-        const output = details.mode === 'tiered_token' ? Number(details.tiers[0].rates.output.toFixed(4)) : null;
+        const rates = primaryTokenRates(details);
+        const input = rates ? Number(rates.input.toFixed(4)) : null;
+        const output = rates ? Number(rates.output.toFixed(4)) : null;
         if (
-            details.mode === 'tiered_token' &&
+            rates &&
             [input!, output!].some(
-                (value, i) =>
-                    value > 99_999_999.9999 || (value === 0 && details.tiers[0].rates[i ? 'output' : 'input'] > 0),
+                (value, i) => value > 99_999_999.9999 || (value === 0 && rates[i ? 'output' : 'input'] > 0),
             )
         )
             throw new Error('阶梯首档价格超出目录范围或精度');

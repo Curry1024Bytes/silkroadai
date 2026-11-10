@@ -141,7 +141,7 @@ W1 走 LiteLLM(15 模型),W2 D3 切 new-api,W3 补齐 Auth 与 OAuth,W4 充值�
 
 ⚠️ **分组倍率双键**:`GroupRatio` 与 `group_ratio_setting.group_ratio` 写进同一张内存表,new-api 每 60 秒按数据库原样重放全部 option 行、无排序,最后应用的那行生效。两行不一致时倍率会来回跳。**改整组 ¥ 率必须两键同写 + 重启**,单改一键必翻车(2026-07-26 default 组误翻倍 2× 多收、az-gpt ¥5,593 两次事故都是这个)。`planGroupRatioWrites` 现在总是用完整目标表写双键。
 
-**四种价格形态**,Portal 都能读写:
+**五种价格形态**,Portal 都能读,分时段一种只读(改价在 new-api,保存基础价会覆盖整条公式):
 
 | 形态           | new-api option                                                       | Portal 读写                                          |
 | -------------- | -------------------------------------------------------------------- | ---------------------------------------------------- |
@@ -149,6 +149,7 @@ W1 走 LiteLLM(15 模型),W2 D3 切 new-api,W3 补齐 Auth 与 OAuth,W4 充值�
 | 按输入长度分档 | `billing_mode=tiered_expr` + `billing_expr`(`len <= N ? tier(...)`)  | `pricing-tiered-expression.ts`                       |
 | 按次           | `ModelPrice`                                                         | 同按 token                                           |
 | 视频参数矩阵   | `tiered_expr` + `u("resolution")`/`u("video_input")` 8 档            | `pricing-video-token-expression.ts`(2026-11-06 新增) |
+| 分时段(只读)   | `tiered_expr` + `weekday()`/`hour()`(北京时间)、`now()`/`date()`     | `pricing-time-token-expression.ts`(2026-11-10,只读)  |
 
 **计费表达式的边界**:`billing_expr` 能读 token/媒体用量、`header()`、`param()`、`u()`(任务用量,仅 Task Plugin 渠道)和时间函数,**但没有分组、客户、渠道变量**,结果仍乘分组系数。所以 new-api 原生**做不到**「同一分组内按模型给不同客户不同价」。要做只有四条路:换模型名、Portal 注入请求头、Portal 自己计费、或拆独立计费分组。
 
@@ -211,7 +212,6 @@ SSE 两件套在 `src/lib/sse/stream-guard.ts`:上游静默 >15s 注 `: keep-ali
 | 成本工作台把视频一律按秒            | `pricing-cost.ts`                      | 2026-11-06 加了 `video_unit: 'million_tokens'` 才支持按 token;成本规则只有修订号没有生效时间 |
 | Portal 自有账本只计 in/out token    | `src/lib/billing/`                     | 不含图片、缓存、阶梯、视频;生产未启用,用户均 `billing_mode=newapi`                           |
 | 排空钩子曾让发布停机 246 秒         | `src/lib/server/drain.ts`              | 2026-11-06 已修(见下)                                                                        |
-| DeepSeek 时间条件公式 Portal 读不了 | `pricing-tiered-expression.ts`         | 两个模型的价格只能在 new-api 维护,同步时会提示                                               |
 | 请求捕获默认关                      | `REQUEST_LOGGING`                      | viewer 已上线但列表空,要 operator 配 env                                                     |
 
 **排空缺陷(2026-11-06,已修)**:Next 自己的 SIGTERM 处理只在 **dev** 调 `server.closeAllConnections()`,生产只 `server.close()`,于是等 nginx 的**空闲** keep-alive 连接(`location /` 用 `proxy_http_version 1.1` + `Connection ""`)。排空钩子给响应加 `Connection: close` 碰不到空闲连接 → 进程永不退出 → compose 等满 `stop_grace_period: 630s`,而监听已关,公网 502。**停机时长与切换前的流量成正比**,所以凌晨发布只停 10 秒、下午发布停 246 秒,缺陷藏了很久。现在排空时对每个见过响应的 server 调 `closeIdleConnections()`。

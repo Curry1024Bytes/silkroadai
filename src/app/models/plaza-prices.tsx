@@ -3,6 +3,7 @@
 import type { PricingModel, TokenUnit } from '@newapi/features/pricing/types';
 import { formatPlazaTokenAmount, plazaQuote } from '@/lib/models/plaza-pricing';
 import { formatTieredPrice, tieredPricingConditionLabel } from '@/lib/models/tiered-pricing-details';
+import { primaryTokenRates } from '@/lib/models/catalog-pricing-details';
 import { useLocale } from '@/lib/i18n/client';
 import { pickMessages } from '@/lib/i18n';
 import { modelsMessages, translateSummaryLabel } from '@/lib/i18n/messages/models';
@@ -114,11 +115,9 @@ export function PlazaCachedPrice({
     const quote = plazaQuote(model, selectedGroup);
     const details = quote?.price?.billing_details;
     const rate =
-        details?.mode === 'tiered_token'
-            ? details.tiers[0].rates.cache_read
-            : details?.mode === 'component_token'
-              ? details.rates.cache_read
-              : null;
+        details?.mode === 'component_token'
+            ? details.rates.cache_read
+            : (primaryTokenRates(details ?? null)?.cache_read ?? null);
     if (rate == null) return <span className="text-muted-foreground text-xs">—</span>;
     return (
         <div className="space-y-1 text-xs">

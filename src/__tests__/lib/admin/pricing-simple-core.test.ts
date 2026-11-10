@@ -85,6 +85,38 @@ describe('buildTieredPricingExpression', () => {
 });
 
 describe('readBasePrice', () => {
+    it('keeps peak/off-peak formulas read-only: a base-price save would replace the whole formula', () => {
+        const formula =
+            'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 18 ? tier("peak", p * 2 + c * 8) : tier("off_peak", p * 1 + c * 4)';
+        const source = options({
+            [MODE]: JSON.stringify({ ds: 'tiered_expr' }),
+            [EXPR]: JSON.stringify({ ds: formula }),
+        });
+        for (const run of [
+            () => readBasePrice(source, 'ds'),
+            () =>
+                planModelWrites(source, 'ds', {
+                    mode: 'token',
+                    input: 2,
+                    output: 8,
+                    cache_read: null,
+                    cache_write: null,
+                }),
+            () =>
+                planModelWrites(source, 'ds', {
+                    mode: 'tiered',
+                    tiers: [
+                        {
+                            max_input_tokens: null,
+                            max_inclusive: false,
+                            rates: { input: 2, output: 8, cache_read: null, cache_write: null, cache_write_1h: null },
+                        },
+                    ],
+                }),
+            () => planModelWrites(source, 'ds', { mode: 'per_call', price: 1 }),
+        ])
+            expect(run).toThrow(expect.objectContaining({ code: 'pricing_time_readonly' }));
+    });
     it('keeps structured media rules out of the scalar editor and detects resolution-only changes', () => {
         const source = options({ ImageResolutionPrice: { 'img-1': { '1K': 0.5, '2K': 0.8, '4K': 1 } } });
         expect(() => readBasePrice(source, 'img-1')).toThrow('new-api');

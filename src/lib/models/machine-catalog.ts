@@ -24,6 +24,7 @@ import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
 import {
     parseCatalogBillingDetails,
+    primaryTokenRates,
     scaleCatalogBillingDetails,
     type CatalogBillingDetails,
 } from './catalog-pricing-details';
@@ -117,7 +118,7 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
             if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 历史价不等于当前仍可路由
             if (pricesByTier.has(p.tier)) continue;
             const details = parseCatalogBillingDetails(p.billing_details);
-            const tokenRates = details?.mode === 'tiered_token' ? details.tiers[0].rates : null;
+            const tokenRates = primaryTokenRates(details);
             pricesByTier.set(p.tier, {
                 input_cny_per_1m: tokenRates?.input ?? toNum(p.input_cny_per_1m),
                 output_cny_per_1m: tokenRates?.output ?? toNum(p.output_cny_per_1m),

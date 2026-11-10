@@ -25,6 +25,7 @@ import {
     type VideoTokenInput,
     type VideoTokenResolution,
 } from './pricing-video-token-expression';
+import { isTimeOfDayExpression } from './pricing-time-token-expression';
 import type { TieredPricingDetails } from './pricing-publish-types';
 import {
     parseCatalogBillingDetails,
@@ -175,6 +176,7 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
             'pricing_media_readonly',
             '该模型使用图片或视频计费规则，请在 new-api 修改基础价后同步目录。',
         );
+    if (hasTimeOfDayPrice(options, name)) throw timeOfDayReadonly();
     const modes = optionDict(options, MODE_KEY, true);
     if (modes[name] === 'tiered_expr') {
         const expression = optionDict(options, EXPR_KEY, true)[name];
@@ -208,6 +210,24 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
         cache_read: finiteNumber(cache) ? round(input * cache) : null,
         cache_write: finiteNumber(create) ? round(input * create) : null,
     };
+}
+
+/**
+ * Peak/off-peak pricing (`weekday()`/`hour()`/`now()` in a tiered expression) is shown in the catalog but
+ * maintained in new-api. Any base-price save here would replace the whole time-conditioned formula.
+ */
+export function hasTimeOfDayPrice(options: Record<string, unknown>, name: string): boolean {
+    return (
+        optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
+        isTimeOfDayExpression(optionDict(options, EXPR_KEY, true)[name])
+    );
+}
+
+function timeOfDayReadonly(): SimplePricingError {
+    return new SimplePricingError(
+        'pricing_time_readonly',
+        '该模型按高峰、非高峰时段计价，请在 new-api 修改公式后同步目录；这里只展示，不能保存。',
+    );
 }
 
 export function hasStructuredMediaPrice(options: Record<string, unknown>, name: string): boolean {
@@ -297,6 +317,7 @@ export function planModelWrites(
             'pricing_media_readonly',
             '该模型的图片或视频计费规则须在 new-api 修改，再同步目录。',
         );
+    if (hasTimeOfDayPrice(options, name)) throw timeOfDayReadonly();
     if (
         optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
         isTaskUsageExpression(optionDict(options, EXPR_KEY, true)[name])

@@ -765,9 +765,13 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                     </span>
                                     <span className={model.base ? '' : 'text-amber-500'}>
                                         {model.read_only
-                                            ? en
-                                                ? 'Media pricing'
-                                                : '图片／视频计费'
+                                            ? model.read_only_kind === 'time_of_day'
+                                                ? en
+                                                    ? 'Peak / off-peak'
+                                                    : '分时段计费'
+                                                : en
+                                                  ? 'Media pricing'
+                                                  : '图片／视频计费'
                                             : baseSummary(model.base, en)}
                                     </span>
                                 </div>

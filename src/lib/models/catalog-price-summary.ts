@@ -2,7 +2,7 @@ import type { BrowserTier } from './catalog-browser-types';
 import type { TierPricing } from './machine-catalog';
 import type { TypeName } from './categorize';
 import { isUniformPricingDetails, tieredPricingConditionLabel } from './tiered-pricing-details';
-import { videoTokenSummaryCell } from './catalog-pricing-details';
+import { timeTokenSummaryTier, videoTokenSummaryCell } from './catalog-pricing-details';
 import { videoTokenInputLabel } from '@/lib/admin/pricing-video-token-expression';
 
 export interface CatalogPriceSummary {
@@ -64,6 +64,18 @@ export function catalogPriceSummary(price: TierPricing | null, type: TypeName): 
             ],
             condition: '图片输入另计，完整价格见详情',
             note: details.scheduled_discount ? '分时优惠与完整规格见详情' : null,
+        };
+    }
+    if (details?.mode === 'time_token') {
+        const { rates, peak } = timeTokenSummaryTier(details);
+        return {
+            unit: '元 / 百万 token',
+            rates: [
+                { label: '输入', amount: rates.input },
+                { label: '输出', amount: rates.output },
+            ],
+            condition: peak ? '高峰时段' : '优惠时段',
+            note: details.scheduled_discount ? '分时优惠与完整规格见详情' : '其他时段价格见详情',
         };
     }
     if (details?.mode === 'tiered_token') {

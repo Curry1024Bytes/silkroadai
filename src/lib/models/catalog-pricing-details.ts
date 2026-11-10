@@ -13,6 +13,7 @@ import {
     videoTokenInputLabel,
     videoTokenKey,
 } from '@/lib/admin/pricing-video-token-expression';
+import { TIME_TOKEN_TIMEZONE } from '@/lib/admin/pricing-time-token-expression';
 
 const rate = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const resolution = z
@@ -114,11 +115,62 @@ const videoTokenSchema = z
             context.addIssue({ code: 'custom', message: 'Video cells out of order' });
     });
 
+const timeRates = z
+    .object({
+        input: rate,
+        output: rate,
+        cache_read: rate.nullable(),
+        cache_write: rate.nullable(),
+        cache_write_1h: rate.nullable(),
+    })
+    .strict();
+const timeTier = z.object({ name: z.string().min(1).max(64), rates: timeRates }).strict();
+const isoInstant = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+const timeWindow = z
+    .object({
+        weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7),
+        start_hour: z.number().int().min(0).max(23),
+        end_hour: z.number().int().min(1).max(24),
+    })
+    .strict()
+    .refine((value) => value.start_hour < value.end_hour, { message: 'Empty hour window' })
+    .refine((value) => new Set(value.weekdays).size === value.weekdays.length, { message: 'Duplicate weekdays' });
+
+/**
+ * Peak/off-peak token pricing read from a new-api time-conditioned expression. `window` is billed during
+ * `schedule` (Asia/Shanghai, end hour exclusive), `otherwise` at every other hour; `exceptions` are date
+ * ranges whose weekly schedule differs (e.g. a public holiday billed entirely as `otherwise`).
+ */
+const timeTokenSchema = z
+    .object({
+        version: z.literal(1),
+        mode: z.literal('time_token'),
+        unit: z.literal('cny_per_million_tokens'),
+        timezone: z.literal(TIME_TOKEN_TIMEZONE),
+        window: timeTier,
+        otherwise: timeTier,
+        schedule: z.array(timeWindow).max(168),
+        exceptions: z
+            .array(
+                z
+                    .object({ from: isoInstant.nullable(), until: isoInstant, schedule: z.array(timeWindow).max(168) })
+                    .strict(),
+            )
+            .max(32),
+        scheduled_discount: discount.optional(),
+    })
+    .strict();
+
 export type MediaPricingDetails = z.infer<typeof mediaSchema>;
 export type ComponentTokenPricingDetails = z.infer<typeof componentSchema>;
 export type VideoTokenPricingDetails = z.infer<typeof videoTokenSchema>;
+export type TimeTokenPricingDetails = z.infer<typeof timeTokenSchema>;
 export type CatalogBillingDetails =
-    TieredPricingDetails | MediaPricingDetails | ComponentTokenPricingDetails | VideoTokenPricingDetails;
+    | TieredPricingDetails
+    | MediaPricingDetails
+    | ComponentTokenPricingDetails
+    | VideoTokenPricingDetails
+    | TimeTokenPricingDetails;
 
 /** Validate every mode before exposing it. Unknown non-null metadata never falls back to a scalar quote. */
 export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails | null {
@@ -128,7 +180,24 @@ export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails 
     if (mode === 'media') return mediaSchema.parse(raw);
     if (mode === 'component_token') return componentSchema.parse(raw);
     if (mode === 'video_token') return videoTokenSchema.parse(raw);
+    if (mode === 'time_token') return timeTokenSchema.parse(raw);
     throw new Error('Invalid catalog billing details');
+}
+
+/** The tier a one-line quote shows for peak/off-peak pricing: the dearer one, so a summary never undersells. */
+export function timeTokenSummaryTier(details: TimeTokenPricingDetails): {
+    rates: TimeTokenPricingDetails['window']['rates'];
+    peak: boolean;
+} {
+    const windowIsPeak = details.window.rates.input >= details.otherwise.rates.input;
+    return windowIsPeak ? { rates: details.window.rates, peak: true } : { rates: details.otherwise.rates, peak: false };
+}
+
+/** Rates that stand for a token-priced row in scalar columns (first length tier, or the dearer time tier). */
+export function primaryTokenRates(details: CatalogBillingDetails | null) {
+    if (details?.mode === 'tiered_token') return details.tiers[0].rates;
+    if (details?.mode === 'time_token') return timeTokenSummaryTier(details).rates;
+    return null;
 }
 
 /** The cell a one-line summary shows: 720p without reference video, else the first listed. */
@@ -141,6 +210,14 @@ export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: nu
     if (details.mode === 'tiered_token') return scaleTieredPricingDetails(details, scale);
     if (details.mode === 'video_token') {
         for (const cell of details.cells) cell.price = scalePricingAmount(cell.price, scale);
+        return details;
+    }
+    if (details.mode === 'time_token') {
+        for (const tier of [details.window, details.otherwise])
+            for (const key of Object.keys(tier.rates) as Array<keyof typeof tier.rates>) {
+                const value = tier.rates[key];
+                if (value !== null) tier.rates[key] = scalePricingAmount(value, scale);
+            }
         return details;
     }
     if (details.mode === 'component_token') {
@@ -183,10 +260,106 @@ export function catalogScheduledDiscountLines(value: NonNullable<z.infer<typeof 
     });
 }
 
+const WEEKDAY_NAMES = {
+    zh: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+    en: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+};
+
+function weekdaysLabel(days: number[], en: boolean): string {
+    const sorted = [...days].sort((a, b) => a - b);
+    const names = WEEKDAY_NAMES[en ? 'en' : 'zh'];
+    if (sorted.length === 7) return en ? 'Every day' : '每天';
+    const contiguous = sorted.every((day, i) => i === 0 || day === sorted[i - 1] + 1);
+    if (contiguous && sorted.length > 2)
+        return `${names[sorted[0] - 1]}${en ? '–' : '至'}${names[sorted[sorted.length - 1] - 1]}`;
+    return sorted.map((day) => names[day - 1]).join(en ? ', ' : '、');
+}
+
+const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+
+/** "周一至周五 09:00–12:00、14:00–18:00" — one entry per distinct weekday set, in schedule order. */
+export function timeTokenScheduleLabel(schedule: TimeTokenPricingDetails['schedule'], en = false): string {
+    const groups = new Map<string, { days: number[]; ranges: string[] }>();
+    for (const window of schedule) {
+        const key = [...window.weekdays].sort((a, b) => a - b).join(',');
+        const group = groups.get(key) ?? { days: window.weekdays, ranges: [] };
+        group.ranges.push(`${hourLabel(window.start_hour)}–${hourLabel(window.end_hour)}`);
+        groups.set(key, group);
+    }
+    return [...groups.values()]
+        .map((group) => `${weekdaysLabel(group.days, en)} ${group.ranges.join(en ? ', ' : '、')}`)
+        .join(en ? '; ' : '；');
+}
+
+/** Beijing calendar date of an instant; an exclusive end at local midnight shows the last included day. */
+function beijingDate(iso: string, exclusiveEnd: boolean): string {
+    const at = new Date(Date.parse(iso) - (exclusiveEnd ? 1 : 0));
+    return new Intl.DateTimeFormat('en-CA', { timeZone: TIME_TOKEN_TIMEZONE }).format(at);
+}
+
+function exceptionLine(
+    exception: TimeTokenPricingDetails['exceptions'][number],
+    labels: { window: string; otherwise: string },
+    en: boolean,
+): string {
+    const until = beijingDate(exception.until, true);
+    const range = exception.from
+        ? `${beijingDate(exception.from, false)}${en ? ' to ' : ' 至 '}${until}`
+        : en
+          ? `Through ${until}`
+          : `${until} 及以前`;
+    if (!exception.schedule.length)
+        return en ? `${range}: billed at ${labels.otherwise} rates all day` : `${range}：全天按${labels.otherwise}计价`;
+    return en
+        ? `${range}: ${labels.window} ${timeTokenScheduleLabel(exception.schedule, true)}`
+        : `${range}：${labels.window}为 ${timeTokenScheduleLabel(exception.schedule)}`;
+}
+
+function timeTokenLines(details: TimeTokenPricingDetails, en: boolean, now: number): string[] {
+    const peakIsWindow = timeTokenSummaryTier(details).peak;
+    const labels = {
+        window: peakIsWindow ? (en ? 'Peak hours' : '高峰时段') : en ? 'Off-peak hours' : '优惠时段',
+        otherwise: peakIsWindow ? (en ? 'Off-peak hours' : '非高峰时段') : en ? 'Other hours' : '其他时段',
+    };
+    const unit = en ? 'million tokens' : '百万 token';
+    const rates = (r: TimeTokenPricingDetails['window']['rates']) =>
+        [
+            `${en ? 'Input' : '输入'} ¥${formatTieredPrice(r.input)}`,
+            ...(r.cache_read === null ? [] : [`${en ? 'Cache read' : '缓存读取'} ¥${formatTieredPrice(r.cache_read)}`]),
+            ...(r.cache_write === null
+                ? []
+                : [`${en ? 'Cache write' : '缓存写入'} ¥${formatTieredPrice(r.cache_write)}`]),
+            ...(r.cache_write_1h === null
+                ? []
+                : [`${en ? 'Cache write / 1 hour' : '缓存写入 1 小时'} ¥${formatTieredPrice(r.cache_write_1h)}`]),
+            `${en ? 'Output' : '输出'} ¥${formatTieredPrice(r.output)}`,
+        ].join(en ? ', ' : '，');
+    const schedule = details.schedule.length
+        ? timeTokenScheduleLabel(details.schedule, en)
+        : en
+          ? 'none in the regular week'
+          : '常规每周无此时段';
+    return [
+        en
+            ? `${labels.window} (Beijing time, ${schedule}): ${rates(details.window.rates)} / ${unit}`
+            : `${labels.window}（北京时间 ${schedule}）：${rates(details.window.rates)} / ${unit}`,
+        en
+            ? `${labels.otherwise}: ${rates(details.otherwise.rates)} / ${unit}`
+            : `${labels.otherwise}：${rates(details.otherwise.rates)} / ${unit}`,
+        // A date range that has already ended no longer changes any charge.
+        ...details.exceptions
+            .filter((exception) => Date.parse(exception.until) > now)
+            .map((exception) => exceptionLine(exception, labels, en)),
+        ...(details.scheduled_discount ? catalogScheduledDiscountLines(details.scheduled_discount, en) : []),
+    ];
+}
+
 export function catalogDetailLines(
     details: Exclude<CatalogBillingDetails, TieredPricingDetails>,
     en = false,
+    now = Date.now(),
 ): string[] {
+    if (details.mode === 'time_token') return timeTokenLines(details, en, now);
     if (details.mode === 'video_token')
         return [
             ...details.cells.map(
