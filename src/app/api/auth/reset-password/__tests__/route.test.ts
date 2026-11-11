@@ -27,6 +27,22 @@ vi.mock('bcryptjs', () => ({
     hash: (...args: unknown[]) => mockHash(...args),
 }));
 
+// Throttle + attempt log live in their own module (unit-tested in
+// src/lib/auth/__tests__/attempts.test.ts); here we only assert the route
+// calls them correctly. tooManyAttemptsResponse stays real.
+const mockCheckAuthRateLimit = vi.fn();
+const mockRecordAuthAttempt = vi.fn();
+const mockResolveAuthAttempt = vi.fn();
+vi.mock('@/lib/auth/attempts', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/auth/attempts')>('@/lib/auth/attempts');
+    return {
+        ...actual,
+        checkAuthRateLimit: (...args: unknown[]) => mockCheckAuthRateLimit(...args),
+        recordAuthAttempt: (...args: unknown[]) => mockRecordAuthAttempt(...args),
+        resolveAuthAttempt: (...args: unknown[]) => mockResolveAuthAttempt(...args),
+    };
+});
+
 import { POST } from '../route';
 
 function makeReq(body: unknown): NextRequest {
@@ -43,6 +59,9 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAuthRateLimit.mockResolvedValue({ limited: false });
+    mockRecordAuthAttempt.mockResolvedValue('attempt-1');
+    mockResolveAuthAttempt.mockResolvedValue(undefined);
     mockHash.mockResolvedValue('$2a$10$newbcrypthash');
     // $transaction([...]) just runs the ops; no real tx semantics needed in unit test
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
@@ -84,6 +103,29 @@ describe('POST /api/auth/reset-password', () => {
                 data: expect.objectContaining({ used_at: expect.any(Date) }),
             }),
         );
+    });
+
+    it('logs a reset_password success row keyed on the account email (restarts the login failure counter)', async () => {
+        mockTokenFindUnique.mockResolvedValue({
+            id: 'tok-1',
+            user_id: PORTAL_USER_ID,
+            used_at: null,
+            expires_at: new Date(Date.now() + 30 * 60 * 1000),
+        });
+        mockUserUpdate.mockResolvedValue({ email: 'locked-out@silkroadai.io' });
+
+        const res = await POST(makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }));
+
+        expect(res.status).toBe(200);
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'reset_password',
+                outcome: 'success',
+                email: 'locked-out@silkroadai.io',
+                userId: PORTAL_USER_ID,
+            }),
+        );
+        expect(JSON.stringify(mockRecordAuthAttempt.mock.calls)).not.toContain('newgoodpass123');
     });
 
     it('400 when token does not exist', async () => {

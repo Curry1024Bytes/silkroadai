@@ -38,7 +38,12 @@ export function ForgotPasswordForm() {
                 setSent(true);
             } else {
                 const data = await r.json().catch(() => ({}));
-                setError(data?.error === 'invalid_input' ? m.invalidInput : m.failedWithStatus(r.status));
+                if (data?.error === 'too_many_attempts') {
+                    const s = data?.retry_after_seconds;
+                    setError(m.tooManyAttempts(typeof s === 'number' && s > 0 ? Math.ceil(s / 60) : 60));
+                } else {
+                    setError(data?.error === 'invalid_input' ? m.invalidInput : m.failedWithStatus(r.status));
+                }
                 fired.current = false;
                 setSubmitting(false);
             }

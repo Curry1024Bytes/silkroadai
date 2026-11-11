@@ -4,6 +4,8 @@ import { randomBytes, createHash } from 'crypto';
 import { prisma } from '@/lib/db';
 import { sendPasswordResetEmail } from '@/lib/email/send';
 import { getAppUrl } from '@/lib/url/app-url';
+import { extractClientIP } from '@/lib/auth/extract-ip';
+import { checkAuthRateLimit, recordAuthAttempt, tooManyAttemptsResponse } from '@/lib/auth/attempts';
 
 // nodemailer + prisma adapter-pg are Node-native; pin runtime so Next doesn't
 // try to put this on the Edge.
@@ -41,6 +43,21 @@ export async function POST(req: NextRequest) {
         );
     }
     const { email } = parsed.data;
+
+    // Per-IP throttle (10 / hour). The per-address 5-minute token reuse
+    // below stops repeat mail to ONE mailbox; this stops one caller walking
+    // a list of addresses. Keyed on IP only, so the 429 says nothing about
+    // whether a given email is registered.
+    const ip = extractClientIP(req);
+    const verdict = await checkAuthRateLimit('forgot_password', { ip });
+    if (verdict.limited) return tooManyAttemptsResponse(verdict);
+    await recordAuthAttempt({
+        kind: 'forgot_password',
+        outcome: 'attempt',
+        email,
+        ip,
+        userAgent: req.headers.get('user-agent'),
+    });
 
     // Always look up. If not found we don't branch on the result for the
     // outward-facing response (the response is 200 either way) — but we DO

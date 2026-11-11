@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { hash } from 'bcryptjs';
 import { createHash } from 'crypto';
 import { prisma } from '@/lib/db';
+import { extractClientIP } from '@/lib/auth/extract-ip';
+import { recordAuthAttempt } from '@/lib/auth/attempts';
 
 // bcryptjs + prisma adapter-pg are Node-native; pin runtime so Next doesn't
 // try to put this on the Edge.
@@ -53,19 +55,32 @@ export async function POST(req: NextRequest) {
 
     // Atomic: rehash, bump session_token_version (kicks all existing JWTs),
     // mark token used. If any step fails, none commit.
-    await prisma.$transaction([
+    const [updatedUser] = await prisma.$transaction([
         prisma.user.update({
             where: { id: tokenRow.user_id },
             data: {
                 password_hash: newHash,
                 session_token_version: { increment: 1 },
             },
+            select: { email: true },
         }),
         prisma.passwordResetToken.update({
             where: { id: tokenRow.id },
             data: { used_at: new Date() },
         }),
     ]);
+
+    // Audit row. It also restarts the per-email login failure counter (see
+    // attempts.ts): a customer locked out by someone else's guessing can log
+    // in with the new password straight away.
+    await recordAuthAttempt({
+        kind: 'reset_password',
+        outcome: 'success',
+        email: updatedUser?.email ?? null,
+        ip: extractClientIP(req),
+        userId: tokenRow.user_id,
+        userAgent: req.headers.get('user-agent'),
+    });
 
     // Don't auto-login; the UI flow is "reset → redirect to /login".
     return NextResponse.json({ ok: true });

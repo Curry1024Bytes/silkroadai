@@ -14,6 +14,7 @@ import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { sendVerificationEmail } from '@/lib/email/send';
 import { getAppUrl } from '@/lib/url/app-url';
 import { extractClientIP } from '@/lib/auth/extract-ip';
+import { checkAuthRateLimit, recordAuthAttempt, tooManyAttemptsResponse } from '@/lib/auth/attempts';
 import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
 import { resolveTenantByHost } from '@/lib/tenant/resolve';
@@ -94,6 +95,16 @@ export async function POST(req: NextRequest) {
     }
     const { email, password, nickname, invite_code } = parsed.data;
 
+    // Per-IP throttle (20 / hour), counted on every well-formed request —
+    // each one costs a bcrypt hash and may run the 6-step new-api provision,
+    // and the 409 below is an "is this email registered" oracle. Skipped for
+    // non-public IPs, so server-side / tunnel calls are unaffected.
+    const signupIp = extractClientIP(req);
+    const signupUa = req.headers.get('user-agent')?.slice(0, 500) ?? null;
+    const verdict = await checkAuthRateLimit('register', { ip: signupIp });
+    if (verdict.limited) return tooManyAttemptsResponse(verdict);
+    await recordAuthAttempt({ kind: 'register', outcome: 'attempt', email, ip: signupIp, userAgent: signupUa });
+
     // P6a: attribute the new customer to the tenant of the request domain
     // (platform domain → platform tenant; partner domain → partner tenant).
     // A tenant can disable self-serve signup → reject early.
@@ -151,10 +162,9 @@ export async function POST(req: NextRequest) {
 
     const password_hash = await hash(password, BCRYPT_ROUNDS);
 
-    // PR-U1: capture register-time IP + UA on the User row. Both fields are
-    // nullable — local dev curl without a proxy header set produces null.
-    const signupIp = extractClientIP(req);
-    const signupUa = req.headers.get('user-agent')?.slice(0, 500) ?? null;
+    // PR-U1: register-time IP + UA (captured above, before the throttle) go
+    // on the User row. Both are nullable — local dev curl without a proxy
+    // header set produces null.
 
     let user;
     try {

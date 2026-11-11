@@ -26,6 +26,22 @@ vi.mock('@/lib/db', () => ({
     },
 }));
 
+// Throttle + attempt log live in their own module (unit-tested in
+// src/lib/auth/__tests__/attempts.test.ts); here we only assert the route
+// calls them correctly. tooManyAttemptsResponse stays real.
+const mockCheckAuthRateLimit = vi.fn();
+const mockRecordAuthAttempt = vi.fn();
+const mockResolveAuthAttempt = vi.fn();
+vi.mock('@/lib/auth/attempts', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/auth/attempts')>('@/lib/auth/attempts');
+    return {
+        ...actual,
+        checkAuthRateLimit: (...args: unknown[]) => mockCheckAuthRateLimit(...args),
+        recordAuthAttempt: (...args: unknown[]) => mockRecordAuthAttempt(...args),
+        resolveAuthAttempt: (...args: unknown[]) => mockResolveAuthAttempt(...args),
+    };
+});
+
 import { POST } from '@/app/api/auth/register/route';
 
 function req(body: object, host = 'acme.com') {
@@ -38,6 +54,9 @@ function req(body: object, host = 'acme.com') {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAuthRateLimit.mockResolvedValue({ limited: false });
+    mockRecordAuthAttempt.mockResolvedValue('attempt-1');
+    mockResolveAuthAttempt.mockResolvedValue(undefined);
     mockResolveTenant.mockResolvedValue({ id: 'tenant-7', signup_enabled: true });
     mockUserFindUnique.mockResolvedValue(null);
 });

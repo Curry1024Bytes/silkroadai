@@ -148,6 +148,9 @@ export function RegisterForm() {
                 setError(m.validationFailed);
             } else if (code === 'provisioning_failed') {
                 setError(m.provisioningFailed);
+            } else if (code === 'too_many_attempts') {
+                const s = data?.retry_after_seconds;
+                setError(m.tooManyAttempts(typeof s === 'number' && s > 0 ? Math.ceil(s / 60) : 60));
             } else {
                 setError(m.failedWithCode(code));
             }

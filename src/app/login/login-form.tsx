@@ -8,6 +8,11 @@ import { Label } from '@/components/ui/Label';
 import { useMessages } from '@/lib/i18n/client';
 import { authMessages } from '@/lib/i18n/messages/auth';
 
+/** 429 `retry_after_seconds` → whole minutes for the message (min 1). */
+function retryMinutes(seconds: unknown): number {
+    return typeof seconds === 'number' && seconds > 0 ? Math.ceil(seconds / 60) : 15;
+}
+
 export function LoginForm({ next }: { next: string }) {
     const m = useMessages(authMessages).loginForm;
     const [email, setEmail] = useState('');
@@ -41,7 +46,9 @@ export function LoginForm({ next }: { next: string }) {
                         ? m.invalidCredentials
                         : data.error === 'invalid_input'
                           ? m.invalidInput
-                          : m.failedWithCode(data.error)
+                          : data.error === 'too_many_attempts'
+                            ? m.tooManyAttempts(retryMinutes(data.retry_after_seconds))
+                            : m.failedWithCode(data.error)
                     : m.failedWithStatus(r.status),
             );
             setSubmitting(false);

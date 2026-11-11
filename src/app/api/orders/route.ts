@@ -4,6 +4,7 @@ import { createOrder } from '@/lib/order/service';
 import { getEnv } from '@/lib/config';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { getCurrentUser } from '@/lib/auth/session';
+import { extractClientIP } from '@/lib/auth/extract-ip';
 import { handleApiError } from '@/lib/utils/api';
 import { getSystemConfigs } from '@/lib/system-config';
 
@@ -81,10 +82,7 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: `不支持的支付方式: ${payment_type}` }, { status: 400 });
         }
 
-        const clientIp =
-            request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-            request.headers.get('x-real-ip') ||
-            '127.0.0.1';
+        const clientIp = extractClientIP(request) ?? '127.0.0.1';
 
         const result = await createOrder({
             user_id: userId,

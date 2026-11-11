@@ -60,6 +60,22 @@ vi.mock('@/lib/email/send', () => ({
 // session.ts uses real signSession; .env from vitest setup provides
 // PORTAL_JWT_SECRET so no need to mock.
 
+// Throttle + attempt log live in their own module (unit-tested in
+// src/lib/auth/__tests__/attempts.test.ts); here we only assert the route
+// calls them correctly. tooManyAttemptsResponse stays real.
+const mockCheckAuthRateLimit = vi.fn();
+const mockRecordAuthAttempt = vi.fn();
+const mockResolveAuthAttempt = vi.fn();
+vi.mock('@/lib/auth/attempts', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/auth/attempts')>('@/lib/auth/attempts');
+    return {
+        ...actual,
+        checkAuthRateLimit: (...args: unknown[]) => mockCheckAuthRateLimit(...args),
+        recordAuthAttempt: (...args: unknown[]) => mockRecordAuthAttempt(...args),
+        resolveAuthAttempt: (...args: unknown[]) => mockResolveAuthAttempt(...args),
+    };
+});
+
 import { POST } from '../route';
 
 function makeReq(body: unknown): NextRequest {
@@ -75,6 +91,9 @@ const NEWAPI_USER_ID = 42;
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAuthRateLimit.mockResolvedValue({ limited: false });
+    mockRecordAuthAttempt.mockResolvedValue('attempt-1');
+    mockResolveAuthAttempt.mockResolvedValue(undefined);
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
     // Default: verification token + email succeed silently. Tests that care
     // override these.
@@ -221,6 +240,19 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(body.error).toBe('email_already_registered');
         expect(mockUserCreate).not.toHaveBeenCalled();
         expect(mockProvision).not.toHaveBeenCalled();
+    });
+
+    it('returns 429 when the IP is throttled: no lookup, no hash, no provision', async () => {
+        mockCheckAuthRateLimit.mockResolvedValue({ limited: true, scope: 'ip', retryAfterSeconds: 900 });
+
+        const res = await POST(makeReq({ email: 'bulk@example.com', password: 'longenough123' }));
+        const body = await res.json();
+
+        expect(res.status).toBe(429);
+        expect(body).toEqual({ error: 'too_many_attempts', retry_after_seconds: 900 });
+        expect(res.headers.get('retry-after')).toBe('900');
+        expect(mockCheckAuthRateLimit).toHaveBeenCalledWith('register', { ip: null });
+        expect(mockRecordAuthAttempt).not.toHaveBeenCalled();
     });
 
     it('returns 400 when password is too short', async () => {

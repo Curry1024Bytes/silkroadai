@@ -23,6 +23,22 @@ vi.mock('bcryptjs', () => ({
 // session.ts uses real signSession; .env from vitest setup provides
 // PORTAL_JWT_SECRET so no need to mock.
 
+// Throttle + attempt log live in their own module (unit-tested in
+// src/lib/auth/__tests__/attempts.test.ts); here we only assert the route
+// calls them correctly. tooManyAttemptsResponse stays real.
+const mockCheckAuthRateLimit = vi.fn();
+const mockRecordAuthAttempt = vi.fn();
+const mockResolveAuthAttempt = vi.fn();
+vi.mock('@/lib/auth/attempts', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/auth/attempts')>('@/lib/auth/attempts');
+    return {
+        ...actual,
+        checkAuthRateLimit: (...args: unknown[]) => mockCheckAuthRateLimit(...args),
+        recordAuthAttempt: (...args: unknown[]) => mockRecordAuthAttempt(...args),
+        resolveAuthAttempt: (...args: unknown[]) => mockResolveAuthAttempt(...args),
+    };
+});
+
 import { POST } from '../route';
 
 function makeReq(body: unknown): NextRequest {
@@ -37,6 +53,9 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAuthRateLimit.mockResolvedValue({ limited: false });
+    mockRecordAuthAttempt.mockResolvedValue('attempt-1');
+    mockResolveAuthAttempt.mockResolvedValue(undefined);
     // last_login_at update is fire-and-forget; default to resolving so the
     // promise doesn't dangle as unhandled rejection across tests.
     mockUserUpdate.mockResolvedValue({});
@@ -174,6 +193,18 @@ describe('POST /api/auth/login', () => {
         expect(mockCompare).toHaveBeenCalledTimes(1);
         expect(res.headers.get('set-cookie')).toBeNull();
         expect(mockUserUpdate).not.toHaveBeenCalled();
+        // logged as a failure against the account, and left that way
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'login',
+                outcome: 'bad_password',
+                email: 'wrongpass@silkroadai.io',
+                userId: PORTAL_USER_ID,
+            }),
+        );
+        expect(mockResolveAuthAttempt).not.toHaveBeenCalled();
+        // the password itself must never reach the log
+        expect(JSON.stringify(mockRecordAuthAttempt.mock.calls)).not.toContain('badguess');
     });
 
     it('401 when email does not exist; bcrypt.compare still ran once (timing defense)', async () => {
@@ -190,6 +221,16 @@ describe('POST /api/auth/login', () => {
         expect(mockCompare).toHaveBeenCalledTimes(1);
         expect(res.headers.get('set-cookie')).toBeNull();
         expect(mockUserUpdate).not.toHaveBeenCalled();
+        // unknown emails are logged too — same work as the known-email
+        // branch, and credential-stuffing lists leave a trace
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'login',
+                outcome: 'unknown_email',
+                email: 'ghost@silkroadai.io',
+                userId: null,
+            }),
+        );
     });
 
     it('401 when account is disabled (no Set-Cookie even with right password)', async () => {
@@ -209,6 +250,96 @@ describe('POST /api/auth/login', () => {
         expect(body.error).toBe('invalid_credentials');
         expect(res.headers.get('set-cookie')).toBeNull();
         expect(mockUserUpdate).not.toHaveBeenCalled();
+        expect(mockResolveAuthAttempt).toHaveBeenCalledWith('attempt-1', { outcome: 'inactive' });
+    });
+
+    it('429 when throttled: no user lookup, no bcrypt, nothing logged, no cookie', async () => {
+        mockCheckAuthRateLimit.mockResolvedValue({ limited: true, scope: 'email', retryAfterSeconds: 540 });
+
+        const res = await POST(makeReq({ email: 'Victim@SilkRoadAI.io', password: 'guess-11' }));
+        const body = await res.json();
+
+        expect(res.status).toBe(429);
+        expect(body).toEqual({ error: 'too_many_attempts', retry_after_seconds: 540 });
+        expect(res.headers.get('retry-after')).toBe('540');
+        expect(res.headers.get('set-cookie')).toBeNull();
+        // checked on the normalized email, before any expensive work
+        expect(mockCheckAuthRateLimit).toHaveBeenCalledWith('login', { email: 'victim@silkroadai.io', ip: null });
+        expect(mockUserFindUnique).not.toHaveBeenCalled();
+        expect(mockCompare).not.toHaveBeenCalled();
+        // a rejected request must not extend the lock or grow the table
+        expect(mockRecordAuthAttempt).not.toHaveBeenCalled();
+    });
+
+    it('logs the attempt BEFORE bcrypt, then resolves it to success', async () => {
+        const order: string[] = [];
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve({
+                id: PORTAL_USER_ID,
+                email: 'happy@silkroadai.io',
+                password_hash: '$2a$12$realhashstoredinDB',
+                status: 'active',
+                keys: [],
+            });
+        });
+        mockRecordAuthAttempt.mockImplementation(async () => {
+            order.push('record');
+            return 'attempt-7';
+        });
+        mockCompare.mockImplementation(async () => {
+            order.push('compare');
+            return true;
+        });
+        mockResolveAuthAttempt.mockImplementation(async () => {
+            order.push('resolve');
+        });
+
+        const res = await POST(makeReq({ email: 'happy@silkroadai.io', password: 'goodpass123' }));
+
+        expect(res.status).toBe(200);
+        // record-then-compare closes the parallel-burst window: every
+        // in-flight guess is already counted while bcrypt is still running
+        expect(order).toEqual(['record', 'compare', 'resolve']);
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(
+            expect.objectContaining({ kind: 'login', outcome: 'bad_password', userId: PORTAL_USER_ID }),
+        );
+        expect(mockResolveAuthAttempt).toHaveBeenCalledWith('attempt-7', { outcome: 'success' });
+    });
+
+    it('uses CF-Connecting-IP (real client) when the proxy peer is Cloudflare', async () => {
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve({
+                id: PORTAL_USER_ID,
+                email: 'happy@silkroadai.io',
+                password_hash: '$2a$12$realhashstoredinDB',
+                status: 'active',
+                keys: [],
+            });
+        });
+        mockCompare.mockResolvedValue(true);
+
+        const req = new NextRequest('http://localhost/api/auth/login', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                // what prod actually sends: Caddy's XFF = Cloudflare edge node
+                'x-forwarded-for': '162.158.90.12',
+                'cf-connecting-ip': '203.0.113.7',
+            },
+            body: JSON.stringify({ email: 'happy@silkroadai.io', password: 'goodpass123' }),
+        });
+        await POST(req);
+
+        expect(mockCheckAuthRateLimit).toHaveBeenCalledWith('login', {
+            email: 'happy@silkroadai.io',
+            ip: '203.0.113.7',
+        });
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(expect.objectContaining({ ip: '203.0.113.7' }));
+        expect(mockUserUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ last_login_ip: '203.0.113.7' }) }),
+        );
     });
 
     it('400 when body has malformed email', async () => {

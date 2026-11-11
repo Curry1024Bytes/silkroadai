@@ -5,6 +5,12 @@ import { compare } from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { extractClientIP } from '@/lib/auth/extract-ip';
+import {
+    checkAuthRateLimit,
+    recordAuthAttempt,
+    resolveAuthAttempt,
+    tooManyAttemptsResponse,
+} from '@/lib/auth/attempts';
 
 // bcryptjs + prisma adapter-pg are Node-native; pin runtime so Next doesn't
 // try to put this on the Edge.
@@ -57,6 +63,14 @@ async function handleLogin(req: NextRequest) {
     }
     const { email, password } = parsed.data;
 
+    // Brute-force throttle: 10 failures / 15 min per email, 30 per IP. Checked
+    // before the lookup + bcrypt so a blocked caller costs two index reads.
+    // The 429 is identical for known and unknown emails (unknown ones are
+    // counted too), so it doesn't reveal whether an account exists.
+    const ip = extractClientIP(req);
+    const verdict = await checkAuthRateLimit('login', { email, ip });
+    if (verdict.limited) return tooManyAttemptsResponse(verdict);
+
     const user = await prisma.user.findUnique({
         where: { email },
         include: {
@@ -66,6 +80,20 @@ async function handleLogin(req: NextRequest) {
                 take: 1,
             },
         },
+    });
+
+    // Log the attempt as a failure BEFORE the slow bcrypt step and flip it to
+    // 'success' afterwards. Written the other way round, a burst of parallel
+    // requests would all pass the throttle check during the ~250ms compare
+    // and each get a free guess. Written for unknown emails too, so both
+    // branches do the same work (timing) and stuffing lists leave a trace.
+    const attemptId = await recordAuthAttempt({
+        kind: 'login',
+        outcome: user ? 'bad_password' : 'unknown_email',
+        email,
+        ip,
+        userId: user?.id ?? null,
+        userAgent: req.headers.get('user-agent'),
     });
 
     // Always run bcrypt.compare even when the user doesn't exist, so timing
@@ -79,13 +107,16 @@ async function handleLogin(req: NextRequest) {
 
     // Refusing logins for disabled / banned accounts (still 401, no leak).
     if (user.status !== 'active') {
+        await resolveAuthAttempt(attemptId, { outcome: 'inactive' });
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
 
-    // Best-effort last_login_at + last_login_ip touch (W5 D4: ip captured
-    // from x-forwarded-for / x-real-ip set by host Caddy). Fire-and-forget
-    // — failure here doesn't block the login response.
-    const ip = extractClientIP(req);
+    await resolveAuthAttempt(attemptId, { outcome: 'success' });
+
+    // Best-effort last_login_at + last_login_ip touch. `ip` is the real
+    // client address (CF-Connecting-IP when the request came through
+    // Cloudflare — see extract-ip.ts). Fire-and-forget — failure here
+    // doesn't block the login response.
     prisma.user
         .update({
             where: { id: user.id },

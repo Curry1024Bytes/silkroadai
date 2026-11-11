@@ -24,6 +24,22 @@ vi.mock('@/lib/email/send', () => ({
     sendPasswordResetEmail: (...args: unknown[]) => mockSendPasswordResetEmail(...args),
 }));
 
+// Throttle + attempt log live in their own module (unit-tested in
+// src/lib/auth/__tests__/attempts.test.ts); here we only assert the route
+// calls them correctly. tooManyAttemptsResponse stays real.
+const mockCheckAuthRateLimit = vi.fn();
+const mockRecordAuthAttempt = vi.fn();
+const mockResolveAuthAttempt = vi.fn();
+vi.mock('@/lib/auth/attempts', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/auth/attempts')>('@/lib/auth/attempts');
+    return {
+        ...actual,
+        checkAuthRateLimit: (...args: unknown[]) => mockCheckAuthRateLimit(...args),
+        recordAuthAttempt: (...args: unknown[]) => mockRecordAuthAttempt(...args),
+        resolveAuthAttempt: (...args: unknown[]) => mockResolveAuthAttempt(...args),
+    };
+});
+
 import { POST } from '../route';
 
 function makeReq(body: unknown): NextRequest {
@@ -38,6 +54,9 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAuthRateLimit.mockResolvedValue({ limited: false });
+    mockRecordAuthAttempt.mockResolvedValue('attempt-1');
+    mockResolveAuthAttempt.mockResolvedValue(undefined);
     mockTokenCreate.mockResolvedValue({ id: 'tok-1' });
     mockSendPasswordResetEmail.mockResolvedValue({
         messageId: '<test@example>',
@@ -149,6 +168,32 @@ describe('POST /api/auth/forgot-password', () => {
         expect(mockTokenCreate).toHaveBeenCalledTimes(1);
         expect(warnSpy).toHaveBeenCalled();
         warnSpy.mockRestore();
+    });
+
+    it('429 when the IP is throttled: no lookup, no token, no mail', async () => {
+        mockCheckAuthRateLimit.mockResolvedValue({ limited: true, scope: 'ip', retryAfterSeconds: 1800 });
+
+        const res = await POST(makeReq({ email: 'real@silkroadai.io' }));
+        const body = await res.json();
+
+        expect(res.status).toBe(429);
+        expect(body).toEqual({ error: 'too_many_attempts', retry_after_seconds: 1800 });
+        expect(res.headers.get('retry-after')).toBe('1800');
+        expect(mockUserFindUnique).not.toHaveBeenCalled();
+        expect(mockTokenCreate).not.toHaveBeenCalled();
+        expect(mockSendPasswordResetEmail).not.toHaveBeenCalled();
+        expect(mockRecordAuthAttempt).not.toHaveBeenCalled();
+    });
+
+    it('throttle is keyed on IP only (a 429 must not depend on the email)', async () => {
+        mockUserFindUnique.mockResolvedValue(null);
+
+        await POST(makeReq({ email: 'ghost@silkroadai.io' }));
+
+        expect(mockCheckAuthRateLimit).toHaveBeenCalledWith('forgot_password', { ip: null });
+        expect(mockRecordAuthAttempt).toHaveBeenCalledWith(
+            expect.objectContaining({ kind: 'forgot_password', outcome: 'attempt', email: 'ghost@silkroadai.io' }),
+        );
     });
 
     it('400 when email malformed', async () => {

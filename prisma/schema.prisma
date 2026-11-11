@@ -539,6 +539,30 @@ model PasswordResetToken {
   @@map("password_reset_tokens")
 }
 
+// ── 认证尝试审计 + 限流计数源(2026-11-11) ──
+// 每次 login / register / forgot-password / reset-password 落一行。两个用途:
+//   1. 限流:src/lib/auth/attempts.ts 按 email / ip 在时间窗内数失败行,超限 → 429。
+//      用 DB 不用进程内 Map —— 计数跨实例共享、重启不丢。
+//   2. 审计:撞库 / 暴力尝试留痕(此前登录失败完全不落库,事后无从查起)。
+// 故意不建 User FK:unknown_email 的行没有 user;用户删除后审计行也要留。
+// 永不存密码。outcome 取值见 attempts.ts(success / bad_password / unknown_email /
+// inactive / attempt)。
+model AuthAttempt {
+  id         String   @id @default(uuid()) @db.Uuid
+  kind       String   @db.VarChar(32)
+  outcome    String   @db.VarChar(32)
+  email      String?  @db.VarChar(254)
+  ip         String?  @db.VarChar(45)
+  user_id    String?  @db.Uuid
+  user_agent String?  @db.VarChar(300)
+  created_at DateTime @default(now())
+
+  @@index([email, created_at(sort: Desc)])
+  @@index([ip, created_at(sort: Desc)])
+  @@index([created_at])
+  @@map("auth_attempts")
+}
+
 // ── 邮箱验证 token(W3 D5) ──
 // 完全镜像 PasswordResetToken 设计。Token 24h 过期(reset 1h,verification 24h —
 // 客户首次注册到点验证邮件可能延迟)。User.email_verified_at = null = 未验证。
