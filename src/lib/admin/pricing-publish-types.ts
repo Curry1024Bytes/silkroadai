@@ -47,5 +47,12 @@ export interface TieredPricingDetails {
             cache_write_12h?: number | null;
         };
     }>;
+    /** Read-only new-api request-rule multipliers; editable Portal pricing excludes them. */
+    request_multipliers?: Array<{
+        source: 'param';
+        path: string;
+        equals: string;
+        multiplier: number;
+    }>;
     scheduled_discount?: ScheduledDiscountDetails;
 }

@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { QUOTA_PER_USD, USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { mirrorRowPresent, sameRatioMaps } from '@/lib/pricing-rules/options';
 import {
+    parseCatalogTieredPricingExpression,
     buildTieredPricingExpression,
     parseTieredPricingExpression,
     type TieredPricingBuildTier,
@@ -178,6 +179,7 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
             '该模型使用图片或视频计费规则，请在 new-api 修改基础价后同步目录。',
         );
     if (hasTimeOfDayPrice(options, name)) throw timeOfDayReadonly();
+    if (hasRequestRulePrice(options, name)) throw requestRuleReadonly();
     const modes = optionDict(options, MODE_KEY, true);
     if (modes[name] === 'tiered_expr') {
         const expression = optionDict(options, EXPR_KEY, true)[name];
@@ -224,10 +226,29 @@ export function hasTimeOfDayPrice(options: Record<string, unknown>, name: string
     );
 }
 
+/** Request-rule multipliers are retained for catalog display, but cannot be edited as one scalar tariff. */
+export function hasRequestRulePrice(options: Record<string, unknown>, name: string): boolean {
+    if (optionDict(options, MODE_KEY, true)[name] !== 'tiered_expr') return false;
+    const expression = optionDict(options, EXPR_KEY, true)[name];
+    if (typeof expression !== 'string') return false;
+    try {
+        return parseCatalogTieredPricingExpression(expression).request_multipliers.length > 0;
+    } catch {
+        return false;
+    }
+}
+
 function timeOfDayReadonly(): SimplePricingError {
     return new SimplePricingError(
         'pricing_time_readonly',
         '该模型按高峰、非高峰时段计价，请在 new-api 修改公式后同步目录；这里只展示，不能保存。',
+    );
+}
+
+function requestRuleReadonly(): SimplePricingError {
+    return new SimplePricingError(
+        'pricing_request_rule_readonly',
+        '该模型包含按请求参数变化的计费倍率，请在 new-api 修改公式后同步目录；这里只展示，不能保存。',
     );
 }
 
@@ -319,6 +340,7 @@ export function planModelWrites(
             '该模型的图片或视频计费规则须在 new-api 修改，再同步目录。',
         );
     if (hasTimeOfDayPrice(options, name)) throw timeOfDayReadonly();
+    if (hasRequestRulePrice(options, name)) throw requestRuleReadonly();
     if (
         optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
         isTaskUsageExpression(optionDict(options, EXPR_KEY, true)[name])

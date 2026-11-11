@@ -5,6 +5,7 @@ import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
 import { syncModelModality } from '@/lib/newapi/catalog-sync-advanced';
 import {
     parseCatalogBillingDetails,
+    catalogRequestMultiplierLines,
     catalogDetailLines,
     catalogScheduledDiscountLines,
     type CatalogBillingDetails,
@@ -117,6 +118,7 @@ const priceLines = (price: PriceValues | null): string[] => {
                 ),
             ]),
             ...(details.scheduled_discount ? catalogScheduledDiscountLines(details.scheduled_discount) : []),
+            ...catalogRequestMultiplierLines(details),
         ];
     }
     return !price

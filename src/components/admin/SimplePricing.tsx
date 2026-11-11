@@ -773,9 +773,13 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                                 ? en
                                                     ? 'Peak / off-peak'
                                                     : '分时段计费'
-                                                : en
-                                                  ? 'Media pricing'
-                                                  : '图片／视频计费'
+                                                : model.read_only_kind === 'request_rule'
+                                                  ? en
+                                                      ? 'Request-based pricing'
+                                                      : '按请求参数计费'
+                                                  : en
+                                                    ? 'Media pricing'
+                                                    : '图片／视频计费'
                                             : baseSummary(model.base, en)}
                                     </span>
                                 </div>

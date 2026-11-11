@@ -50,6 +50,7 @@ import {
     readBasePrice,
     hasStructuredMediaPrice,
     hasTimeOfDayPrice,
+    hasRequestRulePrice,
     sameNumber,
     unverifiedWrites,
     type BasePrice,
@@ -112,8 +113,8 @@ export interface SimpleUpstreamModel {
     base: BasePrice | null;
     error: string | null;
     read_only?: boolean;
-    /** Why `read_only`: structured image/video pricing, or a peak/off-peak formula kept in new-api. */
-    read_only_kind?: 'media' | 'time_of_day';
+    /** Why `read_only`: structured image/video pricing, time-of-day, or request-rule pricing kept in new-api. */
+    read_only_kind?: 'media' | 'time_of_day' | 'request_rule';
     /** Optimistic-lock token for save_model. */
     state: string;
     /** new-api forces output = input × this ratio for token pricing. */
@@ -301,12 +302,15 @@ function buildView(
                         error,
                         read_only:
                             hasStructuredMediaPrice(options, upstream_model) ||
-                            hasTimeOfDayPrice(options, upstream_model),
+                            hasTimeOfDayPrice(options, upstream_model) ||
+                            hasRequestRulePrice(options, upstream_model),
                         read_only_kind: hasTimeOfDayPrice(options, upstream_model)
                             ? 'time_of_day'
-                            : hasStructuredMediaPrice(options, upstream_model)
-                              ? 'media'
-                              : undefined,
+                            : hasRequestRulePrice(options, upstream_model)
+                              ? 'request_rule'
+                              : hasStructuredMediaPrice(options, upstream_model)
+                                ? 'media'
+                                : undefined,
                         state: modelOptionState(options, upstream_model),
                         locked_completion: meta?.locked === true && typeof meta.ratio === 'number' ? meta.ratio : null,
                         notes: notesFor(options, upstream_model),
@@ -1026,11 +1030,15 @@ export async function verifyRuntime(names: string[]): Promise<{ models: RuntimeC
     const [options, runtime] = await Promise.all([getPricingPublishOptions(), getPricingRuntimeModels(names)]);
     const models = runtime.models.map((row): RuntimeCheck => {
         const diffs: string[] = [];
-        if (hasTimeOfDayPrice(options, row.model_name)) {
+        if (hasTimeOfDayPrice(options, row.model_name) || hasRequestRulePrice(options, row.model_name)) {
             // Portal never writes these; only check that new-api's runtime holds the configured formula.
             const expression = optionDict(options, EXPR_KEY, true)[row.model_name];
             if (row.billing_mode !== 'tiered_expr' || row.billing_expr !== expression)
-                diffs.push('分时段公式与配置不一致。');
+                diffs.push(
+                    hasTimeOfDayPrice(options, row.model_name)
+                        ? '分时段公式与配置不一致。'
+                        : '请求倍率公式与配置不一致。',
+                );
             return { name: row.model_name, ok: diffs.length === 0, diffs };
         }
         const base = safeBase(options, row.model_name).base;

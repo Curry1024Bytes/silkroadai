@@ -206,6 +206,18 @@ export function videoTokenSummaryCell(details: VideoTokenPricingDetails): VideoT
     return details.cells.find((cell) => cell.resolution === '720p' && cell.video_input === 'none') ?? details.cells[0];
 }
 
+/** Human-readable notes for new-api request-rule multipliers retained on a catalog row. */
+export function catalogRequestMultiplierLines(
+    details: Pick<TieredPricingDetails, 'request_multipliers'>,
+    en = false,
+): string[] {
+    return (details.request_multipliers ?? []).map((rule) =>
+        en
+            ? `When ${rule.path} = ${rule.equals}: ×${formatTieredPrice(rule.multiplier)}`
+            : `当 ${rule.path} = ${rule.equals} 时：价格 ×${formatTieredPrice(rule.multiplier)}`,
+    );
+}
+
 export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: number): CatalogBillingDetails {
     const details = parseCatalogBillingDetails(raw)!;
     if (details.mode === 'tiered_token') return scaleTieredPricingDetails(details, scale);

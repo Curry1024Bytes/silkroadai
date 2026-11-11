@@ -122,6 +122,22 @@ describe('readBasePrice', () => {
         ])
             expect(run).toThrow(expect.objectContaining({ code: 'pricing_time_readonly' }));
     });
+    it('keeps request-rule multipliers read-only: a base-price save would drop the rule', () => {
+        const source = options({
+            [MODE]: JSON.stringify({ gpt: 'tiered_expr' }),
+            [EXPR]: JSON.stringify({
+                gpt:
+                    '(len <= 272000 ? tier("short", p * 2 + c * 10) : tier("long", p * 4 + c * 15)) * ' +
+                    '(param("service_tier") == "priority" ? 2 : 1)',
+            }),
+        });
+        expect(() => readBasePrice(source, 'gpt')).toThrow(
+            expect.objectContaining({ code: 'pricing_request_rule_readonly' }),
+        );
+        expect(() => planModelWrites(source, 'gpt', { mode: 'per_call', price: 1 })).toThrow(
+            expect.objectContaining({ code: 'pricing_request_rule_readonly' }),
+        );
+    });
     it('keeps structured media rules out of the scalar editor and detects resolution-only changes', () => {
         const source = options({ ImageResolutionPrice: { 'img-1': { '1K': 0.5, '2K': 0.8, '4K': 1 } } });
         expect(() => readBasePrice(source, 'img-1')).toThrow('new-api');

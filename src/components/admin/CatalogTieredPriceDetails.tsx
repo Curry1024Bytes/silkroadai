@@ -3,7 +3,7 @@ import {
     isUniformPricingDetails,
     tieredPricingConditionLabel,
 } from '@/lib/models/tiered-pricing-details';
-import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
+import { catalogRequestMultiplierLines, parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
 import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
 
 /** The same verified tariff is retained in both the current catalog and its history. */
@@ -37,6 +37,11 @@ export default function CatalogTieredPriceDetails({ raw, en }: { raw: unknown; e
                       ? 'Rates in CNY / million tokens. Full input length selects one tier for the whole request.'
                       : '单位：元／百万 token。按完整输入长度选档，整次请求使用该档价格。'}
             </p>
+            {catalogRequestMultiplierLines(details, en).map((line) => (
+                <p key={line} className="my-2 text-amber-700">
+                    {line}
+                </p>
+            ))}
             <div className="space-y-2">
                 {details.tiers.map((tier) => (
                     <div key={tier.name} className="rounded border border-slate-400/30 p-2">

@@ -42,6 +42,7 @@ import {
 } from '@/lib/models/tiered-pricing-details';
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 import {
+    catalogRequestMultiplierLines,
     parseCatalogBillingDetails,
     primaryTokenRates,
     scaleCatalogBillingDetails,
@@ -410,6 +411,11 @@ function TieredPriceTable({
     return (
         <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
             <p className="m-0 mb-2 text-xs">{uniform ? t.introUniform : t.introTiered}</p>
+            {catalogRequestMultiplierLines(details, en).map((line) => (
+                <p key={line} className="m-0 mb-2 text-xs text-amber-700">
+                    {line}
+                </p>
+            ))}
             <table className="w-full text-xs" aria-label={t.aria(tierLabel, uniform)}>
                 <thead>
                     <tr className="text-left">

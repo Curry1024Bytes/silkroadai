@@ -11,6 +11,7 @@ import {
     tieredPricingConditionLabel,
 } from '@/lib/models/tiered-pricing-details';
 import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
+import { catalogRequestMultiplierLines } from '@/lib/models/catalog-pricing-details';
 
 export function ModelPriceDialog({
     entry,
@@ -90,6 +91,11 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
                 <p className="m-0 mb-3 text-xs leading-relaxed text-muted-ink">
                     单位：元 / 百万 token。按完整输入长度选档，整次请求使用该档价格。
                 </p>
+                {catalogRequestMultiplierLines(details).map((line) => (
+                    <p key={line} className="m-0 mb-3 text-xs leading-relaxed text-amber-700">
+                        {line}
+                    </p>
+                ))}
                 <div className="grid gap-3 sm:grid-cols-2">
                     {details.tiers.map((row) => (
                         <section key={row.name} className="rounded-lg bg-paper-muted p-4">
@@ -115,6 +121,12 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
     if (price.per_image_cny === null && !hasTokenRates) return <p className="m-0 text-sm text-muted-ink">未定价</p>;
     return (
         <>
+            {details?.mode === 'tiered_token' &&
+                catalogRequestMultiplierLines(details).map((line) => (
+                    <p key={line} className="m-0 mb-2 text-xs text-amber-700">
+                        {line}
+                    </p>
+                ))}
             {price.per_image_cny !== null && (
                 <p className="m-0 mb-2 text-base font-semibold">
                     {`¥${formatTieredPrice(price.per_image_cny)}`}

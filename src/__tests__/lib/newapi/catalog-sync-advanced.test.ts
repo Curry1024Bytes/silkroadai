@@ -84,6 +84,28 @@ describe('catalog synchronization of new-api billing rules', () => {
         expect(details.tiers[0].rates).toMatchObject({ cache_write: amount(12.5), cache_write_12h: amount(25) });
         expect(details.tiers[1].rates).toMatchObject({ cache_write: amount(25), cache_write_12h: amount(50) });
     });
+
+    it('imports GPT-6 request-rule multipliers without dropping the base tiers', () => {
+        const expression =
+            '(len <= 272000 ? tier("short", p * 2 + c * 10 + cr * 0.2) : tier("long", p * 4 + c * 15 + cr * 0.4))' +
+            ' * (param("service_tier") == "priority" ? 2 : 1)' +
+            ' * (param("service_tier") == "fast" ? 2 : 1)' +
+            ' * (param("service_tier") == "ultrafast" ? 6 : 1)';
+        const result = read({
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': { test: expression },
+        });
+        expect(result.reason).toBeNull();
+        expect(result.price!.billing_details).toMatchObject({
+            mode: 'tiered_token',
+            request_multipliers: [
+                { source: 'param', path: 'service_tier', equals: 'priority', multiplier: 2 },
+                { source: 'param', path: 'service_tier', equals: 'fast', multiplier: 2 },
+                { source: 'param', path: 'service_tier', equals: 'ultrafast', multiplier: 6 },
+            ],
+        });
+        expect(result.price!.input_cny_per_1m).toBe(amount(2));
+    });
     it('imports all image resolutions without pretending the lowest price applies to every size', () => {
         const raw = syncPricesFromOptions(
             options({ ImageResolutionPrice: { banana: { '1K': 0.5, '2K': 0.8, '4K': 1 } } }),

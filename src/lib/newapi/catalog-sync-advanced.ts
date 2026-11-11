@@ -1,5 +1,8 @@
 import 'server-only';
-import { parseTieredPricingExpression } from '@/lib/admin/pricing-tiered-expression';
+import {
+    parseCatalogTieredPricingExpression,
+    parseTieredPricingExpression,
+} from '@/lib/admin/pricing-tiered-expression';
 import { isTaskUsageExpression, parseVideoTokenExpression } from '@/lib/admin/pricing-video-token-expression';
 import { isTimeOfDayExpression, parseTimeTokenExpression } from '@/lib/admin/pricing-time-token-expression';
 import { IMAGE_FX } from './pricing-sync';
@@ -117,14 +120,17 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
                     schedule: parsed.schedule,
                     exceptions: parsed.exceptions,
                 })!;
-            } else
+            } else {
+                const parsed = parseCatalogTieredPricingExpression(expression);
                 details = parseCatalogBillingDetails({
                     version: 1,
                     mode: 'tiered_token',
                     unit: 'cny_per_million_tokens',
                     semantics: 'whole_request',
-                    tiers: parseTieredPricingExpression(expression).tiers,
+                    tiers: parsed.tiers,
+                    ...(parsed.request_multipliers.length ? { request_multipliers: parsed.request_multipliers } : {}),
                 })!;
+            }
             basis = 'token';
         } else if (image !== undefined || mode === 'image_resolution') {
             const prices = syncDictionary(image ?? null, 'ImageResolutionPrice');

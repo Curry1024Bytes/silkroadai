@@ -39,6 +39,19 @@ export interface ParsedTieredPricingExpression {
     tiers: TieredPricingTier[];
 }
 
+/** A request-dependent multiplier that new-api applies after selecting a tier. */
+export interface TieredPricingRequestMultiplier {
+    source: 'param';
+    path: string;
+    equals: string;
+    multiplier: number;
+}
+
+export interface ParsedCatalogTieredPricingExpression extends ParsedTieredPricingExpression {
+    /** Read-only metadata; the editable pricing grammar intentionally excludes it. */
+    request_multipliers: TieredPricingRequestMultiplier[];
+}
+
 export type TieredPricingExpressionErrorCode =
     | 'pricing_tiered_expression_unsupported'
     | 'pricing_tiered_expression_invalid'
@@ -72,6 +85,7 @@ const RATE_KEYS = {
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
 const TEN = BigInt(10);
+const NUMBER_PATTERN = '(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
 
 interface Token {
     kind: 'identifier' | 'number' | 'name' | 'symbol';
@@ -181,6 +195,130 @@ function tokenize(expression: string): Token[] {
         position += text.length;
     }
     return tokens;
+}
+
+function matchingOuterParenthesis(text: string): number | null {
+    if (text[0] !== '(') return null;
+    let depth = 0;
+    let quote = false;
+    let escaped = false;
+    for (let index = 0; index < text.length; index++) {
+        const char = text[index];
+        if (quote) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quote = false;
+            continue;
+        }
+        if (char === '"') {
+            quote = true;
+            continue;
+        }
+        if (char === '(') depth++;
+        else if (char === ')') {
+            depth--;
+            if (depth === 0) return index;
+            if (depth < 0) return null;
+        }
+    }
+    return null;
+}
+
+function unwrapOuterParentheses(text: string): string {
+    let result = text.trim();
+    for (;;) {
+        const closing = matchingOuterParenthesis(result);
+        if (closing !== result.length - 1) return result;
+        result = result.slice(1, -1).trim();
+    }
+}
+
+/** Split only the top-level product used by new-api request-rule multipliers. */
+function topLevelProductParts(expression: string): string[] {
+    const parts: string[] = [];
+    let start = 0;
+    let depth = 0;
+    let quote = false;
+    let escaped = false;
+    for (let index = 0; index < expression.length; index++) {
+        const char = expression[index];
+        if (quote) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quote = false;
+            continue;
+        }
+        if (char === '"') {
+            quote = true;
+            continue;
+        }
+        if (char === '(') depth++;
+        else if (char === ')') depth--;
+        else if (char === '*' && depth === 0) {
+            parts.push(expression.slice(start, index).trim());
+            start = index + 1;
+        }
+    }
+    parts.push(expression.slice(start).trim());
+    return parts;
+}
+
+const JSON_STRING = '"(?:\\\\.|[^"\\\\])*"';
+const REQUEST_MULTIPLIER = new RegExp(
+    `^param\\s*\\(\\s*(${JSON_STRING})\\s*\\)\\s*==\\s*(${JSON_STRING})\\s*\\?\\s*(${NUMBER_PATTERN})\\s*:\\s*1$`,
+);
+
+function readRequestMultiplier(part: string): TieredPricingRequestMultiplier | null {
+    const match = REQUEST_MULTIPLIER.exec(unwrapOuterParentheses(part));
+    if (!match) return null;
+    let path: unknown;
+    let equals: unknown;
+    try {
+        path = JSON.parse(match[1]);
+        equals = JSON.parse(match[2]);
+    } catch {
+        unsupported('请求倍率条件中的字符串无效。');
+    }
+    if (
+        typeof path !== 'string' ||
+        typeof equals !== 'string' ||
+        path.length === 0 ||
+        path.length > 64 ||
+        equals.length === 0 ||
+        equals.length > 64
+    )
+        unsupported('请求倍率条件中的参数名或取值无效。');
+    const multiplier = Number(match[3]);
+    if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > Number.MAX_SAFE_INTEGER)
+        invalid('请求倍率超出可安全表示的范围。');
+    return { source: 'param', path, equals, multiplier };
+}
+
+/**
+ * Read the safe subset of new-api request-rule pricing used by the deployed GPT-6
+ * formulas. The base length-tier expression remains parsed by the strict grammar;
+ * only trailing `(param("x") == "y" ? number : 1)` products are projected into
+ * metadata. This function is for catalog display only and is deliberately not used
+ * by editable pricing or expression scaling.
+ */
+export function parseCatalogTieredPricingExpression(expression: string): ParsedCatalogTieredPricingExpression {
+    if (typeof expression !== 'string' || expression.length === 0 || expression.length > MAX_EXPRESSION_LENGTH)
+        invalid('表达式为空或超过长度限制。');
+    const parts = topLevelProductParts(expression);
+    const base = parts.shift() ?? '';
+    const request_multipliers: TieredPricingRequestMultiplier[] = [];
+    for (const part of parts) {
+        const multiplier = readRequestMultiplier(part);
+        if (!multiplier) unsupported('仅支持固定输入长度阶梯后附加的参数倍率规则。');
+        if (
+            request_multipliers.some(
+                (existing) => existing.path === multiplier.path && existing.equals === multiplier.equals,
+            )
+        )
+            invalid('请求倍率条件不能重复。');
+        request_multipliers.push(multiplier);
+    }
+    return { ...parseTieredPricingExpression(base), request_multipliers };
 }
 
 function parseWithSpans(expression: string): {

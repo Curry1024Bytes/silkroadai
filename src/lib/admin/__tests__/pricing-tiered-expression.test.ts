@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    parseCatalogTieredPricingExpression,
     parseTieredPricingExpression,
     scaleTieredPricingExpression,
     TieredPricingExpressionError,
@@ -113,6 +114,21 @@ describe('strict new-api tiered token expression reader', () => {
         expect(parsed.tiers[0].rates.cache_write_12h).toBe(25);
         expect(parsed.tiers[1].rates.cache_write_12h).toBe(50);
         expect(parsed.tiers[0].rates.cache_write_1h).toBeNull();
+    });
+
+    it('reads new-api request-rule multipliers as catalog-only metadata', () => {
+        const expression =
+            '(len <= 272000 ? tier("short", p * 2 + c * 10 + cr * 0.2) : tier("long", p * 4 + c * 15 + cr * 0.4))' +
+            ' * (param("service_tier") == "priority" ? 2 : 1)' +
+            ' * (param("service_tier") == "ultrafast" ? 6 : 1)';
+        expect(() => parseTieredPricingExpression(expression)).toThrow(TieredPricingExpressionError);
+        const parsed = parseCatalogTieredPricingExpression(expression);
+        expect(parsed.tiers).toHaveLength(2);
+        expect(parsed.request_multipliers).toEqual([
+            { source: 'param', path: 'service_tier', equals: 'priority', multiplier: 2 },
+            { source: 'param', path: 'service_tier', equals: 'ultrafast', multiplier: 6 },
+        ]);
+        expect(() => parseCatalogTieredPricingExpression(`${expression} * 1.2`)).toThrow(TieredPricingExpressionError);
     });
 
     it('uses full len for choosing a tier while applying it to all normalized tokens', () => {

@@ -38,6 +38,14 @@ const scheduledDiscount = z
         if (!legacy && !value.windows?.length)
             context.addIssue({ code: 'custom', message: 'Discount windows are required' });
     });
+const requestMultiplier = z
+    .object({
+        source: z.literal('param'),
+        path: z.string().min(1).max(64),
+        equals: z.string().min(1).max(64),
+        multiplier: rate,
+    })
+    .strict();
 const detailsSchema = z
     .object({
         version: z.literal(1),
@@ -68,6 +76,7 @@ const detailsSchema = z
             )
             .min(1)
             .max(32),
+        request_multipliers: z.array(requestMultiplier).max(16).optional(),
         scheduled_discount: scheduledDiscount.optional(),
     })
     .strict()
@@ -99,6 +108,12 @@ const detailsSchema = z
                 for (const key of ['cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const)
                     if ((tier.rates[key] == null) !== (value.tiers[0].rates[key] == null)) invalid();
             }
+        }
+        if (value.request_multipliers) {
+            const keys = value.request_multipliers.map(
+                (item) => `${item.source}\u0000${item.path}\u0000${item.equals}`,
+            );
+            if (new Set(keys).size !== keys.length) invalid();
         }
     });
 
