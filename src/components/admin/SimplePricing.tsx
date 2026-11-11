@@ -77,6 +77,7 @@ const DIFF_FIELD_LABEL: Record<CatalogDiffField, [string, string]> = {
     cache_read: ['缓存读', 'Cache read'],
     cache_write: ['缓存写', 'Cache write'],
     cache_write_1h: ['缓存写 1h', 'Cache write 1h'],
+    cache_write_12h: ['缓存写 12h', 'Cache write 12h'],
     tier_count: ['阶梯档数', 'Tier count'],
     bound: ['档位上限', 'Tier bound'],
     billing_rule: ['计费规则', 'Billing rule'],
@@ -626,6 +627,7 @@ interface TierDraft {
     cache_read: string;
     cache_write: string;
     cache_write_1h: string;
+    cache_write_12h: string;
 }
 
 interface ModelDraft {
@@ -673,6 +675,7 @@ function draftFrom(base: BasePrice | null, modality: string): ModelDraft {
             cache_read: text(tier.rates.cache_read),
             cache_write: text(tier.rates.cache_write),
             cache_write_1h: text(tier.rates.cache_write_1h),
+            cache_write_12h: text(tier.rates.cache_write_12h ?? null),
         })),
     };
 }
@@ -700,6 +703,7 @@ function baseFrom(draft: ModelDraft): EditableBasePrice {
                 cache_read: optional(tier.cache_read),
                 cache_write: optional(tier.cache_write),
                 cache_write_1h: optional(tier.cache_write_1h),
+                cache_write_12h: optional(tier.cache_write_12h),
             },
         })),
     };
@@ -869,6 +873,7 @@ function ModelEditor({ model, view, en, isDark, onSaved, onError }: PanelProps &
                         cache_read: draft.cache_read,
                         cache_write: draft.cache_write,
                         cache_write_1h: '',
+                        cache_write_12h: '',
                     },
                 ],
             });
@@ -1096,6 +1101,12 @@ function ModelEditor({ model, view, en, isDark, onSaved, onError }: PanelProps &
                                         label={en ? 'Cache write 1h' : '缓存写 1h'}
                                         value={tier.cache_write_1h}
                                         onChange={(cache_write_1h) => setTier(index, { cache_write_1h })}
+                                        isDark={isDark}
+                                    />
+                                    <Field
+                                        label={en ? 'Cache write 12h' : '缓存写 12h'}
+                                        value={tier.cache_write_12h}
+                                        onChange={(cache_write_12h) => setTier(index, { cache_write_12h })}
                                         isDark={isDark}
                                     />
                                 </div>
@@ -1630,6 +1641,7 @@ const LINE_LABEL: Record<BillLine['key'], [string, string]> = {
     cache_read: ['缓存读', 'Cache read'],
     cache_write: ['缓存写', 'Cache write'],
     cache_write_1h: ['缓存写 1h', 'Cache write 1h'],
+    cache_write_12h: ['缓存写 12h', 'Cache write 12h'],
     per_call: ['按次', 'Per call'],
 };
 

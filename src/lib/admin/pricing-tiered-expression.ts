@@ -3,6 +3,8 @@
  * Coefficients are nominal USD per million tokens, before new-api's group ratio,
  * quota conversion and scheduled discounts. A selected tier prices the whole
  * request; it is not a marginal/slab charge. No new-api source is copied here.
+ * The reader keeps Claude's legacy `cc1h` and OpenAI's `cc12h` cache-write
+ * categories separate so a long-lived cache price is never mislabeled.
  */
 export interface TieredPricingRates {
     input: number;
@@ -10,6 +12,8 @@ export interface TieredPricingRates {
     cache_read: number | null;
     cache_write: number | null;
     cache_write_1h: number | null;
+    /** OpenAI's long-lived 12-hour cache-write price (new-api `cc12h`). */
+    cache_write_12h?: number | null;
 }
 
 export interface TieredPricingTier {
@@ -21,7 +25,7 @@ export interface TieredPricingTier {
     rates: TieredPricingRates;
 }
 
-export type TieredPricingVariable = 'p' | 'c' | 'cr' | 'cc' | 'cc1h';
+export type TieredPricingVariable = 'p' | 'c' | 'cr' | 'cc' | 'cc1h' | 'cc12h';
 
 export interface ParsedTieredPricingExpression {
     version: 1;
@@ -56,13 +60,14 @@ const MAX_TOKENS = 2_048;
 const MAX_TIERS = 32;
 const MAX_DEPTH = 64;
 const DECIMAL_PLACES = 12;
-const VARIABLES = ['p', 'c', 'cr', 'cc', 'cc1h'] as const;
+const VARIABLES = ['p', 'c', 'cr', 'cc', 'cc1h', 'cc12h'] as const;
 const RATE_KEYS = {
     p: 'input',
     c: 'output',
     cr: 'cache_read',
     cc: 'cache_write',
     cc1h: 'cache_write_1h',
+    cc12h: 'cache_write_12h',
 } as const;
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
@@ -218,7 +223,7 @@ function parseWithSpans(expression: string): {
                 variableToken?.kind !== 'identifier' ||
                 !VARIABLES.includes(variableToken.text as TieredPricingVariable)
             ) {
-                unsupported('仅支持 p、c、cr、cc、cc1h 的独立线性单价。');
+                unsupported('仅支持 p、c、cr、cc、cc1h、cc12h 的独立线性单价。');
             }
             const variable = variableToken.text as TieredPricingVariable;
             if (variables.has(variable)) invalid('同一档位不能重复计价同一 Token 类别。');
@@ -289,6 +294,11 @@ function parseWithSpans(expression: string): {
     }
 
     const rawTiers = selection();
+    // Keep the catalog invariant that a cache category is either priced in every
+    // branch or absent from every branch. `cc12h` is optional in the persisted
+    // shape for backwards compatibility, so normalize only expressions that use it.
+    if (rawTiers.some((rawTier) => Object.hasOwn(rawTier.rates, 'cache_write_12h')))
+        for (const rawTier of rawTiers) rawTier.rates.cache_write_12h ??= null;
     if (cursor !== tokens.length) unsupported('表达式包含不支持的额外规则。');
     let previous: RawTier['maximum'] = null;
     const tiers = rawTiers.map((rawTier): TieredPricingTier => {
@@ -377,7 +387,7 @@ export function scaleTieredPricingExpression(expression: string, numerator: numb
  * converted independently; neither existing tiers nor their price ratios apply. */
 export function uniformTokenPricingExpression(
     rates: Pick<TieredPricingRates, 'input' | 'output' | 'cache_read'> &
-        Partial<Pick<TieredPricingRates, 'cache_write' | 'cache_write_1h'>>,
+        Partial<Pick<TieredPricingRates, 'cache_write' | 'cache_write_1h' | 'cache_write_12h'>>,
     groupRatio: number,
     currencyFactor: number,
 ): string {
@@ -399,6 +409,7 @@ export function uniformTokenPricingExpression(
     if (rates.cache_read !== null) terms.push(`cr * ${coefficient(rates.cache_read)}`);
     if (rates.cache_write != null) terms.push(`cc * ${coefficient(rates.cache_write)}`);
     if (rates.cache_write_1h != null) terms.push(`cc1h * ${coefficient(rates.cache_write_1h)}`);
+    if (rates.cache_write_12h != null) terms.push(`cc12h * ${coefficient(rates.cache_write_12h)}`);
     const expression = `tier("uniform", ${terms.join(' + ')})`;
     parseWithSpans(expression);
     return expression;
@@ -423,9 +434,9 @@ export function buildTieredPricingExpression(tiers: TieredPricingBuildTier[]): s
         readPrice({ kind: 'number', text, start: 0, end: text.length });
         return text;
     };
-    const cacheKeys = ['cache_read', 'cache_write', 'cache_write_1h'] as const;
+    const cacheKeys = ['cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const;
     for (const key of cacheKeys)
-        if (tiers.some((tier) => (tier.rates[key] === null) !== (tiers[0].rates[key] === null)))
+        if (tiers.some((tier) => (tier.rates[key] == null) !== (tiers[0].rates[key] == null)))
             invalid('缓存价须在所有阶梯同时填写或同时留空。');
     const branches = tiers.map((tier, index) => {
         const last = index === tiers.length - 1;
@@ -435,6 +446,8 @@ export function buildTieredPricingExpression(tiers: TieredPricingBuildTier[]): s
         if (tier.rates.cache_write !== null) terms.push(`cc * ${literal(tier.rates.cache_write, '缓存写入价')}`);
         if (tier.rates.cache_write_1h !== null)
             terms.push(`cc1h * ${literal(tier.rates.cache_write_1h, '1 小时缓存写入价')}`);
+        if (tier.rates.cache_write_12h != null)
+            terms.push(`cc12h * ${literal(tier.rates.cache_write_12h, '12 小时缓存写入价')}`);
         const body = `tier("${index === 0 ? 'base' : `tier_${index + 1}`}", ${terms.join(' + ')})`;
         if (last) return body;
         const max = tier.max_input_tokens!;

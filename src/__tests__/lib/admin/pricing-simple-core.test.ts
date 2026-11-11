@@ -78,6 +78,11 @@ describe('buildTieredPricingExpression', () => {
         expect(() => buildTieredPricingExpression(mixed)).toThrow('缓存价须在所有阶梯同时填写或同时留空');
     });
 
+    it('refuses a 12h cache price filled in only some tiers', () => {
+        const mixed = [{ ...twoTiers[0], rates: { ...twoTiers[0].rates, cache_write_12h: 25 } }, twoTiers[1]];
+        expect(() => buildTieredPricingExpression(mixed)).toThrow('缓存价须在所有阶梯同时填写或同时留空');
+    });
+
     it('requires only the last tier to be open-ended', () => {
         expect(() => buildTieredPricingExpression([{ ...twoTiers[0], max_input_tokens: null }, twoTiers[1]])).toThrow();
         expect(() => buildTieredPricingExpression([twoTiers[0]])).toThrow('只有最后一档');

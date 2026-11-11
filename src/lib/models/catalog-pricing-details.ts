@@ -122,6 +122,7 @@ const timeRates = z
         cache_read: rate.nullable(),
         cache_write: rate.nullable(),
         cache_write_1h: rate.nullable(),
+        cache_write_12h: rate.nullable().optional(),
     })
     .strict();
 const timeTier = z.object({ name: z.string().min(1).max(64), rates: timeRates }).strict();
@@ -216,14 +217,14 @@ export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: nu
         for (const tier of [details.window, details.otherwise])
             for (const key of Object.keys(tier.rates) as Array<keyof typeof tier.rates>) {
                 const value = tier.rates[key];
-                if (value !== null) tier.rates[key] = scalePricingAmount(value, scale);
+                if (value != null) tier.rates[key] = scalePricingAmount(value, scale);
             }
         return details;
     }
     if (details.mode === 'component_token') {
         for (const key of Object.keys(details.rates) as Array<keyof typeof details.rates>) {
             const value = details.rates[key];
-            if (value !== null) details.rates[key] = scalePricingAmount(value, scale);
+            if (value != null) details.rates[key] = scalePricingAmount(value, scale);
         }
     } else {
         if (details.default_price !== null) details.default_price = scalePricingAmount(details.default_price, scale);
@@ -332,6 +333,9 @@ function timeTokenLines(details: TimeTokenPricingDetails, en: boolean, now: numb
             ...(r.cache_write_1h === null
                 ? []
                 : [`${en ? 'Cache write / 1 hour' : '缓存写入 1 小时'} ¥${formatTieredPrice(r.cache_write_1h)}`]),
+            ...(r.cache_write_12h == null
+                ? []
+                : [`${en ? 'Cache write / 12 hours' : '缓存写入 12 小时'} ¥${formatTieredPrice(r.cache_write_12h)}`]),
             `${en ? 'Output' : '输出'} ¥${formatTieredPrice(r.output)}`,
         ].join(en ? ', ' : '，');
     const schedule = details.schedule.length

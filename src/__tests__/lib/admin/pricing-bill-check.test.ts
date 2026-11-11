@@ -133,6 +133,20 @@ describe('estimateBill — per call and tiered', () => {
         ]);
     });
 
+    it('does not treat a legacy tier without cc12h as pricing that cache bucket', () => {
+        const bill = estimateBill(
+            { mode: 'tiered', tiers },
+            usage({ prompt: 150_000, completion: 1000, cache_write_12h: 10_000 }),
+            1,
+            null,
+            units,
+        );
+        expect(bill.lines.map((row) => [row.key, row.tokens])).toEqual([
+            ['input', 150_000],
+            ['output', 1000],
+        ]);
+    });
+
     it('does not adjust an Anthropic prompt but counts cache toward the tier length', () => {
         const noCacheRate = tiers.map((tier) => ({ ...tier, rates: { ...tier.rates, cache_read: null } }));
         const bill = estimateBill(

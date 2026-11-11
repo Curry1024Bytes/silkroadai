@@ -14,13 +14,14 @@ const nonNegative = z.number().finite().min(0).max(MAX_SAFE_VALUE);
 const positive = z.number().finite().positive().max(MAX_SAFE_VALUE);
 // A legacy rule's derived display multiplier can exceed either input's limit.
 const displayPositive = z.number().finite().positive();
-const tokenKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
+const tokenKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const;
 const tokenLabels: Record<(typeof tokenKeys)[number], string> = {
     input: '输入',
     output: '输出',
     cache_read: '缓存读取',
     cache_write: '缓存写入',
     cache_write_1h: '缓存写入 / 1 小时',
+    cache_write_12h: '缓存写入 / 12 小时',
 };
 
 function retailPrecision(basis: PricingCostConfig['basis'], key: string): number {
@@ -171,6 +172,7 @@ const configShape = z
                 cache_read: nonNegative.nullable(),
                 cache_write: nonNegative.nullable(),
                 cache_write_1h: nonNegative.nullable().optional(),
+                cache_write_12h: nonNegative.nullable().optional(),
             })
             .strict(),
         variants: z

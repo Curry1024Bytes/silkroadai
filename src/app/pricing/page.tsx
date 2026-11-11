@@ -404,7 +404,8 @@ function TieredPriceTable({
 }) {
     const uniform = isUniformPricingDetails(details);
     const hasWrite = details.tiers.some(
-        (tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null,
+        (tier) =>
+            tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null || tier.rates.cache_write_12h != null,
     );
     return (
         <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
@@ -420,6 +421,7 @@ function TieredPriceTable({
                             <>
                                 <th className="py-2 pl-3 text-right">{t.cacheWrite}</th>
                                 <th className="py-2 pl-3 text-right">{t.cacheWrite1h}</th>
+                                <th className="py-2 pl-3 text-right">{t.cacheWrite12h}</th>
                             </>
                         )}
                     </tr>
@@ -444,6 +446,11 @@ function TieredPriceTable({
                                         {tier.rates.cache_write_1h === null
                                             ? t.notListed
                                             : `¥${fmtCny(tier.rates.cache_write_1h)}`}
+                                    </td>
+                                    <td className="py-2 pl-3 text-right tabular-nums">
+                                        {tier.rates.cache_write_12h == null
+                                            ? t.notListed
+                                            : `¥${fmtCny(tier.rates.cache_write_12h)}`}
                                     </td>
                                 </>
                             )}

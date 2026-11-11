@@ -112,7 +112,7 @@ const priceLines = (price: PriceValues | null): string[] => {
                     value === null
                         ? []
                         : [
-                              `${({ input: '输入', output: '输出', cache_read: '缓存读取', cache_write: '缓存写入', cache_write_1h: '缓存写入 1 小时' } as Record<string, string>)[key]} ¥${value} / 百万 token`,
+                              `${({ input: '输入', output: '输出', cache_read: '缓存读取', cache_write: '缓存写入', cache_write_1h: '缓存写入 1 小时', cache_write_12h: '缓存写入 12 小时' } as Record<string, string>)[key]} ¥${value} / 百万 token`,
                           ],
                 ),
             ]),

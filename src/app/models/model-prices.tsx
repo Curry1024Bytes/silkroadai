@@ -109,6 +109,7 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
         cache_read: null,
         cache_write: null,
         cache_write_1h: null,
+        cache_write_12h: null,
     };
     const hasTokenRates = Object.values(rates).some((rate) => rate !== null);
     if (price.per_image_cny === null && !hasTokenRates) return <p className="m-0 text-sm text-muted-ink">未定价</p>;
@@ -139,6 +140,7 @@ function TokenPriceRows({
         cache_read: number | null;
         cache_write: number | null;
         cache_write_1h: number | null;
+        cache_write_12h?: number | null;
     };
 }) {
     const labels = [
@@ -147,21 +149,23 @@ function TokenPriceRows({
         ['cache_read', '缓存读取'],
         ['cache_write', rates.cache_write_1h !== null ? '缓存写入 / 5 分钟' : '缓存写入'],
         ['cache_write_1h', '缓存写入 / 1 小时'],
+        ['cache_write_12h', '缓存写入 / 12 小时'],
     ] as const;
     return (
         <dl className="m-0 space-y-2 text-sm">
-            {labels.flatMap(([key, label]) =>
-                rates[key] === null
+            {labels.flatMap(([key, label]) => {
+                const value = rates[key];
+                return value == null
                     ? []
                     : [
                           <div key={key} className="flex justify-between gap-3">
                               <dt className="text-muted-ink">{label}</dt>
                               <dd className="m-0 break-all font-medium tabular-nums text-navy">
-                                  {`¥${formatTieredPrice(rates[key])}`}
+                                  {`¥${formatTieredPrice(value)}`}
                               </dd>
                           </div>,
-                      ],
-            )}
+                      ];
+            })}
         </dl>
     );
 }

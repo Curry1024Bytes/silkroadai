@@ -104,6 +104,17 @@ describe('strict new-api tiered token expression reader', () => {
         });
     });
 
+    it('reads new-api OpenAI 12-hour cache writes as a separate rate', () => {
+        const parsed = parseTieredPricingExpression(
+            'len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5 + cc12h * 25) : ' +
+                'tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25 + cc12h * 50)',
+        );
+        expect(parsed.used_variables).toEqual(['p', 'c', 'cr', 'cc', 'cc12h']);
+        expect(parsed.tiers[0].rates.cache_write_12h).toBe(25);
+        expect(parsed.tiers[1].rates.cache_write_12h).toBe(50);
+        expect(parsed.tiers[0].rates.cache_write_1h).toBeNull();
+    });
+
     it('uses full len for choosing a tier while applying it to all normalized tokens', () => {
         const parsed = parseTieredPricingExpression(GPT_EXPRESSION);
         expect(fixtureCharge(parsed, { len: 271999, p: 271999, c: 10 })).toBe(1.360295);

@@ -106,6 +106,7 @@ const tierSchema = z
                 cache_read: optionalAmount,
                 cache_write: optionalAmount,
                 cache_write_1h: optionalAmount,
+                cache_write_12h: optionalAmount.optional(),
             })
             .strict(),
     })
@@ -527,6 +528,9 @@ export function customerPrice(base: BasePrice, groupRatio: number): CatalogAmoun
                               cache_read: optional(tier.rates.cache_read),
                               cache_write: optional(tier.rates.cache_write),
                               cache_write_1h: optional(tier.rates.cache_write_1h),
+                              ...(tier.rates.cache_write_12h === undefined
+                                  ? {}
+                                  : { cache_write_12h: optional(tier.rates.cache_write_12h) }),
                           },
                       };
                   }),
@@ -552,6 +556,7 @@ export type CatalogDiffField =
     | 'cache_read'
     | 'cache_write'
     | 'cache_write_1h'
+    | 'cache_write_12h'
     | 'tier_count'
     | 'bound'
     | 'billing_rule';
@@ -564,7 +569,7 @@ export interface CatalogDiff {
     expected: number | null;
 }
 
-const RATE_KEYS = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
+const RATE_KEYS = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const;
 
 /**
  * Where the displayed catalog row differs from what new-api bills; empty = match.
@@ -604,7 +609,13 @@ export function catalogDiffs(catalog: CatalogAmounts, expected: CatalogAmounts):
     const needsDetails = (details: TieredPricingDetails | null) =>
         !!details &&
         (details.tiers.length > 1 ||
-            details.tiers.some((tier) => tier.rates.cache_read !== null || tier.rates.cache_write !== null));
+            details.tiers.some(
+                (tier) =>
+                    tier.rates.cache_read !== null ||
+                    tier.rates.cache_write !== null ||
+                    tier.rates.cache_write_1h != null ||
+                    tier.rates.cache_write_12h != null,
+            ));
     if (!want || !have) {
         const present = want ?? have;
         if (!present || !needsDetails(present)) return diffs;
@@ -616,9 +627,9 @@ export function catalogDiffs(catalog: CatalogAmounts, expected: CatalogAmounts):
                 expected: want ? want.tiers.length : null,
             });
         else
-            for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const) {
+            for (const key of ['cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const) {
                 const value = present.tiers[0].rates[key];
-                if (value !== null)
+                if (value != null)
                     push({ tier: null, field: key, catalog: have ? value : null, expected: want ? value : null });
             }
         return diffs;
@@ -634,8 +645,8 @@ export function catalogDiffs(catalog: CatalogAmounts, expected: CatalogAmounts):
         if (tier.max_input_tokens !== other.max_input_tokens || tier.max_inclusive !== other.max_inclusive)
             push({ tier: at, field: 'bound', catalog: other.max_input_tokens, expected: tier.max_input_tokens });
         for (const key of RATE_KEYS) {
-            const a = other.rates[key];
-            const b = tier.rates[key];
+            const a = other.rates[key] ?? null;
+            const b = tier.rates[key] ?? null;
             if (a === null || b === null ? a !== b : !sameNumber(a, b))
                 push({ tier: at, field: key, catalog: a, expected: b });
         }

@@ -69,6 +69,21 @@ describe('catalog synchronization of new-api billing rules', () => {
             tiers: [{ max_inclusive: true }, { min_inclusive: false }],
         });
     });
+    it('imports OpenAI 12-hour cache-write pricing from cc12h expressions', () => {
+        const result = read({
+            'billing_setting.billing_mode': { test: 'tiered_expr' },
+            'billing_setting.billing_expr': {
+                test:
+                    'len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5 + cc12h * 25) : ' +
+                    'tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25 + cc12h * 50)',
+            },
+        });
+        expect(result.reason).toBeNull();
+        const details = result.price!.billing_details!;
+        if (details.mode !== 'tiered_token') throw Error('wrong mode');
+        expect(details.tiers[0].rates).toMatchObject({ cache_write: amount(12.5), cache_write_12h: amount(25) });
+        expect(details.tiers[1].rates).toMatchObject({ cache_write: amount(25), cache_write_12h: amount(50) });
+    });
     it('imports all image resolutions without pretending the lowest price applies to every size', () => {
         const raw = syncPricesFromOptions(
             options({ ImageResolutionPrice: { banana: { '1K': 0.5, '2K': 0.8, '4K': 1 } } }),

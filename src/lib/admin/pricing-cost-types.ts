@@ -23,6 +23,8 @@ export interface PricingCostConfig {
         cache_write: number | null;
         /** Optional so legacy stored JSON and fingerprints remain byte-for-byte stable. */
         cache_write_1h?: number | null;
+        /** OpenAI long-lived 12-hour cache writes (`cc12h`). */
+        cache_write_12h?: number | null;
     };
     variants: Array<{
         key: string;
@@ -82,7 +84,7 @@ export interface PricingCostSelection {
 
 export interface PricingCostCapability {
     publication_mode?: 'tiered_token' | 'uniform_token';
-    required_token_rates?: Array<'cache_read' | 'cache_write' | 'cache_write_1h'>;
+    required_token_rates?: Array<'cache_read' | 'cache_write' | 'cache_write_1h' | 'cache_write_12h'>;
     model_id: string;
     tier: string;
     basis: 'token' | 'image' | 'video' | 'unknown';

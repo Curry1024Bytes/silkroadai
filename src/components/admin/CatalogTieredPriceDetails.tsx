@@ -49,15 +49,15 @@ export default function CatalogTieredPriceDetails({ raw, en }: { raw: unknown; e
                                     ['cache_read', en ? 'Cache read' : '缓存读取'],
                                     ['cache_write', en ? 'Cache write' : '缓存写入'],
                                     ['cache_write_1h', en ? 'Cache write · 1h' : '缓存写入 · 1 小时'],
+                                    ['cache_write_12h', en ? 'Cache write · 12h' : '缓存写入 · 12 小时'],
                                 ] as const
                             ).flatMap(([key, label]) => {
                                 const value = tier.rates[key];
-                                return value === null
-                                    ? []
-                                    : [
-                                          <dt key={`${key}-label`}>{label}</dt>,
-                                          <dd key={key}>¥{formatTieredPrice(value)}</dd>,
-                                      ];
+                                if (value == null) return [];
+                                return [
+                                    <dt key={`${key}-label`}>{label}</dt>,
+                                    <dd key={key}>¥{formatTieredPrice(value)}</dd>,
+                                ];
                             })}
                         </dl>
                     </div>

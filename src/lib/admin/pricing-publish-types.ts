@@ -43,6 +43,8 @@ export interface TieredPricingDetails {
             cache_read: number | null;
             cache_write: number | null;
             cache_write_1h: number | null;
+            /** OpenAI long-lived 12-hour cache writes (`cc12h`). */
+            cache_write_12h?: number | null;
         };
     }>;
     scheduled_discount?: ScheduledDiscountDetails;

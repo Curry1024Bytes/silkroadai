@@ -27,6 +27,8 @@ export interface BillUsage {
     cache_write: number;
     /** Anthropic 1-hour cache write; billed at cache_write × 1.6. */
     cache_write_1h: number;
+    /** OpenAI 12-hour cache write; billed at cache_write × 2 in legacy ratio mode. */
+    cache_write_12h?: number;
     /**
      * Anthropic usage: prompt excludes cache tokens. OpenAI usage: prompt includes
      * them and new-api subtracts cache read/write before pricing the rest.
@@ -36,12 +38,13 @@ export interface BillUsage {
 
 /** new-api's fixed 1h/5m cache-write price ratio (relay/helper/price.go). */
 export const CACHE_WRITE_1H_MULTIPLIER = 6 / 3.75;
+export const CACHE_WRITE_12H_MULTIPLIER = 2;
 /** new-api defaults when a model has no CacheRatio / CreateCacheRatio entry. */
 export const DEFAULT_CACHE_READ_RATIO = 1;
 export const DEFAULT_CACHE_WRITE_RATIO = 1.25;
 
 export interface BillLine {
-    key: 'input' | 'output' | 'cache_read' | 'cache_write' | 'cache_write_1h' | 'per_call';
+    key: 'input' | 'output' | 'cache_read' | 'cache_write' | 'cache_write_1h' | 'cache_write_12h' | 'per_call';
     tokens: number;
     /** Official $ per 1M tokens, or per call. */
     price: number;
@@ -81,16 +84,19 @@ function tokenLines(
     const cr = tokens(usage.cache_read);
     const cc = tokens(usage.cache_write);
     const cc1h = tokens(usage.cache_write_1h);
+    const cc12h = tokens(usage.cache_write_12h ?? 0);
     // OpenAI usage has no 1h split in new-api; every cache write is one bucket.
     const write5m = usage.anthropic ? cc : cc + cc1h;
     const write1h = usage.anthropic ? cc1h : 0;
-    const input = usage.anthropic ? tokens(usage.prompt) : Math.max(tokens(usage.prompt) - cr - write5m, 0);
+    const write12h = usage.anthropic ? 0 : cc12h;
+    const input = usage.anthropic ? tokens(usage.prompt) : Math.max(tokens(usage.prompt) - cr - write5m - write12h, 0);
     return [
         line('input', input, base.input),
         line('output', tokens(usage.completion), base.output),
         line('cache_read', cr, cacheRead),
         line('cache_write', write5m, cacheWrite),
         line('cache_write_1h', write1h, cacheWrite * CACHE_WRITE_1H_MULTIPLIER),
+        line('cache_write_12h', write12h, cacheWrite * CACHE_WRITE_12H_MULTIPLIER),
     ].filter((row) => row.tokens > 0);
 }
 
@@ -110,20 +116,22 @@ function tieredLines(tiers: TieredPricingBuildTier[], usage: BillUsage): { tier:
     const cr = tokens(usage.cache_read);
     let cc = tokens(usage.cache_write);
     let cc1h = tokens(usage.cache_write_1h);
+    const cc12h = tokens(usage.cache_write_12h ?? 0);
     if (!usage.anthropic) {
         // new-api only splits 5m/1h for Anthropic usage.
         cc += cc1h;
         cc1h = 0;
     }
     // A cache variable used by any tier changes normalization for every tier.
-    const uses = (key: 'cache_read' | 'cache_write' | 'cache_write_1h') =>
-        tiers.some((tier) => tier.rates[key] !== null);
+    const uses = (key: 'cache_read' | 'cache_write' | 'cache_write_1h' | 'cache_write_12h') =>
+        tiers.some((tier) => tier.rates[key] != null);
     // Claude usage: prompt is already text-only, so only the tier length adds cache.
     const length = usage.anthropic ? p + cr + cc + cc1h : p;
     if (!usage.anthropic) {
         if (uses('cache_read')) p -= cr;
         if (uses('cache_write')) p -= cc;
         if (uses('cache_write_1h')) p -= cc1h;
+        if (uses('cache_write_12h')) p -= cc12h;
     }
     const tier = pickTier(tiers, length);
     const rates = tiers[tier].rates;
@@ -133,6 +141,7 @@ function tieredLines(tiers: TieredPricingBuildTier[], usage: BillUsage): { tier:
         ...(uses('cache_read') ? [line('cache_read', cr, rates.cache_read ?? 0)] : []),
         ...(uses('cache_write') ? [line('cache_write', cc, rates.cache_write ?? 0)] : []),
         ...(uses('cache_write_1h') ? [line('cache_write_1h', cc1h, rates.cache_write_1h ?? 0)] : []),
+        ...(uses('cache_write_12h') ? [line('cache_write_12h', cc12h, rates.cache_write_12h ?? 0)] : []),
     ].filter((row) => row.tokens > 0);
     return { tier, lines };
 }
@@ -239,8 +248,10 @@ export function parseLoggedBill(log: {
     const field = (key: string) => numberField(other, key) ?? 0;
     const split5m = field('cache_creation_tokens_5m');
     const split1h = field('cache_creation_tokens_1h');
+    const split12hRaw = numberField(other, 'cache_creation_tokens_12h');
+    const split12h = split12hRaw ?? 0;
     const total = field('cache_creation_tokens');
-    const split = split5m > 0 || split1h > 0;
+    const split = split5m > 0 || split1h > 0 || split12h > 0;
     const price = numberField(other, 'model_price');
     const userRatio = numberField(other, 'user_group_ratio');
     return {
@@ -255,8 +266,9 @@ export function parseLoggedBill(log: {
             completion: log.completion_tokens,
             cache_read: field('cache_tokens'),
             // Unsplit remainder is billed at the 5m price, like new-api does.
-            cache_write: split ? split5m + Math.max(total - split5m - split1h, 0) : total,
+            cache_write: split ? split5m + Math.max(total - split5m - split1h - split12h, 0) : total,
             cache_write_1h: split1h,
+            ...(split12hRaw === null ? {} : { cache_write_12h: split12h }),
             anthropic: other.usage_semantic === 'anthropic',
         },
         recorded: {

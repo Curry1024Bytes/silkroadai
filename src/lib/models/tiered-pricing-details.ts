@@ -60,6 +60,7 @@ const detailsSchema = z
                                 cache_read: rate.nullable(),
                                 cache_write: rate.nullable(),
                                 cache_write_1h: rate.nullable(),
+                                cache_write_12h: rate.nullable().optional(),
                             })
                             .strict(),
                     })
@@ -95,8 +96,8 @@ const detailsSchema = z
                 const prior = value.tiers[index - 1];
                 if (tier.min_input_tokens !== prior.max_input_tokens || tier.min_inclusive === prior.max_inclusive)
                     invalid();
-                for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const)
-                    if ((tier.rates[key] === null) !== (value.tiers[0].rates[key] === null)) invalid();
+                for (const key of ['cache_read', 'cache_write', 'cache_write_1h', 'cache_write_12h'] as const)
+                    if ((tier.rates[key] == null) !== (value.tiers[0].rates[key] == null)) invalid();
             }
         }
     });
@@ -125,9 +126,16 @@ export function scaleTieredPricingDetails(
 ): TieredPricingDetails {
     const result = parseTieredPricingDetails(details)!;
     for (const tier of result.tiers) {
-        for (const key of ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const) {
+        for (const key of [
+            'input',
+            'output',
+            'cache_read',
+            'cache_write',
+            'cache_write_1h',
+            'cache_write_12h',
+        ] as const) {
             const value = tier.rates[key];
-            if (value === null) continue;
+            if (value == null) continue;
             tier.rates[key] = scalePricingAmount(value, multiplierScale);
         }
     }
