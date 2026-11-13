@@ -298,11 +298,12 @@ describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_imag
 describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', () => {
     const html = renderToString(<DocsContent />);
 
-    it('章节与目录锚点都在,Base URL 是 /api/v3', async () => {
+    it('章节与目录锚点都在,客户 Base URL 指向平台 /api/v3', async () => {
         expect(html).toMatch(/<section[^>]*id="ark-native-video"/);
         expect(html).toMatch(/href="#ark-native-video"/);
         expect(html).toContain('https://api.llmroute.club/api/v3');
         expect(html).toContain('/contents/generations/tasks');
+        expect(html).not.toContain('token.xinhankr.com');
     });
 
     it('列出四个对客模型名,不出现上游模型名', async () => {
@@ -316,10 +317,27 @@ describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', 
         expect(html).not.toContain('artsdance');
     });
 
-    it('写明与官方的差异:task_ 任务号、不支持 callback_url、签名链接过期', async () => {
+    it('写明接口行为:task_ 任务号、不支持 callback_url、签名链接过期', async () => {
         expect(html).toContain('task_xxx');
         expect(html).toContain('callback_url');
         expect(html).toContain('24 小时后过期');
         expect(html).toContain('volcenginesdkarkruntime');
+    });
+
+    it('Seedance 客户章节使用平台措辞,不展示服务商地址或“上游”字样', async () => {
+        for (const id of ['seedance', 'seedance-overseas', 'seedance-cn', 'ark-native-video']) {
+            const start = html.indexOf(`<section id="${id}"`);
+            const end = html.indexOf('</section>', start);
+            const section = html.slice(start, end);
+            expect(section, id).not.toContain('上游');
+            expect(section, id).not.toContain('xinhankr');
+            expect(section, id).not.toContain('artsdance');
+        }
+
+        const start = html.indexOf('<section id="ark-native-video"');
+        const end = html.indexOf('</section>', start);
+        const section = html.slice(start, end);
+        expect(section).toContain('https://api.llmroute.club/api/v3');
+        expect(section).toContain('LLmRoute API');
     });
 });

@@ -154,8 +154,8 @@ const AGENTS: AgentSection[] = [
     },
     {
         id: 'ark-native-video',
-        label: '火山方舟原生接口 · Seedance 视频',
-        blurb: '按火山方舟官方格式调 doubao-seedance 2.5 / 2.0:Base URL 换成 /api/v3、Key 换成 sk-…,提交 → 轮询 → 取成片;按真实 token 计费。',
+        label: 'Seedance 视频 · Ark 兼容接口',
+        blurb: '通过 LLmRoute API 调用 Seedance 2.5 / 2.0:使用平台 API 地址和 Key,提交任务 → 轮询 → 获取成片;按实际 token 用量计费。',
     },
 ];
 
@@ -2741,7 +2741,7 @@ curl ${OPENAI_BASE}/dashboard/billing/usage \\
                     <p className="m-0 mt-2 text-xs text-minor-ink">
                         用音频(<code className="font-mono text-xs">audio_url</code> /{' '}
                         <code className="font-mono text-xs">reference_audios</code>)时
-                        <strong className="text-navy">必须同时带 ≥1 张参考图</strong>,否则上游报错。
+                        <strong className="text-navy">必须同时带 ≥1 张参考图</strong>,否则请求会返回参数错误。
                     </p>
 
                     <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">Python 完整示例(提交 + 轮询)</p>
@@ -2827,7 +2827,7 @@ for _ in range(120):  # 最多约 16 分钟
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-2.5 text-navy">偶发 5xx</td>
-                                    <td className="px-4 py-2.5 text-ink">上游波动,稍后重试</td>
+                                    <td className="px-4 py-2.5 text-ink">服务暂时繁忙,稍后重试</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -2990,12 +2990,13 @@ for _ in range(120):  # 最多约 16 分钟
 # data.status=SUCCESS 后,视频在 data.data.video_url(或 result_url,等价)`}
                     </CodeBlock>
                     <p className="m-0 mt-3 text-xs text-minor-ink">
-                        参考图别太小(约 256px 以下会被上游拒,用 ≥512px 稳);视频直链是临时的,拿到尽快转存。首尾帧也可用{' '}
+                        参考图别太小(约 256px 以下可能无法处理,用 ≥512px
+                        更稳);视频直链是临时的,拿到尽快转存。首尾帧也可用{' '}
                         <code className="font-mono text-xs">video_config.reference_mode</code> = start_frame/start_end
                         指定。参考视频用 <code className="font-mono text-xs">reference_videos</code>(数组 ≤3,单段建议
                         ≤15s),与图片同走转存,可与参考图 / 音频同用;
                         <strong className="text-navy">参考视频分辨率需 ≥480p</strong>
-                        (像素 ≥409600,360p 等过小会被上游拒)。
+                        (像素 ≥409600,360p 等过小可能无法处理)。
                     </p>
 
                     <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">参数总表</p>
@@ -3171,7 +3172,7 @@ for _ in range(120):  # 最多约 10 分钟
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-2.5 text-navy">偶发 5xx</td>
-                                    <td className="px-4 py-2.5 text-ink">上游波动,稍后重试</td>
+                                    <td className="px-4 py-2.5 text-ink">服务暂时繁忙,稍后重试</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -3402,7 +3403,7 @@ for _ in range(120):  # 最多约 10 分钟
         "audio_url": "https://.../beat.mp3" }'`}
                     </CodeBlock>
                     <p className="m-0 mt-3 mb-5 text-xs text-minor-ink">
-                        参考图 / 视频 / 音频可传公网 URL 或 base64 dataURL;dataURL 会由我们自动转存后再交给上游。
+                        参考图 / 视频 / 音频可传公网 URL 或 base64 dataURL;dataURL 会由平台自动转存后提交任务。
                         无参考模型(不带 <code className="font-mono text-xs">-ref</code>)带图会 400,请选对应{' '}
                         <code className="font-mono text-xs">-ref</code> 模型。也可在{' '}
                         <a href="/tools/seedance" className="text-brand-accent hover:underline">
@@ -4757,19 +4758,19 @@ print(r.data[0].url)`}</CodeBlock>
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">24</span>
-                            火山方舟原生接口 · Seedance 视频
+                            Seedance 视频 · Ark 兼容接口
                         </h2>
                     </div>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        已经按<strong className="text-navy">火山方舟官方格式</strong>接好 doubao-seedance 的代码,只需把
-                        Base URL 换成下面的地址、Key 换成你的 <code className="font-mono text-xs">sk-…</code>
-                        ,请求体不用改。
+                        通过 <strong className="text-navy">LLmRoute API</strong> 调用 Seedance。使用下面的平台 Base URL
+                        和你在本站创建的 <code className="font-mono text-xs">sk-…</code> API Key,请求体使用 Ark
+                        兼容格式。
                         <strong className="text-navy">异步</strong>:提交拿任务号,轮询到{' '}
                         <code className="font-mono text-xs">succeeded</code> 取成片。
                     </p>
                     <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
                         <p className="m-0">
-                            Base URL:<code className="font-mono text-xs break-all">{ARK_BASE}</code>(官方 SDK 的{' '}
+                            Base URL:<code className="font-mono text-xs break-all">{ARK_BASE}</code>(SDK 的{' '}
                             <code className="font-mono text-xs">base_url</code> 也填这个)
                         </p>
                         <p className="m-0 mt-1">
@@ -4838,7 +4839,7 @@ print(r.data[0].url)`}</CodeBlock>
                         <code className="font-mono text-xs">21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / adaptive</code>
                         。2.5 做首帧、首尾帧、视频延长时要求 <code className="font-mono text-xs">ratio: adaptive</code>
                         ,视频编辑还要求 <code className="font-mono text-xs">duration: -1</code>。2.0 不能只传音频。
-                        分辨率、时长和参考素材以上游实际支持为准:不支持的组合在提交时就返回错误,不扣费。
+                        分辨率、时长和参考素材以当前模型支持范围为准:不支持的组合会在提交时返回错误,不扣费。
                     </p>
                     <p className="m-0 mb-2 text-sm font-medium text-navy">1) 提交任务(文生视频)</p>
                     <CodeBlock language="bash">
@@ -4879,7 +4880,7 @@ print(r.data[0].url)`}</CodeBlock>
                         首帧、尾帧用 <code className="font-mono text-xs">role: first_frame</code> /{' '}
                         <code className="font-mono text-xs">last_frame</code>,参考音频用{' '}
                         <code className="font-mono text-xs">audio_url</code> 加{' '}
-                        <code className="font-mono text-xs">role: reference_audio</code>,写法与火山官方一致。
+                        <code className="font-mono text-xs">role: reference_audio</code>。
                     </p>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">Python(火山方舟官方 SDK)</p>
@@ -4899,11 +4900,11 @@ while True:
     time.sleep(10)
 print(result.status, result.content.video_url if result.status == "succeeded" else result.error)`}
                     </CodeBlock>
-                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">与火山官方的差异</p>
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">接口说明</p>
                     <ul className="m-0 mb-4 pl-5 text-sm text-ink leading-relaxed space-y-1">
                         <li>
-                            任务号形如 <code className="font-mono text-xs">task_xxx</code>,不是官方的{' '}
-                            <code className="font-mono text-xs">cgt-xxx</code>;查询时原样带回即可。
+                            任务号形如 <code className="font-mono text-xs">task_xxx</code>
+                            ;查询时将返回的任务号原样带回即可。
                         </li>
                         <li>只支持提交和查询单个任务;列出、取消、删除任务返回 404。</li>
                         <li>
@@ -4912,11 +4913,11 @@ print(result.status, result.content.video_url if result.status == "succeeded" el
                     </ul>
                     <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink leading-relaxed space-y-1">
                         <p className="m-0">
-                            ⚠️ <strong className="text-navy">成片地址是火山官方的签名链接,约 24 小时后过期</strong>
+                            ⚠️ <strong className="text-navy">成片地址是临时签名链接,约 24 小时后过期</strong>
                             ,完成后请尽快下载或转存到你自己的存储。
                         </p>
                         <p className="m-0">
-                            <strong className="text-navy">计费:</strong>按上游返回的真实 token(
+                            <strong className="text-navy">计费:</strong>按任务实际 token 用量(
                             <code className="font-mono text-xs">usage.completion_tokens</code>)计费,单价按模型、分辨率、
                             是否含参考视频分档;失败的任务不扣费。提交时先按估算预扣,完成后按真实用量结算;余额不够预扣时提交会被拒。
                         </p>
