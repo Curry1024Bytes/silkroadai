@@ -37,12 +37,20 @@ const UNVERIFIED: PriceProvenance = {
     verifiable: false,
 };
 
+const NATIVE_DOMESTIC_ARK_MODELS = new Set([
+    'doubao-seedance-2-0-260128',
+    'doubao-seedance-2-0-fast-260128',
+    'doubao-seedance-2-0-mini-260615',
+    'doubao-seedance-2-5-260628',
+]);
+
 /**
- * Restrict the note to the portal's established domestic Seedance catalog aliases.
+ * Restrict the note to the portal's established domestic Seedance model IDs and aliases.
  * The regex identifies eligible products only; it does not provide any reference prices.
  */
 function domesticArkModel(slug: string): { resolution: string } | null {
     const name = slug.toLowerCase();
+    if (NATIVE_DOMESTIC_ARK_MODELS.has(name)) return { resolution: '720p' };
     const match20 = /^seedance2\.0-(?:pro|fast|mini)-(480p|720p|1080p|4k)(?:-ref)?$/.exec(name);
     if (match20) return { resolution: match20[1] };
     const match25 = /^seedance2\.5-(480p|720p|1080p)(?:-ref)?$/.exec(name);

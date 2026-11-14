@@ -156,10 +156,23 @@ describe('resolvePriceProvenance', () => {
         ).toEqual(unverified);
     });
 
-    it.each(['seedance2.5-global-720p', 'seedance2.5-promax-720p', 'doubao-seedance-2-5-260628'])(
-        'does not infer provenance from non-domestic or native slug %s',
+    it.each(['seedance2.5-global-720p', 'seedance2.5-promax-720p'])(
+        'does not infer provenance from non-domestic slug %s',
         (slug) => {
             expect(resolvePriceProvenance(slug, videoPrice(), verification)).toEqual(unverified);
         },
     );
+
+    it.each([
+        'doubao-seedance-2-0-260128',
+        'doubao-seedance-2-0-fast-260128',
+        'doubao-seedance-2-0-mini-260615',
+        'doubao-seedance-2-5-260628',
+    ])('verifies a saved 75折 quote for production model slug %s', (slug) => {
+        expect(resolvePriceProvenance(slug, videoPrice(), verification)).toMatchObject({
+            source: 'pricing_cost_rule',
+            discount: 0.75,
+            verifiable: true,
+        });
+    });
 });

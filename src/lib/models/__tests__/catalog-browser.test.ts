@@ -388,12 +388,13 @@ describe('loadBrowserCatalog dedicated customer quotes', () => {
 });
 
 describe('loadBrowserCatalog Seedance price provenance', () => {
-    function seedanceFixture() {
+    function seedanceFixture(slug?: string) {
         const fixture = videoRuleFixture();
-        catalogFixture([model(fixture.slug, { sale: route(1) }, [fixture.videoCatalogPrice])]);
-        mockCostRules.mockResolvedValue([fixture.row]);
+        const modelSlug = slug ?? fixture.slug;
+        catalogFixture([model(modelSlug, { sale: route(1) }, [fixture.videoCatalogPrice])]);
+        mockCostRules.mockResolvedValue([{ ...fixture.row, model: { slug: modelSlug } }]);
         mockGetOption.mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16 }));
-        return fixture;
+        return { ...fixture, slug: modelSlug };
     }
 
     it('shows the configured 75折 marker only when the full live quote matches', async () => {
@@ -406,6 +407,16 @@ describe('loadBrowserCatalog Seedance price provenance', () => {
             verifiable: true,
         });
         expect(pricing.billing_details?.mode).toBe('video_token');
+    });
+
+    it('shows the configured 75折 marker for the production Seedance model slug', async () => {
+        seedanceFixture('doubao-seedance-2-0-260128');
+        const pricing = (await loadBrowserCatalog()).models[0].pricesByTier.sale!;
+        expect(pricing.price_provenance).toMatchObject({
+            source: 'pricing_cost_rule',
+            discount: 0.75,
+            verifiable: true,
+        });
     });
 
     it('hides the unsupported 4K display cell for Seedance 2.5 while retaining it for Seedance 2.0', async () => {
