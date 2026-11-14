@@ -103,7 +103,7 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
                     version: 1,
                     mode: 'video_token',
                     unit: 'cny_per_million_tokens',
-                    cells: parseVideoTokenExpression(expression).cells,
+                    cells: parseVideoTokenExpression(expression, model).cells,
                 })!;
             } else if (/\bimg(?:_cr)?\b/.test(expression)) details = componentExpression(expression);
             else if (isTimeOfDayExpression(expression)) {
@@ -211,7 +211,7 @@ export function syncModelModality(raw: RawSyncPrices, model: string, fallback: s
         if (mode === 'tiered_expr') {
             const expression = own(syncDictionary(raw.billingExpr, 'billing_expr'), model);
             if (isTaskUsageExpression(expression)) {
-                parseVideoTokenExpression(expression as string);
+                parseVideoTokenExpression(expression as string, model);
                 return 'video';
             }
         }

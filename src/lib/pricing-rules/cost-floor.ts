@@ -64,12 +64,12 @@ export function costFloor(config: unknown, modelName: string, options: Record<st
                       : line.key === 'cache_read' && cache !== null
                         ? CHAT_FX * ratio * cache
                         : null;
-            if (unit !== null && line.cost > 0) floors.push(line.cost / unit);
+            if (unit !== null && line.cost !== null && line.cost > 0) floors.push(line.cost / unit);
         }
     } else if (basis === 'image') {
         const price = positive(dict(options, 'ModelPrice')[modelName]);
         if (price === null || lines.length !== 1) return { floor: null, checked: false, reason: '图片规格未核对成本' };
-        if (lines[0].cost > 0) floors.push(lines[0].cost / (price * IMAGE_FX));
+        if (lines[0].cost !== null && lines[0].cost > 0) floors.push(lines[0].cost / (price * IMAGE_FX));
     } else return { floor: null, checked: false, reason: '视频成本尚不能核对' };
     return floors.length
         ? { floor: Math.max(...floors), checked: true, reason: null }

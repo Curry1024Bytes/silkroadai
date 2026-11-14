@@ -44,7 +44,7 @@ import {
     getSeedancePricingSnapshot,
     snapshotCostCny,
 } from '../cn-billing';
-import { VIDEO_TOKEN_COMBOS } from '@/lib/admin/pricing-video-token-expression';
+import { VIDEO_TOKEN_COMBOS, VIDEO_TOKEN_MINI_COMBOS } from '@/lib/admin/pricing-video-token-expression';
 import { variantForModel } from '../cn-adapter';
 
 describe('computeCostCny 费率', () => {
@@ -111,6 +111,15 @@ describe('Seedance live pricing snapshot', () => {
         cells: VIDEO_TOKEN_COMBOS.map((combo) => ({
             ...combo,
             price: combo.resolution === '720p' && combo.video_input === 'none' ? 75 : 50,
+        })),
+    };
+    const miniCatalogDetails = {
+        version: 1 as const,
+        mode: 'video_token' as const,
+        unit: 'cny_per_million_tokens' as const,
+        cells: VIDEO_TOKEN_MINI_COMBOS.map((combo) => ({
+            ...combo,
+            price: combo.resolution === '720p' && combo.video_input === 'none' ? 23 : 14,
         })),
     };
 
@@ -224,6 +233,89 @@ describe('Seedance live pricing snapshot', () => {
         await expect(
             getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false),
         ).rejects.toThrow(/video-token catalog price is incomplete/i);
+    });
+
+    it('accepts a complete four-cell domestic Mini price matrix', async () => {
+        db.catalogModel.findMany.mockResolvedValue([
+            {
+                id: 'mini-model',
+                slug: 'seedance2.0-mini-720p',
+                upstream_map: {
+                    'seedance-cn-enterprise': { channel_id: 7, upstream_model: 'seedance-mini-upstream' },
+                },
+            },
+        ]);
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'mini-price',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: miniCatalogDetails,
+        });
+
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.0-mini-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+        );
+
+        expect(snapshot.rate).toBe(23);
+        expect(snapshot.rule).toMatchObject({ catalog_price_id: 'mini-price', public_rate: 23 });
+    });
+
+    it('accepts complete legacy eight-cell prices for domestic Mini during migration', async () => {
+        db.catalogModel.findMany.mockResolvedValue([
+            {
+                id: 'mini-model',
+                slug: 'seedance2.0-mini-720p',
+                upstream_map: {
+                    'seedance-cn-enterprise': { channel_id: 7, upstream_model: 'seedance-mini-upstream' },
+                },
+            },
+        ]);
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'mini-price-legacy',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: catalogDetails,
+        });
+
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.0-mini-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+        );
+
+        expect(snapshot.rate).toBe(75);
+        expect(snapshot.rule).toMatchObject({ catalog_price_id: 'mini-price-legacy', public_rate: 75 });
+    });
+
+    it('rejects partial Mini matrices and does not price unsupported 1080p from legacy cells', async () => {
+        db.catalogModel.findMany.mockResolvedValue([
+            {
+                id: 'mini-model',
+                slug: 'seedance2.0-mini-720p',
+                upstream_map: {
+                    'seedance-cn-enterprise': { channel_id: 7, upstream_model: 'seedance-mini-upstream' },
+                },
+            },
+        ]);
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'mini-price-partial',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: { ...miniCatalogDetails, cells: miniCatalogDetails.cells.slice(0, 3) },
+        });
+        await expect(
+            getSeedancePricingSnapshot('seedance2.0-mini-720p', 'seedance-cn-enterprise', '720p', false),
+        ).rejects.toThrow(/video-token catalog price is incomplete/i);
+
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'mini-price-legacy',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: catalogDetails,
+        });
+        await expect(
+            getSeedancePricingSnapshot('seedance2.0-mini-1080p', 'seedance-cn-enterprise', '1080p', false),
+        ).rejects.toThrow(/video-token catalog price cell is unsupported/i);
     });
 
     it('rejects scheduled discounts until Seedance submission and settlement can apply them consistently', async () => {

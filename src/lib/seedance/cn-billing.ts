@@ -26,11 +26,15 @@ import type { Prisma } from '@prisma/client';
 import { lockPricingPublisherReadOnly } from '@/lib/admin/pricing-publish-lock';
 import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
-import { VIDEO_TOKEN_COMBOS, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
+import {
+    VIDEO_TOKEN_COMBOS,
+    videoTokenCombosForModel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 
 export type { Resolution } from './official-rates';
 export type { SeedanceVariant } from './cn-adapter';
-import { variantForModel, type SeedanceVariant } from './cn-adapter';
+import { regionForModel, variantForModel, type SeedanceVariant } from './cn-adapter';
 import { OFFICIAL_CNY_PER_M, type Resolution } from './official-rates';
 
 /** 标准零售折扣率:seedance-cn 渠道对客价 = 官方挂牌 × 本比例(operator 定 85 折)。
@@ -106,16 +110,31 @@ export async function getSeedancePricingSnapshot(
             });
             if (!price) throw new Error(`Seedance catalog price unavailable: ${model}/${tier}`);
             const details = parseCatalogBillingDetails(price.billing_details);
+            const domesticMini = variantForModel(model) === 'mini' && regionForModel(model) === 'cn';
+            const supportedCombos = domesticMini
+                ? videoTokenCombosForModel('seedance2.0-mini')
+                : videoTokenCombosForModel(model);
+            const supportedKeys = supportedCombos.map(videoTokenKey).join('\u0000');
+            const legacyKeys = VIDEO_TOKEN_COMBOS.map(videoTokenKey).join('\u0000');
+            const isVideoToken = details?.mode === 'video_token';
+            const detailKeys = isVideoToken ? details.cells.map(videoTokenKey).join('\u0000') : undefined;
+            const completeForModel = detailKeys === supportedKeys;
+            const completeLegacy = detailKeys === legacyKeys;
             if (
                 !details ||
-                details.mode !== 'video_token' ||
+                !isVideoToken ||
                 details.scheduled_discount ||
-                details.cells.length !== VIDEO_TOKEN_COMBOS.length ||
-                details.cells.map(videoTokenKey).join('\u0000') !== VIDEO_TOKEN_COMBOS.map(videoTokenKey).join('\u0000')
+                (!completeForModel && !(domesticMini && completeLegacy))
             )
                 throw new Error(
                     'Seedance video-token catalog price is incomplete or uses unsupported scheduled pricing',
                 );
+            if (
+                !supportedCombos.some(
+                    (entry) => entry.resolution === resolution && entry.video_input === (hasVideo ? 'video' : 'none'),
+                )
+            )
+                throw new Error('Seedance video-token catalog price cell is unsupported for this model');
             const cell = details.cells.find(
                 (entry) => entry.resolution === resolution && entry.video_input === (hasVideo ? 'video' : 'none'),
             );

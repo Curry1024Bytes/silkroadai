@@ -93,18 +93,20 @@ function asNumber(value: Rational): number {
     return Number(`${value.n < ZERO ? '-' : ''}${whole}.${decimals || '0'}`);
 }
 function costMultiplier(config: PricingCostConfig): Rational {
+    if (config.upstream_multiplier === null) throw new Error('采购折扣尚未核实。');
     return divide(
         decimal(config.upstream_multiplier),
         decimal(config.currency === 'credits' ? config.credits_per_cny : 1),
     );
 }
 function markupMultiplier(config: PricingCostConfig): Rational {
+    if (config.upstream_multiplier === null) throw new Error('采购折扣尚未核实。');
     if (config.retail_multiplier !== undefined)
         return divide(decimal(config.retail_multiplier), decimal(config.upstream_multiplier));
     return add(decimal(1), divide(decimal(config.markup_percent), decimal(100)));
 }
-function rawCostAndRetail(config: PricingCostConfig, price: number): { cost: Rational; retail: Rational } {
-    const cost = multiply(decimal(price), costMultiplier(config));
+function rawCostAndRetail(config: PricingCostConfig, price: number): { cost: Rational | null; retail: Rational } {
+    const cost = config.upstream_multiplier === null ? null : multiply(decimal(price), costMultiplier(config));
     if (config.retail_multiplier !== undefined) {
         const retail = divide(
             multiply(decimal(price), decimal(config.retail_multiplier)),
@@ -112,27 +114,30 @@ function rawCostAndRetail(config: PricingCostConfig, price: number): { cost: Rat
         );
         return { cost, retail };
     }
+    if (cost === null) throw new Error('采购折扣尚未核实。');
     return { cost, retail: multiply(cost, markupMultiplier(config)) };
 }
 
 /** Display the final quote multiplier without changing the stored pricing mode. */
-export function getCostRetailMultiplier(input: PricingCostConfig): number {
+export function getCostRetailMultiplier(input: PricingCostConfig): number | null {
     const config = pricingCostConfigSchema.parse(input);
+    if (config.upstream_multiplier === null) return config.retail_multiplier ?? null;
     return config.retail_multiplier === undefined
         ? asNumber(multiply(decimal(config.upstream_multiplier), markupMultiplier(config)))
         : config.retail_multiplier;
 }
 
 /** Avoid showing artifacts such as 1.6 - 1.3 = 0.30000000000000004. */
-export function getCostMultiplierDelta(upstream: number, retail: number): number {
+export function getCostMultiplierDelta(upstream: number | null, retail: number | null): number | null {
+    if (upstream === null || retail === null) return null;
     return asNumber(subtract(decimal(displayPositive.parse(retail)), decimal(displayPositive.parse(upstream))));
 }
 
 /** Display conversion factors and supplier charges without imposing retail limits on them. */
 export function getCostQuoteDisplay(input: PricingCostConfig): {
-    unitCost: number;
+    unitCost: number | null;
     unitRetail: number;
-    supplierCharges: Record<string, number>;
+    supplierCharges: Record<string, number | null>;
 } {
     const config = pricingCostConfigSchema.parse(input);
     const unit = rawCostAndRetail(config, 1);
@@ -143,12 +148,14 @@ export function getCostQuoteDisplay(input: PricingCostConfig): {
               )
             : config.variants.map((variant) => [variant.key, variant.price]);
     return {
-        unitCost: asNumber(unit.cost),
+        unitCost: unit.cost === null ? null : asNumber(unit.cost),
         unitRetail: asNumber(unit.retail),
         supplierCharges: Object.fromEntries(
             prices.map(([key, price]) => [
                 key,
-                asNumber(multiply(decimal(price), decimal(config.upstream_multiplier))),
+                config.upstream_multiplier === null
+                    ? null
+                    : asNumber(multiply(decimal(price), decimal(config.upstream_multiplier))),
             ]),
         ),
     };
@@ -161,7 +168,7 @@ const configShape = z
         video_unit: z.enum(['second', 'million_tokens']).optional(),
         currency: z.enum(['cny', 'credits']),
         credits_per_cny: positive,
-        upstream_multiplier: positive,
+        upstream_multiplier: z.union([positive, z.null()]),
         retail_multiplier: positive.optional(),
         markup_percent: nonNegative,
         source_note: z.string().trim().max(500),
@@ -216,10 +223,13 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
                 issue(['variants', index, 'reference_video'], '按 token 计价须区分有无参考视频。');
         });
     }
+    if (config.upstream_multiplier === null && !(config.basis === 'video' && config.video_unit === 'million_tokens')) {
+        issue(['upstream_multiplier'], '采购折扣未知只适用于按 token 计价的视频报价。');
+    }
     if (config.retail_multiplier !== undefined) {
         if (config.markup_percent !== 0)
             issue(['markup_percent'], '售价倍率与成本加价百分比不能同时设置，请将旧加价百分比设为 0。');
-        if (config.retail_multiplier < config.upstream_multiplier)
+        if (config.upstream_multiplier !== null && config.retail_multiplier < config.upstream_multiplier)
             issue(['retail_multiplier'], '售价倍率不能低于上游倍率。');
     }
     if (config.basis === 'token') {
@@ -278,12 +288,13 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     // Zod may continue refinements after range failures. Never divide by an
     // invalid exchange rate or feed a nonfinite value into exact arithmetic.
     if (
-        !Number.isFinite(config.upstream_multiplier) ||
-        config.upstream_multiplier <= 0 ||
+        (config.upstream_multiplier !== null &&
+            (!Number.isFinite(config.upstream_multiplier) || config.upstream_multiplier <= 0)) ||
         !Number.isFinite(config.credits_per_cny) ||
         config.credits_per_cny <= 0 ||
         !Number.isFinite(config.markup_percent) ||
         config.markup_percent < 0 ||
+        (config.upstream_multiplier === null && config.retail_multiplier === undefined) ||
         (config.retail_multiplier !== undefined &&
             (!Number.isFinite(config.retail_multiplier) || config.retail_multiplier <= 0))
     )
@@ -291,7 +302,7 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     for (const { price, path, precision } of prices) {
         if (!Number.isFinite(price) || price < 0) continue;
         const { cost, retail } = rawCostAndRetail(config, price);
-        if (cost.n > ZERO && round(cost, 6) === 0)
+        if (cost !== null && cost.n > ZERO && round(cost, 6) === 0)
             issue(path, '实际成本小于当前支持的 6 位小数精度，请使用更合适的计费单位。');
         if (retail.n > ZERO && round(retail, precision) === 0)
             issue(path, `售价小于当前支持的 ${precision} 位小数精度，不能保存成免费价格。`);
@@ -305,9 +316,9 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
     const config = pricingCostConfigSchema.parse(input);
     const makeLine = (key: string, label: string, unit: PricingCostLine['unit'], price: number): PricingCostLine => {
         const raw = rawCostAndRetail(config, price);
-        const cost = round(raw.cost, 6);
+        const cost = raw.cost === null ? null : round(raw.cost, 6);
         const retail = round(raw.retail, retailPrecision(config.basis, key));
-        const profit = round(subtract(decimal(retail), decimal(cost)), 6);
+        const profit = cost === null ? null : round(subtract(decimal(retail), decimal(cost)), 6);
         return {
             key,
             label,
@@ -315,7 +326,12 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
             cost,
             retail,
             profit,
-            margin_percent: retail > 0 ? round(divide(multiply(decimal(profit), decimal(100)), decimal(retail)), 4) : 0,
+            margin_percent:
+                profit === null
+                    ? null
+                    : retail > 0
+                      ? round(divide(multiply(decimal(profit), decimal(100)), decimal(retail)), 4)
+                      : 0,
         };
     };
     const videoTokens = config.basis === 'video' && config.video_unit === 'million_tokens';
@@ -333,7 +349,10 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
                       variant.price,
                   ),
               );
-    return { lines, multiplier: asNumber(markupMultiplier(config)) };
+    return {
+        lines,
+        multiplier: config.upstream_multiplier === null ? null : asNumber(markupMultiplier(config)),
+    };
 }
 
 /**
@@ -365,11 +384,13 @@ export function calculateCostSample(input: PricingCostConfig, key: string, units
     }
     if (compare(billed, decimal(MAX_SAFE_VALUE)) > 0) throw new Error('计费用量超出可安全计算的范围。');
     const priceUnits = perMillion ? divide(billed, decimal(1_000_000)) : billed;
-    const cost = asNumber(multiply(decimal(line.cost), priceUnits));
+    const cost = line.cost === null ? null : asNumber(multiply(decimal(line.cost), priceUnits));
     const retail = asNumber(multiply(decimal(line.retail), priceUnits));
-    const profit = asNumber(multiply(subtract(decimal(line.retail), decimal(line.cost)), priceUnits));
-    if (![cost, retail, profit].every(Number.isFinite)) throw new Error('试算金额超出可安全计算的范围。');
-    if (billed.n > ZERO && ((line.cost > 0 && cost === 0) || (line.retail > 0 && retail === 0))) {
+    const profit =
+        line.cost === null ? null : asNumber(multiply(subtract(decimal(line.retail), decimal(line.cost)), priceUnits));
+    if (![cost, retail, profit].every((value) => value === null || Number.isFinite(value)))
+        throw new Error('试算金额超出可安全计算的范围。');
+    if (billed.n > ZERO && ((line.cost !== null && line.cost > 0 && cost === 0) || (line.retail > 0 && retail === 0))) {
         throw new Error('试算金额小于可安全计算的精度，不能显示为免费。');
     }
     return {
@@ -379,6 +400,6 @@ export function calculateCostSample(input: PricingCostConfig, key: string, units
         cost,
         retail,
         profit,
-        margin_percent: retail > 0 ? line.margin_percent : 0,
+        margin_percent: line.margin_percent === null ? null : retail > 0 ? line.margin_percent : 0,
     };
 }

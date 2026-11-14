@@ -3,7 +3,12 @@ import type { TierPricing } from './machine-catalog';
 import { pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
 import { computeVideoQuote, videoQuoteFromCostConfig } from '@/lib/admin/pricing-video-quote';
 import { BASE_FX } from '@/lib/admin/pricing-simple-core';
-import { VIDEO_TOKEN_COMBOS, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
+import {
+    VIDEO_TOKEN_COMBOS,
+    isSeedanceMiniModel,
+    videoTokenCombosForModel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 
 /** A displayed Seedance discount is verifiable only against its active operator-maintained rule. */
 export interface PriceProvenance {
@@ -69,6 +74,7 @@ function closeEnough(a: number, b: number): boolean {
 function verifyLiveQuote(
     details: VideoTokenPricingDetails,
     verification: PriceProvenanceVerification,
+    model?: string,
 ): { official: number; discount: number } | null {
     const { mapping, rule, groupRatio } = verification;
     if (!mapping || !rule || groupRatio === null || !Number.isFinite(groupRatio) || groupRatio <= 0) return null;
@@ -80,17 +86,29 @@ function verifyLiveQuote(
         !mapping.upstream_model.trim()
     )
         return null;
-    if (details.scheduled_discount || details.cells.length !== VIDEO_TOKEN_COMBOS.length) return null;
+    const combos = videoTokenCombosForModel(model);
+    if (details.scheduled_discount) return null;
+    // Existing Mini snapshots may still contain the historical 8-cell matrix.
+    // The public catalog removes unsupported 1080p/4K cells after provenance
+    // is resolved, so verify the supported subset before that display filter.
+    const effectiveDetails =
+        isSeedanceMiniModel(model) && details.cells.length === VIDEO_TOKEN_COMBOS.length
+            ? {
+                  ...details,
+                  cells: details.cells.filter((cell) => cell.resolution === '480p' || cell.resolution === '720p'),
+              }
+            : details;
+    if (effectiveDetails.cells.length !== combos.length) return null;
 
     const parsed = pricingCostConfigSchema.safeParse(rule.config);
     if (!parsed.success) return null;
-    const quote = videoQuoteFromCostConfig(parsed.data);
+    const quote = videoQuoteFromCostConfig(parsed.data, model);
     if (!quote || quote.sell_discount > 1) return null;
     try {
-        const computed = computeVideoQuote(quote, BASE_FX, groupRatio);
-        if (computed.length !== VIDEO_TOKEN_COMBOS.length) return null;
-        const catalogByKey = new Map(details.cells.map((cell) => [videoTokenKey(cell), cell]));
-        if (catalogByKey.size !== VIDEO_TOKEN_COMBOS.length) return null;
+        const computed = computeVideoQuote(quote, BASE_FX, groupRatio, model);
+        if (computed.length !== combos.length) return null;
+        const catalogByKey = new Map(effectiveDetails.cells.map((cell) => [videoTokenKey(cell), cell]));
+        if (catalogByKey.size !== combos.length) return null;
 
         // The operator-maintained rule is the reference source. Recompute the actual public
         // quote for every resolution/reference-video combination, then compare every cell.
@@ -99,7 +117,7 @@ function verifyLiveQuote(
             if (!catalog || !closeEnough(catalog.price, cell.actual)) return null;
         }
 
-        const summary = videoTokenSummaryCell(details);
+        const summary = videoTokenSummaryCell(effectiveDetails);
         const summaryRate = quote.official.find((cell) => videoTokenKey(cell) === videoTokenKey(summary));
         if (!summaryRate) return null;
         return { official: summaryRate.price, discount: quote.sell_discount };
@@ -122,7 +140,7 @@ export function resolvePriceProvenance(
     if (!alias || details?.mode !== 'video_token' || !verification) return UNVERIFIED;
     if (!details.cells.some((cell) => cell.resolution === alias.resolution)) return UNVERIFIED;
 
-    const verified = verifyLiveQuote(details, verification);
+    const verified = verifyLiveQuote(details, verification, slug);
     if (!verified) return UNVERIFIED;
     return {
         source: 'pricing_cost_rule',

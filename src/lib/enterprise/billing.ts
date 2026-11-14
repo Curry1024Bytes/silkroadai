@@ -74,13 +74,21 @@ const SUPPORTED_RESOLUTIONS: Record<SeedanceVariant, readonly Resolution[]> = {
     'promax-2.5': ['480p', '720p', '1080p'],
 };
 
+function supportsResolution(region: SeedanceRegion, variant: SeedanceVariant, resolution: Resolution): boolean {
+    // The current domestic Seedance 2.0 Mini upstream only exposes 480p and 720p.
+    // Keep the global/Volc mappings permissive because those providers still have
+    // separate resolution contracts and historical tasks may settle through them.
+    if (region === 'cn' && variant === 'mini') return resolution === '480p' || resolution === '720p';
+    return SUPPORTED_RESOLUTIONS[variant].includes(resolution);
+}
+
 function assertPricingIdentity(variant: SeedanceVariant, region: SeedanceRegion, resolution?: Resolution): void {
     if (!VALID_VARIANTS.includes(variant)) throw new Error(`Invalid pricing variant: ${String(variant)}`);
     if (!VALID_REGIONS.includes(region)) throw new Error(`Invalid pricing region: ${String(region)}`);
     if (resolution && !VALID_RESOLUTIONS.includes(resolution)) {
         throw new Error(`Invalid pricing resolution: ${String(resolution)}`);
     }
-    if (resolution && !SUPPORTED_RESOLUTIONS[variant].includes(resolution)) {
+    if (resolution && !supportsResolution(region, variant, resolution)) {
         throw new Error(`Unsupported pricing identity: ${variant}/${resolution}`);
     }
 }

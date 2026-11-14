@@ -969,7 +969,7 @@ describe('归一短名(2026-07-20)', () => {
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
-    it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {
+    it('国内 Mini 不支持 1080p:带参考图请求返回 400 且不打上游', async () => {
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
                 model: 'seedance-2-0-mini',
@@ -979,14 +979,9 @@ describe('归一短名(2026-07-20)', () => {
             }),
             '/video/generations',
         );
-        expect(res.status).toBe(200);
-        expect(submitVideoWithKey).toHaveBeenCalledWith(
-            expect.objectContaining({ model: 'seedance2.0-mini-1080p-ref' }),
-            'Bearer sk-upstream-u1',
-        );
-        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({ model: 'seedance-2-0-mini', resolution: '1080p' }),
-        });
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
     });
 
     it('大小写不敏感(Seedance-2-0-Fast)+ first_frame 也触发 ref', async () => {

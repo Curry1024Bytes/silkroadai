@@ -10,6 +10,7 @@ export const VIDEO_TOKEN_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 export const VIDEO_TOKEN_INPUTS = ['none', 'video'] as const;
 export type VideoTokenResolution = (typeof VIDEO_TOKEN_RESOLUTIONS)[number];
 export type VideoTokenInput = (typeof VIDEO_TOKEN_INPUTS)[number];
+export type VideoTokenCombo = { resolution: VideoTokenResolution; video_input: VideoTokenInput };
 
 export interface VideoTokenCell {
     resolution: VideoTokenResolution;
@@ -18,15 +19,43 @@ export interface VideoTokenCell {
 }
 
 export interface ParsedVideoTokenExpression {
-    /** Canonical order: resolution, then reference video; always all 8 pairs. */
+    /** Canonical model-supported order: resolution, then reference video. */
     cells: VideoTokenCell[];
     /** The pair priced by the trailing unconditioned tier. */
     fallback: { resolution: VideoTokenResolution; video_input: VideoTokenInput };
 }
 
-export const VIDEO_TOKEN_COMBOS = VIDEO_TOKEN_RESOLUTIONS.flatMap((resolution) =>
+export const VIDEO_TOKEN_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_RESOLUTIONS.flatMap((resolution) =>
     VIDEO_TOKEN_INPUTS.map((video_input) => ({ resolution, video_input })),
 );
+
+/** Seedance 2.0 Mini's official token matrix supports only 480p and 720p. */
+export const VIDEO_TOKEN_MINI_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_COMBOS.filter(
+    (combo) => combo.resolution === '480p' || combo.resolution === '720p',
+);
+
+/**
+ * Return the supported matrix cells for a model. Unknown models keep the
+ * historical eight-cell contract so existing non-Mini pricing remains strict.
+ * Global and promax Mini names use a different upstream price table and must
+ * not be silently treated as the domestic Seedance 2.0 Mini model.
+ */
+export function isSeedanceMiniModel(model: string | undefined): boolean {
+    const name = String(model ?? '')
+        .trim()
+        .toLowerCase();
+    if (!name || name.includes('global') || name.includes('promax')) return false;
+    return (
+        /^doubao-seedance-2-0-mini(?:-\d{6})?$/.test(name) ||
+        name === 'doubao-seedance-2.0-mini' ||
+        name === 'seedance-2-0-mini' ||
+        /^seedance2\.0-mini(?:-(?:480p|720p)(?:-ref)?)?$/.test(name)
+    );
+}
+
+export function videoTokenCombosForModel(model?: string): readonly VideoTokenCombo[] {
+    return isSeedanceMiniModel(model) ? VIDEO_TOKEN_MINI_COMBOS : VIDEO_TOKEN_COMBOS;
+}
 
 export const videoTokenKey = (cell: { resolution: string; video_input: string }) =>
     `${cell.resolution}·${cell.video_input}`;
@@ -125,7 +154,10 @@ interface PriceSpan {
     end: number;
 }
 
-function parseWithSpans(expression: string): { parsed: ParsedVideoTokenExpression; spans: PriceSpan[] } {
+function parseWithSpans(
+    expression: string,
+    model?: string,
+): { parsed: ParsedVideoTokenExpression; spans: PriceSpan[] } {
     const tokens = tokenize(expression);
     let cursor = 0;
     const peek = () => tokens[cursor];
@@ -190,15 +222,30 @@ function parseWithSpans(expression: string): { parsed: ParsedVideoTokenExpressio
     }
     const last = call();
     if (cursor !== tokens.length) fail('公式包含不支持的额外规则。');
-    const missing = VIDEO_TOKEN_COMBOS.filter(
-        (combo) => !branches.some((row) => videoTokenKey(row) === videoTokenKey(combo)),
-    );
-    if (missing.length !== 1) fail('公式须恰好覆盖 4 种分辨率 × 有无参考视频的全部 8 档。');
+    // Mini models are officially limited to 480p/720p. Older production
+    // formulas can still contain all 8 cells, so accept either a complete
+    // four-cell Mini expression or a complete legacy eight-cell expression.
+    // In the latter case the caller receives and edits only the four supported
+    // cells; the other four formula branches remain intact.
+    const expected = videoTokenCombosForModel(model);
+    const formulaCombos =
+        isSeedanceMiniModel(model) && branches.length + 1 === VIDEO_TOKEN_COMBOS.length ? VIDEO_TOKEN_COMBOS : expected;
+    const seen = new Set(branches.map((row) => videoTokenKey(row)));
+    const missing = formulaCombos.filter((combo) => !seen.has(videoTokenKey(combo)));
+    if (
+        missing.length !== 1 ||
+        branches.some((row) => !formulaCombos.some((combo) => videoTokenKey(combo) === videoTokenKey(row)))
+    )
+        fail(
+            isSeedanceMiniModel(model)
+                ? 'Mini 公式须恰好覆盖 480p/720p 的 4 档，或完整的 8 档兼容公式。'
+                : '公式须恰好覆盖 4 种分辨率 × 有无参考视频的全部 8 档。',
+        );
     const fallback = missing[0];
     if (last.label !== videoTokenKey(fallback))
         fail(`最后一档「${last.label}」与剩余的「${videoTokenKey(fallback)}」不一致。`);
     const all = [...branches, { ...fallback, price: last.price, start: last.start, end: last.end }];
-    const cells = VIDEO_TOKEN_COMBOS.map((combo) => {
+    const cells = expected.map((combo) => {
         const row = all.find((item) => videoTokenKey(item) === videoTokenKey(combo))!;
         return { resolution: row.resolution, video_input: row.video_input, price: row.price };
     });
@@ -208,8 +255,8 @@ function parseWithSpans(expression: string): { parsed: ParsedVideoTokenExpressio
     };
 }
 
-export function parseVideoTokenExpression(expression: string): ParsedVideoTokenExpression {
-    return parseWithSpans(expression).parsed;
+export function parseVideoTokenExpression(expression: string, model?: string): ParsedVideoTokenExpression {
+    return parseWithSpans(expression, model).parsed;
 }
 
 /** Shortest exact decimal for a positive coefficient; rejects anything the reader would not accept back. */
@@ -220,20 +267,48 @@ export function formatVideoTokenPrice(value: number): string {
     return text;
 }
 
+function buildMiniVideoTokenExpression(cells: VideoTokenCell[], hasVersionPrefix: boolean): string {
+    const prices = new Map(cells.map((cell) => [videoTokenKey(cell), cell.price]));
+    const combos = videoTokenCombosForModel('seedance2.0-mini');
+    let result = '';
+    for (let index = combos.length - 1; index >= 0; index--) {
+        const combo = combos[index];
+        const key = videoTokenKey(combo);
+        const tier = `tier("${key}", u("tokens") * ${formatVideoTokenPrice(prices.get(key)!)} / 1000000)`;
+        if (index === combos.length - 1) {
+            result = tier;
+            continue;
+        }
+        result = `u("resolution") == "${combo.resolution}" && u("video_input") == "${combo.video_input}" ? ${tier} : ${result}`;
+    }
+    return `${hasVersionPrefix ? 'v1:' : ''}${result}`;
+}
+
 /**
- * Replace only the eight price literals; conditions, labels, order and the
- * fallback tier stay byte-for-byte. The result is re-read before returning.
+ * Replace only the supported price literals; conditions, labels, order and
+ * keep the current expression structure. A legacy eight-cell Mini expression
+ * is canonicalized to four supported cells so new-api cannot keep billing its
+ * retired 1080p/4K branches after an operator saves the Mini quote.
  */
-export function rewriteVideoTokenExpression(expression: string, cells: VideoTokenCell[]): string {
-    const { spans } = parseWithSpans(expression);
+export function rewriteVideoTokenExpression(expression: string, cells: VideoTokenCell[], model?: string): string {
+    const { spans } = parseWithSpans(expression, model);
     const next = new Map(cells.map((cell) => [videoTokenKey(cell), cell.price]));
-    if (cells.length !== VIDEO_TOKEN_COMBOS.length || next.size !== VIDEO_TOKEN_COMBOS.length)
-        fail('须给出全部 8 档的单价。');
-    for (const combo of VIDEO_TOKEN_COMBOS) if (!next.has(videoTokenKey(combo))) fail('须给出全部 8 档的单价。');
+    const expected = videoTokenCombosForModel(model);
+    if (cells.length !== expected.length || next.size !== expected.length)
+        fail(`须给出全部 ${expected.length} 档的单价。`);
+    for (const combo of expected) if (!next.has(videoTokenKey(combo))) fail(`须给出全部 ${expected.length} 档的单价。`);
+    if (isSeedanceMiniModel(model) && spans.length === VIDEO_TOKEN_COMBOS.length) {
+        const canonicalCells = expected.map((combo) => ({ ...combo, price: next.get(videoTokenKey(combo))! }));
+        const result = buildMiniVideoTokenExpression(canonicalCells, expression.startsWith('v1:'));
+        const reread = parseVideoTokenExpression(result, model);
+        for (const cell of reread.cells)
+            if (cell.price !== next.get(videoTokenKey(cell))) fail('改写后的公式回读不一致。');
+        return result;
+    }
     let result = expression;
-    for (const span of [...spans].sort((a, b) => b.start - a.start))
+    for (const span of [...spans].filter((item) => next.has(item.key)).sort((a, b) => b.start - a.start))
         result = `${result.slice(0, span.start)}${formatVideoTokenPrice(next.get(span.key)!)}${result.slice(span.end)}`;
-    const reread = parseVideoTokenExpression(result);
+    const reread = parseVideoTokenExpression(result, model);
     for (const cell of reread.cells) if (cell.price !== next.get(videoTokenKey(cell))) fail('改写后的公式回读不一致。');
     return result;
 }

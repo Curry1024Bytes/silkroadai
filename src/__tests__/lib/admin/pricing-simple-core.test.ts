@@ -413,8 +413,8 @@ describe('video-token matrices', () => {
     }).join(' : ');
     const video = (overrides: Record<string, unknown> = {}) =>
         options({
-            [MODE]: JSON.stringify({ seedance: 'tiered_expr' }),
-            [EXPR]: JSON.stringify({ seedance: expression }),
+            [MODE]: JSON.stringify({ seedance: 'tiered_expr', 'doubao-seedance-2-0-mini-260615': 'tiered_expr' }),
+            [EXPR]: JSON.stringify({ seedance: expression, 'doubao-seedance-2-0-mini-260615': expression }),
             ...overrides,
         });
 
@@ -423,6 +423,17 @@ describe('video-token matrices', () => {
         if (base?.mode !== 'video_token') throw Error('wrong mode');
         expect(base.cells.map((cell) => cell.price)).toEqual(CELLS.map(([, , price]) => price));
         expect(base.fallback).toEqual({ resolution: '4k', video_input: 'video' });
+    });
+
+    it('reads only the supported four cells for domestic Seedance 2.0 Mini', () => {
+        const base = readBasePrice(video(), 'doubao-seedance-2-0-mini-260615');
+        if (base?.mode !== 'video_token') throw Error('wrong mode');
+        expect(base.cells.map((cell) => `${cell.resolution}·${cell.video_input}`)).toEqual([
+            '480p·none',
+            '480p·video',
+            '720p·none',
+            '720p·video',
+        ]);
     });
 
     it('refuses to turn a video matrix into another billing mode', () => {
@@ -452,6 +463,34 @@ describe('video-token matrices', () => {
         expect(next).toBe(expression.replace('* 9.34 / 1000000', '* 7.01 / 1000000'));
         // Conditions, labels and the other seven prices are untouched.
         expect(next.replace('7.01', '9.34')).toBe(expression);
+    });
+
+    it('rewrites Mini into a four-cell formula and drops legacy 1080p/4k branches', () => {
+        const source = video();
+        const miniCells = CELLS.slice(0, 4).map(([resolution, video_input, price]) => ({
+            resolution: resolution as '480p' | '720p',
+            video_input: video_input as 'none' | 'video',
+            price,
+        }));
+        const writes = planVideoTokenWrites(source, 'doubao-seedance-2-0-mini-260615', [
+            { ...miniCells[0], price: 7.01 },
+            ...miniCells.slice(1),
+        ]);
+        const next = (writes[0].value as Record<string, string>)['doubao-seedance-2-0-mini-260615'];
+        const expected = [
+            ['480p', 'none', 7.01],
+            ['480p', 'video', 5.6],
+            ['720p', 'none', 9.34],
+            ['720p', 'video', 5.6],
+        ]
+            .map(([resolution, videoInput, price], index, cells) => {
+                const call = `tier("${resolution}·${videoInput}", u("tokens") * ${price} / 1000000)`;
+                return index === cells.length - 1
+                    ? call
+                    : `u("resolution") == "${resolution}" && u("video_input") == "${videoInput}" ? ${call}`;
+            })
+            .join(' : ');
+        expect(next).toBe(expected);
     });
 
     it('refuses a matrix that is also priced per call, or is no longer a task formula', () => {

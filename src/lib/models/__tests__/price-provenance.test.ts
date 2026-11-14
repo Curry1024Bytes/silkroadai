@@ -1,25 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import { BASE_FX } from '@/lib/admin/pricing-simple-core';
 import { computeVideoQuote, videoQuoteCostConfig } from '@/lib/admin/pricing-video-quote';
-import { VIDEO_TOKEN_COMBOS, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
+import {
+    VIDEO_TOKEN_COMBOS,
+    videoTokenCombosForModel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 import type { TierPricing } from '../machine-catalog';
 import { resolvePriceProvenance, type PriceProvenanceVerification } from '../price-provenance';
 
 const groupRatio = 0.16;
 const mapping = { channel_id: 7, upstream_model: 'ark-seedance-model' };
-const official = VIDEO_TOKEN_COMBOS.map((combo, index) => ({ ...combo, price: 31 + index * 3 }));
-const config = videoQuoteCostConfig({ official, buy_discount: 0.5, sell_discount: 0.75 });
-const verification: PriceProvenanceVerification = {
-    mapping,
-    rule: { ...mapping, config },
-    groupRatio,
-};
+function officialForModel(model?: string) {
+    return videoTokenCombosForModel(model).map((combo, index) => ({ ...combo, price: 31 + index * 3 }));
+}
 
-function videoPrice(
-    actuals = computeVideoQuote({ official, buy_discount: 0.5, sell_discount: 0.75 }, BASE_FX, groupRatio).map(
-        (cell) => cell.actual,
-    ),
-): TierPricing {
+const official = officialForModel();
+
+function verificationFor(model?: string): PriceProvenanceVerification {
+    const modelOfficial = officialForModel(model);
+    return {
+        mapping,
+        rule: {
+            ...mapping,
+            config: videoQuoteCostConfig({ official: modelOfficial, buy_discount: 0.5, sell_discount: 0.75 }, model),
+        },
+        groupRatio,
+    };
+}
+
+const verification = verificationFor();
+
+function videoPrice(model?: string): TierPricing {
+    const modelOfficial = officialForModel(model);
+    const actuals = computeVideoQuote(
+        { official: modelOfficial, buy_discount: 0.5, sell_discount: 0.75 },
+        BASE_FX,
+        groupRatio,
+        model,
+    ).map((cell) => cell.actual);
     return {
         input_cny_per_1m: null,
         output_cny_per_1m: null,
@@ -28,7 +47,7 @@ function videoPrice(
             version: 1,
             mode: 'video_token',
             unit: 'cny_per_million_tokens',
-            cells: VIDEO_TOKEN_COMBOS.map((combo, index) => ({
+            cells: videoTokenCombosForModel(model).map((combo, index) => ({
                 ...combo,
                 price: actuals[index],
             })),
@@ -169,7 +188,25 @@ describe('resolvePriceProvenance', () => {
         'doubao-seedance-2-0-mini-260615',
         'doubao-seedance-2-5-260628',
     ])('verifies a saved 75折 quote for production model slug %s', (slug) => {
-        expect(resolvePriceProvenance(slug, videoPrice(), verification)).toMatchObject({
+        expect(resolvePriceProvenance(slug, videoPrice(slug), verificationFor(slug))).toMatchObject({
+            source: 'pricing_cost_rule',
+            discount: 0.75,
+            verifiable: true,
+        });
+    });
+
+    it('verifies the supported cells while a legacy Mini catalog snapshot still has eight cells', () => {
+        const slug = 'doubao-seedance-2-0-mini-260615';
+        const current = videoPrice(slug);
+        if (current.billing_details?.mode !== 'video_token') throw new Error('Expected video pricing details');
+        const unsupported = VIDEO_TOKEN_COMBOS.filter(
+            (combo) => combo.resolution === '1080p' || combo.resolution === '4k',
+        ).map((combo, index) => ({ ...combo, price: 900 + index }));
+        const legacy = {
+            ...current,
+            billing_details: { ...current.billing_details, cells: [...current.billing_details.cells, ...unsupported] },
+        };
+        expect(resolvePriceProvenance(slug, legacy, verificationFor(slug))).toMatchObject({
             source: 'pricing_cost_rule',
             discount: 0.75,
             verifiable: true,

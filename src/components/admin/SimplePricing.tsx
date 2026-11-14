@@ -28,7 +28,11 @@ import {
 import type { CatalogAmounts, CatalogDiff, CatalogDiffField } from '@/lib/admin/pricing-simple-core';
 import { catalogDetailLines, videoTokenSummaryCell } from '@/lib/models/catalog-pricing-details';
 import { computeVideoQuote, type VideoQuoteCell, type VideoQuoteInput } from '@/lib/admin/pricing-video-quote';
-import { VIDEO_TOKEN_COMBOS, videoTokenInputLabel, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
+import {
+    videoTokenCombosForModel,
+    videoTokenInputLabel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 
 type Tab = 'tiers' | 'models' | 'overview' | 'check';
 
@@ -709,11 +713,14 @@ function baseFrom(draft: ModelDraft): EditableBasePrice {
     };
 }
 
-function baseSummary(base: BasePrice | null, en: boolean): string {
+function baseSummary(base: BasePrice | null, en: boolean, model?: string): string {
     if (!base) return en ? 'Unpriced' : '未定价';
     if (base.mode === 'per_call') return `$${base.price}${en ? '/call' : '/次'}`;
     if (base.mode === 'token') return `$${base.input} / $${base.output}`;
-    if (base.mode === 'video_token') return en ? 'Video · 8 cells' : '视频 · 8 档';
+    if (base.mode === 'video_token') {
+        const count = videoTokenCombosForModel(model).length;
+        return en ? `Video · ${count} cells` : `视频 · ${count} 档`;
+    }
     return `${en ? 'Tiered' : '阶梯'} ×${base.tiers.length} · $${base.tiers[0].rates.input} / $${base.tiers[0].rates.output}`;
 }
 
@@ -780,7 +787,7 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                                   : en
                                                     ? 'Media pricing'
                                                     : '图片／视频计费'
-                                            : baseSummary(model.base, en)}
+                                            : baseSummary(model.base, en, model.name)}
                                     </span>
                                 </div>
                                 <div className="truncate text-xs opacity-70">
@@ -1172,13 +1179,13 @@ interface VideoQuoteDraft {
     sell: string;
 }
 
-function videoDraftFrom(quote: SimpleVideoQuote): VideoQuoteDraft {
+function videoDraftFrom(quote: SimpleVideoQuote, model: string): VideoQuoteDraft {
     const stored = quote.rule?.quote ?? null;
     const source: VideoQuoteInput['official'] = stored?.official ?? quote.prefill ?? [];
     const prices = new Map(source.map((cell) => [videoTokenKey(cell), cell.price] as const));
     return {
         official: Object.fromEntries(
-            VIDEO_TOKEN_COMBOS.map((combo) => {
+            videoTokenCombosForModel(model).map((combo) => {
                 const price = prices.get(videoTokenKey(combo));
                 return [videoTokenKey(combo), price === undefined ? '' : text(price)];
             }),
@@ -1189,14 +1196,18 @@ function videoDraftFrom(quote: SimpleVideoQuote): VideoQuoteDraft {
 }
 
 /** The draft as the server expects it, or null while a field is still empty or invalid. */
-function videoQuoteFromDraft(draft: VideoQuoteDraft): VideoQuoteInput | null {
-    const official = VIDEO_TOKEN_COMBOS.map((combo) => ({
+function videoQuoteFromDraft(
+    draft: VideoQuoteDraft,
+    combos: ReturnType<typeof videoTokenCombosForModel>,
+): VideoQuoteInput | null {
+    const official = combos.map((combo) => ({
         ...combo,
         price: pricingNumberFromInput(draft.official[videoTokenKey(combo)] ?? ''),
     }));
     const buy = pricingNumberFromInput(draft.buy);
     const sell = pricingNumberFromInput(draft.sell);
-    if (official.some((cell) => cell.price === null) || buy === null || sell === null) return null;
+    if (official.some((cell) => cell.price === null) || sell === null) return null;
+    if (draft.buy.trim() && buy === null) return null;
     return {
         official: official as VideoQuoteInput['official'],
         buy_discount: buy,
@@ -1206,7 +1217,8 @@ function videoQuoteFromDraft(draft: VideoQuoteDraft): VideoQuoteInput | null {
 
 function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelProps & { model: SimpleUpstreamModel }) {
     const quote = model.video_quote!;
-    const [draft, setDraft] = useState<VideoQuoteDraft>(() => videoDraftFrom(quote));
+    const combos = videoTokenCombosForModel(model.name);
+    const [draft, setDraft] = useState<VideoQuoteDraft>(() => videoDraftFrom(quote, model.name));
     const [preview, setPreview] = useState<{ input: VideoQuoteInput; data: SimpleVideoQuotePreview } | null>(null);
     const [busy, setBusy] = useState(false);
     const muted = isDark ? 'text-slate-400' : 'text-slate-500';
@@ -1221,20 +1233,18 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
             ),
         [model.base],
     );
-    const input = videoQuoteFromDraft(draft);
+    const input = videoQuoteFromDraft(draft, combos);
     // Local echo of the server's arithmetic so the table reacts while typing; the
     // server recomputes it and only its numbers are ever saved.
     const local = useMemo(() => {
         if (!input || ratio === null) return { cells: null, error: '' };
         try {
-            return { cells: computeVideoQuote(input, view.units.base_fx, ratio), error: '' };
+            return { cells: computeVideoQuote(input, view.units.base_fx, ratio, model.name), error: '' };
         } catch (caught) {
             return { cells: null, error: caught instanceof Error ? caught.message : '报价无法计算。' };
         }
-    }, [input, ratio, view.units.base_fx]);
-    const cells: Array<VideoQuoteCell | null> = preview
-        ? preview.data.cells
-        : (local.cells ?? VIDEO_TOKEN_COMBOS.map(() => null));
+    }, [input, ratio, view.units.base_fx, model.name]);
+    const cells: Array<VideoQuoteCell | null> = preview ? preview.data.cells : (local.cells ?? combos.map(() => null));
 
     const set = (patch: Partial<VideoQuoteDraft>) => {
         setPreview(null);
@@ -1316,15 +1326,17 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                     <p className="mt-1 text-xs text-amber-600" role="note">
                         ⚠{' '}
                         {en
-                            ? 'No rate is auto-filled because the repository table is a manual snapshot, not a live official feed. Verify the current upstream pricing and enter all 8 rates before saving.'
-                            : '未自动填入费率：仓库中的 Seedance 价格表是人工维护的历史快照，不是官方实时同步。请先核对当前上游价格，再填写全部 8 档后保存。'}
+                            ? `No rate is auto-filled because the repository table is a manual snapshot, not a live official feed. Verify the current upstream pricing and enter all ${combos.length} rates before saving.`
+                            : `未自动填入费率：仓库中的 Seedance 价格表是人工维护的历史快照，不是官方实时同步。请先核对当前上游价格，再填写全部 ${combos.length} 档后保存。`}
                     </p>
                 )}
             </div>
 
             <div className="flex flex-wrap gap-3">
                 <Field
-                    label={en ? 'Buy discount (0.7 = 70% of official)' : '进货折扣(0.7 = 官方价 7 折)'}
+                    label={
+                        en ? 'Buy discount (optional; 0.7 = 70% of official)' : '进货折扣（可留空；0.7 = 官方价 7 折）'
+                    }
                     value={draft.buy}
                     onChange={(buy) => set({ buy })}
                     isDark={isDark}
@@ -1350,7 +1362,7 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                     </tr>
                 </thead>
                 <tbody>
-                    {VIDEO_TOKEN_COMBOS.map((combo, index) => {
+                    {combos.map((combo, index) => {
                         const key = videoTokenKey(combo);
                         const cell = cells[index];
                         const current = live.get(key);
@@ -1369,7 +1381,9 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                                         onChange={(event) => setPrice(key, event.target.value)}
                                     />
                                 </td>
-                                <td className="py-1 text-right">{cell ? money(cell.cost) : '—'}</td>
+                                <td className="py-1 text-right">
+                                    {cell ? (cell.cost === null ? (en ? 'Unknown' : '未知') : money(cell.cost)) : '—'}
+                                </td>
                                 <td className="py-1 text-right">
                                     {cell ? (
                                         <span className={current === cell.coefficient ? muted : 'font-medium'}>
@@ -1383,7 +1397,15 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                                     )}
                                 </td>
                                 <td className="py-1 text-right">{cell ? money(cell.actual) : '—'}</td>
-                                <td className="py-1 text-right">{cell ? percent(cell.margin) : '—'}</td>
+                                <td className="py-1 text-right">
+                                    {cell
+                                        ? cell.margin === null
+                                            ? en
+                                                ? 'Unknown'
+                                                : '未知'
+                                            : percent(cell.margin)
+                                        : '—'}
+                                </td>
                             </tr>
                         );
                     })}
@@ -1436,8 +1458,8 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                     ) : (
                         <p className="font-medium">
                             {en
-                                ? `${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} of 8 coefficient(s) will change.`
-                                : `8 档中有 ${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} 档的计费系数会变。`}
+                                ? `${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} of ${combos.length} coefficient(s) will change.`
+                                : `${combos.length} 档中有 ${preview.data.cells.filter((cell) => cell.current_coefficient !== cell.coefficient).length} 档的计费系数会变。`}
                         </p>
                     )}
                     {preview.data.warnings.map((warning) => (
@@ -1881,7 +1903,7 @@ function BillCheckPanel({ view, en, isDark, onError }: PanelProps) {
                 </label>
                 {model && (
                     <span className={`pb-1 text-xs ${muted}`}>
-                        {en ? 'Base price' : '基础价'} {baseSummary(model.base, en)}
+                        {en ? 'Base price' : '基础价'} {baseSummary(model.base, en, model.name)}
                     </span>
                 )}
             </div>

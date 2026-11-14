@@ -144,6 +144,37 @@ describe('catalog synchronization of new-api billing rules', () => {
         expect(details.cells[7]).toEqual({ resolution: '4k', video_input: 'video', price: amount(2.07) });
         expect(catalogDetailLines(details).join(' ')).toContain('480p');
     });
+    it('imports the four supported domestic Seedance Mini cells and recognizes the model as video', () => {
+        const model = 'doubao-seedance-2-0-mini-260615';
+        const combos = [
+            ['480p', 'none', 23],
+            ['480p', 'video', 14],
+            ['720p', 'none', 23],
+            ['720p', 'video', 14],
+        ] as const;
+        const expression = combos
+            .map(([resolution, input, price], index) => {
+                const call = `tier("${resolution}·${input}", u("tokens") * ${price} / 1000000)`;
+                return index === combos.length - 1
+                    ? call
+                    : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
+            })
+            .join(' : ');
+        const extra = {
+            'billing_setting.billing_mode': { [model]: 'tiered_expr' },
+            'billing_setting.billing_expr': { [model]: expression },
+        };
+        const raw = syncPricesFromOptions(options(extra));
+
+        expect(syncModelModality(raw, model, 'chat')).toBe('video');
+        const result = read(extra, model);
+        expect(result.reason).toBeNull();
+        const details = result.price!.billing_details!;
+        if (details.mode !== 'video_token') throw Error('wrong mode');
+        expect(details.cells).toEqual(
+            combos.map(([resolution, input, price]) => ({ resolution, video_input: input, price: amount(price) })),
+        );
+    });
     it('imports a peak/off-peak formula with both tiers, the weekly schedule and future-only exceptions', () => {
         // Verbatim from prod new-api 2026-11-10: deepseek-v4-flash (channel 14, aipg peak/off-peak).
         const v4 =

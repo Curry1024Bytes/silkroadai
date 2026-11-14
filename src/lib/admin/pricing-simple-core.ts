@@ -185,7 +185,7 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
         const expression = optionDict(options, EXPR_KEY, true)[name];
         if (typeof expression !== 'string') return null;
         if (isTaskUsageExpression(expression)) {
-            const parsed = parseVideoTokenExpression(expression);
+            const parsed = parseVideoTokenExpression(expression, name);
             return { mode: 'video_token', cells: parsed.cells, fallback: parsed.fallback };
         }
         const parsed = parseTieredPricingExpression(expression);
@@ -421,7 +421,7 @@ export function planVideoTokenWrites(
         throw new SimplePricingError('pricing_video_token_invalid', '未读到该模型的视频计费公式，请刷新。');
     if (Object.hasOwn(optionDict(options, 'ModelPrice'), name))
         throw new SimplePricingError('pricing_tiered_ambiguous', '该模型同时配置了按次价格，请先在 new-api 核对。');
-    const next = rewriteVideoTokenExpression(expression, cells);
+    const next = rewriteVideoTokenExpression(expression, cells, name);
     const write = setEntry(options, EXPR_KEY, name, next);
     return write ? [write] : [];
 }

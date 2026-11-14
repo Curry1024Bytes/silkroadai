@@ -412,7 +412,7 @@ describe('lookupBillLog', () => {
 describe('video-token quotes', () => {
     // doubao-seedance-2-0-mini official ¥/1M, in canonical cell order.
     const OFFICIAL = [23, 14, 23, 14, 25.5, 15.5, 25.5, 15.5];
-    const COMBOS: Array<[string, string]> = [
+    const LEGACY_COMBOS: Array<[string, string]> = [
         ['480p', 'none'],
         ['480p', 'video'],
         ['720p', 'none'],
@@ -422,14 +422,22 @@ describe('video-token quotes', () => {
         ['4k', 'none'],
         ['4k', 'video'],
     ];
+    const COMBOS = LEGACY_COMBOS.slice(0, 4);
     const formula = (prices: number[]) =>
+        LEGACY_COMBOS.map(([resolution, input], index) => {
+            const call = `tier("${resolution}·${input}", u("tokens") * ${prices[index]} / 1000000)`;
+            return index === LEGACY_COMBOS.length - 1
+                ? call
+                : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
+        }).join(' : ');
+    const supportedFormula = (prices: number[]) =>
         COMBOS.map(([resolution, input], index) => {
             const call = `tier("${resolution}·${input}", u("tokens") * ${prices[index]} / 1000000)`;
             return index === COMBOS.length - 1
                 ? call
                 : `u("resolution") == "${resolution}" && u("video_input") == "${input}" ? ${call}`;
         }).join(' : ');
-    const quote = (buy: number, sell: number) => ({
+    const quote = (buy: number | null, sell: number) => ({
         official: COMBOS.map(([resolution, video_input], index) => ({
             resolution: resolution as '480p',
             video_input: video_input as 'none',
@@ -497,6 +505,27 @@ describe('video-token quotes', () => {
         expect(state.puts).toEqual([]);
     });
 
+    it('keeps the sell price calculable when the supplier discount is unknown', async () => {
+        const preview = await previewVideoQuote(admin, SEEDANCE, quote(null, 0.75));
+        expect(preview.cells.map((cell) => [cell.cost, cell.margin])).toEqual([
+            [null, null],
+            [null, null],
+            [null, null],
+            [null, null],
+        ]);
+        expect(preview.cells.map((cell) => [cell.target, cell.coefficient])).toEqual([
+            [17.25, 14.38],
+            [10.5, 8.75],
+            [17.25, 14.38],
+            [10.5, 8.75],
+        ]);
+        const model = (await loadSimplePricing(admin)).upstream_models.find((row) => row.name === SEEDANCE)!;
+        await saveVideoQuote(context, SEEDANCE, quote(null, 0.75), model.state, null);
+        expect(state.costWrites[0]).toMatchObject({
+            config: expect.objectContaining({ upstream_multiplier: null, retail_multiplier: 0.75 }),
+        });
+    });
+
     it('refuses a sell discount below the buy discount', async () => {
         await expect(previewVideoQuote(admin, SEEDANCE, quote(0.45, 0.36))).rejects.toMatchObject({
             code: 'pricing_video_quote_invalid',
@@ -511,7 +540,7 @@ describe('video-token quotes', () => {
         expect(result).toMatchObject({ unchanged: false, written_keys: [EXPR] });
         // Only the expression changes; the mode and every ratio are left alone.
         expect(state.puts.map(([key]) => key)).toEqual([EXPR]);
-        expect(JSON.parse(state.puts[0][1])[SEEDANCE]).toBe(formula([8.63, 5.25, 8.63, 5.25, 9.57, 5.82, 9.57, 5.82]));
+        expect(JSON.parse(state.puts[0][1])[SEEDANCE]).toBe(supportedFormula([8.63, 5.25, 8.63, 5.25]));
         // The quote is stored as this model's cost rule, with both discounts.
         expect(state.costWrites[0]).toMatchObject({
             action: 'create',
@@ -579,7 +608,7 @@ describe('video-token quotes', () => {
                     markup_percent: 0,
                     source_note: '',
                     token_rates: { input: null, output: null, cache_read: null, cache_write: null },
-                    variants: COMBOS.map(([resolution, input], index) => ({
+                    variants: LEGACY_COMBOS.map(([resolution, input], index) => ({
                         key: `${resolution}-${input}`,
                         label: `${resolution} ${input}`,
                         resolution,

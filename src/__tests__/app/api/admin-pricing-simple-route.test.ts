@@ -54,7 +54,10 @@ const req = (body: unknown) =>
         body: JSON.stringify(body),
     });
 const token = { mode: 'token', input: 5, output: 40, cache_read: null, cache_write: null };
-const official = ['480p', '720p', '1080p', '4k'].flatMap((resolution) =>
+const official = ['480p', '720p'].flatMap((resolution) =>
+    ['none', 'video'].map((video_input) => ({ resolution, video_input, price: 23 })),
+);
+const legacyOfficial = ['480p', '720p', '1080p', '4k'].flatMap((resolution) =>
     ['none', 'video'].map((video_input) => ({ resolution, video_input, price: 23 })),
 );
 const videoQuote = { model: 'doubao-seedance-2-0-mini-260615', official, buy_discount: 0.36, sell_discount: 0.45 };
@@ -152,9 +155,70 @@ describe('/api/admin/pricing/simple', () => {
         );
     });
 
+    it('accepts unknown Mini purchase discount and keeps model-specific matrix sizes', async () => {
+        m.previewVideoQuote.mockResolvedValue({ unchanged: false, cells: [] });
+        m.saveVideoQuote.mockResolvedValue({ catalog_rows: 1 });
+
+        await POST(
+            req({
+                action: 'preview_video_quote',
+                model: videoQuote.model,
+                official,
+                buy_discount: null,
+                sell_discount: 0.75,
+            }),
+        );
+        expect(m.previewVideoQuote).toHaveBeenCalledWith(admin, videoQuote.model, {
+            official,
+            buy_discount: null,
+            sell_discount: 0.75,
+        });
+
+        await POST(
+            req({
+                action: 'save_video_quote',
+                model: 'doubao-seedance-2-0-260128',
+                official: legacyOfficial,
+                buy_discount: null,
+                sell_discount: 0.75,
+                expected_state: 's',
+                expected_revision: null,
+            }),
+        );
+        expect(m.saveVideoQuote).toHaveBeenLastCalledWith(
+            expect.objectContaining({ admin }),
+            'doubao-seedance-2-0-260128',
+            { official: legacyOfficial, buy_discount: null, sell_discount: 0.75 },
+            's',
+            null,
+        );
+    });
+
+    it('rejects an eight-cell Mini quote and a four-cell ordinary quote', async () => {
+        for (const body of [
+            { action: 'preview_video_quote', ...videoQuote, official: legacyOfficial },
+            {
+                action: 'preview_video_quote',
+                model: 'doubao-seedance-2-0-260128',
+                official,
+                buy_discount: 0.36,
+                sell_discount: 0.45,
+            },
+        ]) {
+            const response = await POST(req(body));
+            expect(response.status).toBe(400);
+            expect((await response.json()).error).toBe('invalid_input');
+        }
+        expect(m.previewVideoQuote).not.toHaveBeenCalled();
+    });
+
     it('rejects malformed input before touching the service', async () => {
         for (const body of [
-            { action: 'preview_video_quote', ...videoQuote, official: official.slice(1) },
+            {
+                action: 'preview_video_quote',
+                ...videoQuote,
+                official: [...official, { resolution: '1080p', video_input: 'none', price: 23 }],
+            },
             { action: 'preview_video_quote', ...videoQuote, sell_discount: 0 },
             { action: 'preview_video_quote', ...videoQuote, buy_discount: 3 },
             {

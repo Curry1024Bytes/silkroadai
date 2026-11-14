@@ -58,8 +58,10 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', false, 'fast')).toBeCloseTo(34.425, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', true, 'mini')).toBeCloseTo(11.9, 4);
-        // mini 1080p 单独档(挂牌 25.5/15.5,2026-08-08):含视 13.175
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(13.175, 4);
+        // 国内 mini 当前只提供 480p / 720p；1080p 不应进入企业计费快照。
+        await expect(computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).rejects.toThrow(
+            /unsupported pricing identity/i,
+        );
         expect(db.enterpriseModelDiscount.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({

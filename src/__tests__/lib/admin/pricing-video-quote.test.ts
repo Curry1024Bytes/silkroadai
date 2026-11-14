@@ -5,7 +5,11 @@ import {
     videoQuoteFromCostConfig,
     type VideoQuoteInput,
 } from '@/lib/admin/pricing-video-quote';
-import { VIDEO_TOKEN_COMBOS, videoTokenKey } from '@/lib/admin/pricing-video-token-expression';
+import {
+    VIDEO_TOKEN_COMBOS,
+    videoTokenCombosForModel,
+    videoTokenKey,
+} from '@/lib/admin/pricing-video-token-expression';
 import { pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
 
 /** doubao-seedance-2-0-mini official prices, in canonical cell order. */
@@ -19,6 +23,27 @@ const quote = (prices: number[], buy: number, sell: number): VideoQuoteInput => 
 
 const byKey = (input: VideoQuoteInput, fx: number, ratio: number) =>
     new Map(computeVideoQuote(input, fx, ratio).map((cell) => [videoTokenKey(cell), cell]));
+
+describe('model-aware Mini quote', () => {
+    const model = 'doubao-seedance-2-0-mini-260615';
+    const official = videoTokenCombosForModel(model).map((combo, index) => ({
+        ...combo,
+        price: [23, 14, 23, 14][index],
+    }));
+
+    it('computes only the four officially supported Mini cells', () => {
+        const cells = computeVideoQuote({ official, buy_discount: 0.5, sell_discount: 0.75 }, 1, 7.5, model);
+        expect(cells.map(videoTokenKey)).toEqual(['480p·none', '480p·video', '720p·none', '720p·video']);
+        expect(cells.every((cell) => cell.actual >= cell.target)).toBe(true);
+    });
+
+    it('stores and restores a four-cell Mini cost rule', () => {
+        const input = { official, buy_discount: 0.5, sell_discount: 0.75 } satisfies VideoQuoteInput;
+        const config = videoQuoteCostConfig(input, model);
+        expect(config.variants).toHaveLength(4);
+        expect(videoQuoteFromCostConfig(pricingCostConfigSchema.parse(config), model)).toEqual(input);
+    });
+});
 
 describe('computeVideoQuote', () => {
     it('prices every cell at the group ratio of 1 (production fx)', () => {

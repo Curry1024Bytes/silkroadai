@@ -10,7 +10,8 @@ export interface PricingCostConfig {
     video_unit?: 'second' | 'million_tokens';
     currency: 'cny' | 'credits';
     credits_per_cny: number;
-    upstream_multiplier: number;
+    /** Null means the supplier rate has not been verified; allowed only for token-priced video. */
+    upstream_multiplier: number | null;
     /** Final multiplier on the reference quote; omitted by legacy percentage-based rules. */
     retail_multiplier?: number;
     /** Legacy cost markup; must be zero when retail_multiplier is supplied. */
@@ -42,15 +43,15 @@ export interface PricingCostLine {
     key: string;
     label: string;
     unit: 'million_tokens' | 'image' | 'second';
-    cost: number;
+    cost: number | null;
     retail: number;
-    profit: number;
-    margin_percent: number;
+    profit: number | null;
+    margin_percent: number | null;
 }
 
 export interface PricingCostCalculation {
     lines: PricingCostLine[];
-    multiplier: number;
+    multiplier: number | null;
 }
 
 /** Samples use actual token counts, image counts, or seconds, never millions of units. */
@@ -58,10 +59,10 @@ export interface PricingCostSample {
     line: PricingCostLine;
     requested_units: number;
     billed_units: number;
-    cost: number;
+    cost: number | null;
     retail: number;
-    profit: number;
-    margin_percent: number;
+    profit: number | null;
+    margin_percent: number | null;
 }
 
 export interface StoredPricingCostRule {

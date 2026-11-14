@@ -5,7 +5,11 @@ import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 import { basePriceSchema, SimplePricingError } from '@/lib/admin/pricing-simple-core';
-import { VIDEO_TOKEN_INPUTS, VIDEO_TOKEN_RESOLUTIONS } from '@/lib/admin/pricing-video-token-expression';
+import {
+    VIDEO_TOKEN_INPUTS,
+    VIDEO_TOKEN_RESOLUTIONS,
+    videoTokenCombosForModel,
+} from '@/lib/admin/pricing-video-token-expression';
 import {
     loadSimplePricing,
     lookupBillLog,
@@ -38,60 +42,71 @@ const videoQuote = {
                 })
                 .strict(),
         )
-        .length(8),
-    buy_discount: discount,
+        .max(8),
+    buy_discount: discount.nullable(),
     sell_discount: discount,
 };
 
-const bodySchema = z.discriminatedUnion('action', [
-    z.object({ action: z.literal('preview_tier'), group_id: z.string().uuid(), ratio }).strict(),
-    z
-        .object({
-            action: z.literal('save_tier'),
-            group_id: z.string().uuid(),
-            ratio,
-            expected_ratio: ratio.nullable(),
-        })
-        .strict(),
-    z.object({ action: z.literal('preview_model'), model: modelName, base: basePriceSchema }).strict(),
-    z
-        .object({
-            action: z.literal('save_model'),
-            model: modelName,
-            base: basePriceSchema,
-            expected_state: z.string().min(1).max(200_000),
-        })
-        .strict(),
-    z.object({ action: z.literal('resync_catalog') }).strict(),
-    z.object({ action: z.literal('preview_video_quote'), ...videoQuote }).strict(),
-    z
-        .object({
-            action: z.literal('save_video_quote'),
-            ...videoQuote,
-            expected_state: z.string().min(1).max(200_000),
-            expected_revision: z.number().int().positive().max(2_147_483_646).nullable(),
-        })
-        .strict(),
-    z.object({ action: z.literal('verify_runtime'), models: z.array(modelName).min(1).max(30) }).strict(),
-    z
-        .object({
-            action: z.literal('save_purchase_rate'),
-            group_id: z.string().uuid(),
-            purchase_rate: ratio.nullable(),
-        })
-        .strict(),
-    z
-        .object({
-            action: z.literal('lookup_log'),
-            request_id: z
-                .string()
-                .trim()
-                .min(1, '请填写 request_id。')
-                .max(128)
-                .regex(/^[A-Za-z0-9_-]+$/, 'request_id 格式无效。'),
-        })
-        .strict(),
-]);
+const bodySchema = z
+    .discriminatedUnion('action', [
+        z.object({ action: z.literal('preview_tier'), group_id: z.string().uuid(), ratio }).strict(),
+        z
+            .object({
+                action: z.literal('save_tier'),
+                group_id: z.string().uuid(),
+                ratio,
+                expected_ratio: ratio.nullable(),
+            })
+            .strict(),
+        z.object({ action: z.literal('preview_model'), model: modelName, base: basePriceSchema }).strict(),
+        z
+            .object({
+                action: z.literal('save_model'),
+                model: modelName,
+                base: basePriceSchema,
+                expected_state: z.string().min(1).max(200_000),
+            })
+            .strict(),
+        z.object({ action: z.literal('resync_catalog') }).strict(),
+        z.object({ action: z.literal('preview_video_quote'), ...videoQuote }).strict(),
+        z
+            .object({
+                action: z.literal('save_video_quote'),
+                ...videoQuote,
+                expected_state: z.string().min(1).max(200_000),
+                expected_revision: z.number().int().positive().max(2_147_483_646).nullable(),
+            })
+            .strict(),
+        z.object({ action: z.literal('verify_runtime'), models: z.array(modelName).min(1).max(30) }).strict(),
+        z
+            .object({
+                action: z.literal('save_purchase_rate'),
+                group_id: z.string().uuid(),
+                purchase_rate: ratio.nullable(),
+            })
+            .strict(),
+        z
+            .object({
+                action: z.literal('lookup_log'),
+                request_id: z
+                    .string()
+                    .trim()
+                    .min(1, '请填写 request_id。')
+                    .max(128)
+                    .regex(/^[A-Za-z0-9_-]+$/, 'request_id 格式无效。'),
+            })
+            .strict(),
+    ])
+    .superRefine((body, ctx) => {
+        if (body.action !== 'preview_video_quote' && body.action !== 'save_video_quote') return;
+        const expected = videoTokenCombosForModel(body.model).length;
+        if (body.official.length !== expected)
+            ctx.addIssue({
+                code: 'custom',
+                path: ['official'],
+                message: `该模型须填写全部 ${expected} 档的官方价。`,
+            });
+    });
 
 function errorResponse(error: unknown) {
     if (error instanceof z.ZodError)

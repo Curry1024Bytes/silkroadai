@@ -226,13 +226,13 @@ export interface SeedanceModelSpec {
  *  2026-08-03 全线加 480p:上游(artsdance 国内/intl + dreamina)挂牌本就含 480p,
  *  与 720p 统一价(token ∝ 像素,整条约半价)。 */
 export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
-    // ── 国内(cn):pro 4 档,fast/mini 480p/720p/1080p ──
+    // ── 国内(cn):pro 4 档,fast 480p/720p/1080p,mini 仅 480p/720p ──
     ...Object.fromEntries(
         (
             [
                 ['pro', UPSTREAM_MODEL, ['480p', '720p', '1080p', '4k']],
                 ['fast', UPSTREAM_FAST, ['480p', '720p', '1080p']],
-                ['mini', UPSTREAM_MINI, ['480p', '720p', '1080p']],
+                ['mini', UPSTREAM_MINI, ['480p', '720p']],
             ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
         ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>

@@ -7,6 +7,7 @@ import {
     readVideoTokenPrice,
     rewriteVideoTokenExpression,
     videoTokenInputLabel,
+    videoTokenCombosForModel,
     videoTokenKey,
     type VideoTokenCell,
 } from '@/lib/admin/pricing-video-token-expression';
@@ -17,6 +18,23 @@ const LIVE =
 
 const cells = (prices: number[]): VideoTokenCell[] =>
     VIDEO_TOKEN_COMBOS.map((combo, index) => ({ ...combo, price: prices[index] }));
+
+describe('videoTokenCombosForModel', () => {
+    it('uses only 480p and 720p for Seedance 2.0 Mini', () => {
+        expect(videoTokenCombosForModel('doubao-seedance-2-0-mini-260615').map(videoTokenKey)).toEqual([
+            '480p·none',
+            '480p·video',
+            '720p·none',
+            '720p·video',
+        ]);
+        expect(videoTokenCombosForModel('seedance-2-0-mini')).toHaveLength(4);
+    });
+
+    it('keeps all eight cells for other models and unknown names', () => {
+        expect(videoTokenCombosForModel('doubao-seedance-2-0-260128')).toHaveLength(8);
+        expect(videoTokenCombosForModel()).toHaveLength(8);
+    });
+});
 
 describe('parseVideoTokenExpression', () => {
     it('reads the live production formula in canonical order', () => {
@@ -129,6 +147,36 @@ describe('rewriteVideoTokenExpression', () => {
         expect(() => rewriteVideoTokenExpression(LIVE, cells([1, 2, 3, 4, 5, 6, 7, 8]).slice(0, 7))).toThrow(
             /全部 8 档/,
         );
+    });
+
+    it('reduces the legacy eight-tier Mini formula to its four supported tiers', () => {
+        const miniCells: VideoTokenCell[] = [
+            { resolution: '480p', video_input: 'none', price: 1.23 },
+            { resolution: '480p', video_input: 'video', price: 0.87 },
+            { resolution: '720p', video_input: 'none', price: 2.34 },
+            { resolution: '720p', video_input: 'video', price: 1.65 },
+        ];
+
+        const rewritten = rewriteVideoTokenExpression(LIVE, miniCells, 'doubao-seedance-2-0-mini-260615');
+        const parsed = parseVideoTokenExpression(rewritten, 'doubao-seedance-2-0-mini-260615');
+
+        expect(rewritten).not.toContain('1080p');
+        expect(rewritten).not.toContain('4k');
+        expect(parsed.cells).toEqual(miniCells);
+        expect(parsed.fallback).toEqual({ resolution: '720p', video_input: 'video' });
+    });
+
+    it('keeps the version prefix when reducing a legacy Mini formula', () => {
+        const miniCells: VideoTokenCell[] = [
+            { resolution: '480p', video_input: 'none', price: 1 },
+            { resolution: '480p', video_input: 'video', price: 2 },
+            { resolution: '720p', video_input: 'none', price: 3 },
+            { resolution: '720p', video_input: 'video', price: 4 },
+        ];
+        const rewritten = rewriteVideoTokenExpression(`v1:${LIVE}`, miniCells, 'doubao-seedance-2-0-mini-260615');
+
+        expect(rewritten.startsWith('v1:')).toBe(true);
+        expect(parseVideoTokenExpression(rewritten, 'doubao-seedance-2-0-mini-260615').cells).toEqual(miniCells);
     });
 });
 

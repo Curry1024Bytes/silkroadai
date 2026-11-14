@@ -404,13 +404,13 @@ export async function loadSimplePricing(admin: AdminPrincipal): Promise<SimplePr
 
 type CostRuleRow = { id: string; model_id: string; tier: string; revision: number; config: unknown; updated_at: Date };
 
-function storedQuote(rule: CostRuleRow | undefined) {
+function storedQuote(rule: CostRuleRow | undefined, model?: string) {
     if (!rule) return null;
     const parsed = pricingCostConfigSchema.safeParse(rule.config);
     return {
         id: rule.id,
         revision: rule.revision,
-        quote: parsed.success ? videoQuoteFromCostConfig(parsed.data) : null,
+        quote: parsed.success ? videoQuoteFromCostConfig(parsed.data, model) : null,
         updated_at: rule.updated_at.toISOString(),
     };
 }
@@ -444,7 +444,7 @@ function planVideoQuote(
     const ratio = groupRatioOf(options, group.newapi_group);
     if (ratio === null)
         throw new SimplePricingError('pricing_no_ratio', `档次「${group.display_name}」在 new-api 没有分组倍率。`);
-    const cells = quoteOrError(input, ratio);
+    const cells = quoteOrError(input, ratio, name);
     let writes: OptionWrite[];
     try {
         writes = planVideoTokenWrites(
@@ -466,9 +466,9 @@ function planVideoQuote(
     return { model, tier, group, ratio, current: base.base, cells, writes };
 }
 
-function quoteOrError(input: VideoQuoteInput, groupRatio: number): VideoQuoteCell[] {
+function quoteOrError(input: VideoQuoteInput, groupRatio: number, model: string): VideoQuoteCell[] {
     try {
-        return computeVideoQuote(input, BASE_FX, groupRatio);
+        return computeVideoQuote(input, BASE_FX, groupRatio, model);
     } catch (error) {
         if (error instanceof VideoQuoteError)
             throw new SimplePricingError('pricing_video_quote_invalid', error.message, 400);
@@ -492,7 +492,10 @@ async function attachVideoQuotes(
         const use = model.used_by[0];
         const group = catalog.groups.find((row) => row.key === use.tier)!;
         const ratio = groupRatioOf(options, group.newapi_group);
-        const rule = storedQuote(rules.find((row) => row.model_id === use.model_id && row.tier === use.tier));
+        const rule = storedQuote(
+            rules.find((row) => row.model_id === use.model_id && row.tier === use.tier),
+            model.name,
+        );
         const notes: string[] = [];
         if (model.used_by.length !== 1)
             notes.push(`被 ${model.used_by.length} 个模型或档次使用，按官方价折扣定价只支持一个档次。`);
@@ -501,7 +504,7 @@ async function attachVideoQuotes(
         if (rule?.quote && ratio !== null && model.base?.mode === 'video_token') {
             const live = new Map(model.base.cells.map((cell) => [videoTokenKey(cell), cell.price]));
             try {
-                drift = computeVideoQuote(rule.quote, BASE_FX, ratio).some(
+                drift = computeVideoQuote(rule.quote, BASE_FX, ratio, model.name).some(
                     (cell) => live.get(videoTokenKey(cell)) !== cell.coefficient,
                 );
             } catch {
@@ -854,7 +857,7 @@ function videoQuoteWarnings(
         'new-api 按模型名计价，所有渠道里同名模型的请求都按新系数扣费。',
     ];
     if (overrides) warnings.push(`${overrides} 位客户在该档次有专属倍率，他们的价格按同一比例变化。`);
-    const stored = storedQuote(rule);
+    const stored = storedQuote(rule, name);
     if (stored && !stored.quote) warnings.push('该档次已有的按秒成本草稿会被这份按 token 的报价替换。');
     warnings.push(...notesFor(options, name));
     return warnings;
@@ -922,9 +925,9 @@ export async function saveVideoQuote(
         });
         if ((existing?.revision ?? null) !== expectedRevision)
             throw new PricingPublishError('pricing_cost_revision', '该模型的报价已被其他人修改，请刷新后重新确认。');
-        const config = videoQuoteCostConfig(input);
-        const before = storedQuote(existing ?? undefined)?.quote ?? null;
-        const ruleChanged = !before || JSON.stringify(videoQuoteCostConfig(before)) !== JSON.stringify(config);
+        const config = videoQuoteCostConfig(input, name);
+        const before = storedQuote(existing ?? undefined, name)?.quote ?? null;
+        const ruleChanged = !before || JSON.stringify(videoQuoteCostConfig(before, name)) !== JSON.stringify(config);
         if (ruleChanged)
             await saveCostRulesInTransaction(
                 tx,

@@ -12,6 +12,8 @@ import {
     VIDEO_TOKEN_COMBOS,
     VIDEO_TOKEN_MAX_PRICE,
     videoTokenInputLabel,
+    videoTokenCombosForModel,
+    isSeedanceMiniModel,
     videoTokenKey,
     type VideoTokenInput,
     type VideoTokenResolution,
@@ -27,7 +29,8 @@ export interface VideoQuoteOfficialCell {
 export interface VideoQuoteInput {
     official: VideoQuoteOfficialCell[];
     /** What we pay as a fraction of official, e.g. 0.7 = 7折. */
-    buy_discount: number;
+    /** Null means the supplier discount is not verified, so cost and margin stay unknown. */
+    buy_discount: number | null;
     /** What customers pay as a fraction of official. */
     sell_discount: number;
 }
@@ -37,7 +40,7 @@ export interface VideoQuoteCell {
     video_input: VideoTokenInput;
     official: number;
     /** Our cost, ¥ per 1M tokens. */
-    cost: number;
+    cost: number | null;
     /** official × sell discount. */
     target: number;
     /** new-api coefficient, two decimals, rounded up. */
@@ -45,7 +48,7 @@ export interface VideoQuoteCell {
     /** What customers are billed: coefficient × fx × group ratio. */
     actual: number;
     /** (actual − cost) ÷ actual. */
-    margin: number;
+    margin: number | null;
 }
 
 export class VideoQuoteError extends Error {
@@ -101,22 +104,29 @@ function checkDiscount(value: number, label: string): Rational {
 }
 
 /** Compute every cell. `fx` and `groupRatio` come from the server's live configuration. */
-export function computeVideoQuote(input: VideoQuoteInput, fx: number, groupRatio: number): VideoQuoteCell[] {
-    const buy = checkDiscount(input.buy_discount, '进货折扣');
+export function computeVideoQuote(
+    input: VideoQuoteInput,
+    fx: number,
+    groupRatio: number,
+    model?: string,
+): VideoQuoteCell[] {
+    const buy = input.buy_discount === null ? null : checkDiscount(input.buy_discount, '进货折扣');
     const sell = checkDiscount(input.sell_discount, '售卖折扣');
-    if (input.sell_discount < input.buy_discount) throw new VideoQuoteError('售卖折扣低于进货折扣，每单都会亏损。');
+    if (input.buy_discount !== null && input.sell_discount < input.buy_discount)
+        throw new VideoQuoteError('售卖折扣低于进货折扣，每单都会亏损。');
     if (!(fx > 0) || !(groupRatio > 0)) throw new VideoQuoteError('档次倍率或换算比例无效。');
     const unit = multiply(exact(fx, '换算比例'), exact(groupRatio, '档次倍率'));
+    const combos = videoTokenCombosForModel(model);
     const prices = new Map(input.official.map((cell) => [videoTokenKey(cell), cell.price]));
-    if (input.official.length !== VIDEO_TOKEN_COMBOS.length || prices.size !== VIDEO_TOKEN_COMBOS.length)
-        throw new VideoQuoteError('须填写全部 8 档的官方价。');
-    return VIDEO_TOKEN_COMBOS.map((combo) => {
+    if (input.official.length !== combos.length || prices.size !== combos.length)
+        throw new VideoQuoteError(`须填写全部 ${combos.length} 档的官方价。`);
+    return combos.map((combo) => {
         const label = `${combo.resolution} ${videoTokenInputLabel(combo.video_input)}`;
         const price = prices.get(videoTokenKey(combo));
         if (price === undefined || !(price > 0) || price > VIDEO_TOKEN_MAX_PRICE)
             throw new VideoQuoteError(`请填写 ${label} 的官方价（大于 0）。`);
         const official = exact(price, `${label} 官方价`);
-        const cost = multiply(official, buy);
+        const cost = buy === null ? null : multiply(official, buy);
         const target = multiply(official, sell);
         const raw = divide(target, unit);
         const cents = (raw.n * HUNDRED + raw.d - ONE) / raw.d;
@@ -127,18 +137,19 @@ export function computeVideoQuote(input: VideoQuoteInput, fx: number, groupRatio
         return {
             ...combo,
             official: price,
-            cost: toNumber(cost),
+            cost: cost === null ? null : toNumber(cost),
             target: toNumber(target),
             coefficient: Number(cents) / 100,
             actual: toNumber(actual),
-            margin: toNumber(divide(subtract(actual, cost), actual)),
+            margin: cost === null ? null : toNumber(divide(subtract(actual, cost), actual)),
         };
     });
 }
 
 /** Stored as a Portal cost rule: official prices, buy discount and sell discount. */
-export function videoQuoteCostConfig(input: VideoQuoteInput): PricingCostConfig {
+export function videoQuoteCostConfig(input: VideoQuoteInput, model?: string): PricingCostConfig {
     const prices = new Map(input.official.map((cell) => [videoTokenKey(cell), cell.price]));
+    const combos = videoTokenCombosForModel(model);
     return {
         version: 1,
         basis: 'video',
@@ -150,7 +161,7 @@ export function videoQuoteCostConfig(input: VideoQuoteInput): PricingCostConfig 
         markup_percent: 0,
         source_note: '官方价 × 折扣（视频 token 报价）',
         token_rates: { input: null, output: null, cache_read: null, cache_write: null },
-        variants: VIDEO_TOKEN_COMBOS.map((combo) => ({
+        variants: combos.map((combo) => ({
             key: `${combo.resolution}-${combo.video_input}`,
             label: `${combo.resolution} · ${videoTokenInputLabel(combo.video_input)}`,
             resolution: combo.resolution,
@@ -164,11 +175,12 @@ export function videoQuoteCostConfig(input: VideoQuoteInput): PricingCostConfig 
 }
 
 /** The quote a stored cost rule holds, or null when it is not a complete video-token quote. */
-export function videoQuoteFromCostConfig(config: PricingCostConfig): VideoQuoteInput | null {
+export function videoQuoteFromCostConfig(config: PricingCostConfig, model?: string): VideoQuoteInput | null {
     if (config.basis !== 'video' || config.video_unit !== 'million_tokens' || config.retail_multiplier === undefined)
         return null;
+    const combos = videoTokenCombosForModel(model);
     const official: VideoQuoteOfficialCell[] = [];
-    for (const combo of VIDEO_TOKEN_COMBOS) {
+    for (const combo of combos) {
         const wanted = combo.video_input === 'video' ? 'with' : 'without';
         const matches = config.variants.filter(
             (variant) => variant.resolution === combo.resolution && variant.reference_video === wanted,
@@ -176,6 +188,22 @@ export function videoQuoteFromCostConfig(config: PricingCostConfig): VideoQuoteI
         if (matches.length !== 1) return null;
         official.push({ ...combo, price: matches[0].price });
     }
-    if (config.variants.length !== official.length) return null;
+    const legacyMini = isSeedanceMiniModel(model) && config.variants.length === VIDEO_TOKEN_COMBOS.length;
+    if (config.variants.length !== official.length && !legacyMini) return null;
+    if (
+        legacyMini &&
+        VIDEO_TOKEN_COMBOS.some((combo) => {
+            const wanted = combo.video_input === 'video' ? 'with' : 'without';
+            return (
+                config.variants.filter(
+                    (variant) =>
+                        variant.resolution === combo.resolution &&
+                        variant.reference_video === wanted &&
+                        variant.audio === 'any',
+                ).length !== 1
+            );
+        })
+    )
+        return null;
     return { official, buy_discount: config.upstream_multiplier, sell_discount: config.retail_multiplier };
 }

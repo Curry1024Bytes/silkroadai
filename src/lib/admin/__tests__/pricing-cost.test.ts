@@ -3,6 +3,7 @@ import {
     calculateCostPricing,
     calculateCostSample,
     getCostMultiplierDelta,
+    getCostQuoteDisplay,
     getCostRetailMultiplier,
     pricingCostConfigSchema,
     PRICING_COST_MAX_RETAIL,
@@ -198,6 +199,45 @@ describe('direct retail multipliers', () => {
             cost: basis === 'image' ? 3.12 : 7.28,
             retail: basis === 'image' ? 3.84 : 8.96,
         });
+    });
+    it('keeps retail calculable while purchase cost is unknown for million-token video quotes', () => {
+        const config = media('video', {
+            video_unit: 'million_tokens',
+            upstream_multiplier: null as unknown as number,
+            retail_multiplier: 0.75,
+            markup_percent: 0,
+        });
+        config.variants[0].reference_video = 'without';
+
+        expect(pricingCostConfigSchema.safeParse(config).success).toBe(true);
+        expect(calculateCostPricing(config)).toMatchObject({
+            multiplier: null,
+            lines: [{ cost: null, retail: 0.15, profit: null, margin_percent: null }],
+        });
+        expect(calculateCostSample(config, 'standard', 1_000_000)).toMatchObject({
+            cost: null,
+            retail: 0.15,
+            profit: null,
+            margin_percent: null,
+        });
+        expect(getCostQuoteDisplay(config)).toMatchObject({
+            unitCost: null,
+            unitRetail: 0.75,
+            supplierCharges: { standard: null },
+        });
+        expect(getCostRetailMultiplier(config)).toBe(0.75);
+    });
+    it('allows an unknown purchase multiplier only on million-token video quotes', () => {
+        expect(
+            pricingCostConfigSchema.safeParse(
+                media('video', { upstream_multiplier: null as unknown as number, retail_multiplier: 0.75 }),
+            ).success,
+        ).toBe(false);
+        expect(
+            pricingCostConfigSchema.safeParse(
+                media('image', { upstream_multiplier: null as unknown as number, retail_multiplier: 0.75 }),
+            ).success,
+        ).toBe(false);
     });
     it('keeps the exact half-cent-of-a-cent boundary without a rounded percentage conversion', () => {
         const config = media('image', { upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 });
