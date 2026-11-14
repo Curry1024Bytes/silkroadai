@@ -408,6 +408,34 @@ describe('loadBrowserCatalog Seedance price provenance', () => {
         expect(pricing.billing_details?.mode).toBe('video_token');
     });
 
+    it('hides the unsupported 4K display cell for Seedance 2.5 while retaining it for Seedance 2.0', async () => {
+        const fixture = videoRuleFixture();
+        const seedance25Slug = 'doubao-seedance-2-5-260628';
+        const seedance25Price = {
+            ...fixture.videoCatalogPrice,
+            billing_details: {
+                ...fixture.videoCatalogPrice.billing_details,
+                cells: fixture.videoCatalogPrice.billing_details.cells.map((cell) => ({ ...cell })),
+            },
+        };
+        catalogFixture([
+            model(fixture.slug, { sale: route(1) }, [fixture.videoCatalogPrice]),
+            model(seedance25Slug, { sale: route(1) }, [seedance25Price]),
+        ]);
+
+        const catalog = await loadBrowserCatalog();
+        const seedance20 = catalog.models.find((entry) => entry.slug === fixture.slug)!.pricesByTier.sale!;
+        const seedance25 = catalog.models.find((entry) => entry.slug === seedance25Slug)!.pricesByTier.sale!;
+        const cells20 = seedance20.billing_details?.mode === 'video_token' ? seedance20.billing_details.cells : [];
+        const cells25 = seedance25.billing_details?.mode === 'video_token' ? seedance25.billing_details.cells : [];
+
+        expect(cells20).toHaveLength(8);
+        expect(cells20.some((cell) => cell.resolution === '4k')).toBe(true);
+        expect(cells25).toHaveLength(6);
+        expect(cells25.some((cell) => cell.resolution === '4k')).toBe(false);
+        expect(seedance25Price.billing_details.cells).toHaveLength(8);
+    });
+
     it('scales customer prices once while retaining the standard sale discount provenance', async () => {
         seedanceFixture();
         mockMultipliers.mockResolvedValue([

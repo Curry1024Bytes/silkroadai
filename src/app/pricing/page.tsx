@@ -45,6 +45,7 @@ import {
     catalogRequestMultiplierLines,
     parseCatalogBillingDetails,
     primaryTokenRates,
+    sanitizeCatalogDisplayDetails,
     scaleCatalogBillingDetails,
     type CatalogBillingDetails,
 } from '@/lib/models/catalog-pricing-details';
@@ -184,7 +185,8 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
                 multiplierScale = dedicatedMultiplier / publicMultiplier;
             }
             const publicDetails = parseCatalogBillingDetails(p.billing_details);
-            const billingDetails = publicDetails ? scaleCatalogBillingDetails(publicDetails, multiplierScale) : null;
+            const scaledDetails = publicDetails ? scaleCatalogBillingDetails(publicDetails, multiplierScale) : null;
+            const billingDetails = sanitizeCatalogDisplayDetails(m.slug, scaledDetails);
             const tokenRates = primaryTokenRates(billingDetails);
             rows.push({
                 tierKey: p.tier,

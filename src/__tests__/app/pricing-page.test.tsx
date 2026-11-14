@@ -46,6 +46,22 @@ const model = (slug: string, display_name: string, prices: ReturnType<typeof pri
     prices,
 });
 
+const videoTokenPrice = (tier: string, resolutions: string[], unsupported4kPrice: number) => ({
+    ...price(tier),
+    billing_details: {
+        version: 1 as const,
+        mode: 'video_token' as const,
+        unit: 'cny_per_million_tokens' as const,
+        cells: resolutions.flatMap((resolution) =>
+            (['none', 'video'] as const).map((video_input) => ({
+                resolution: resolution as '480p' | '720p' | '1080p' | '4k',
+                video_input,
+                price: resolution === '4k' ? unsupported4kPrice : 1,
+            })),
+        ),
+    },
+});
+
 const GROUPS = [
     { key: 'pool', display_name: '默认(号池为主)', tier_level: 0 },
     { key: 'geminit3', display_name: 'geminit3', tier_level: 0 },
@@ -89,6 +105,24 @@ const tieredPrice = (): ReturnType<typeof price> & { billing_details: TieredPric
 });
 
 describe('<PricingPage /> SSR', () => {
+    it('hides Seedance 2.5 4K while retaining Seedance 2.0 4K', async () => {
+        mockFindManyCatalog.mockResolvedValue([
+            model('doubao-seedance-2-5-260628', 'Seedance 2.5', [
+                videoTokenPrice('pool', ['480p', '720p', '1080p', '4k'], 99),
+            ]),
+            model('seedance2.0-pro-720p', 'Seedance 2.0', [
+                videoTokenPrice('pool', ['480p', '720p', '1080p', '4k'], 88),
+            ]),
+        ]);
+
+        const html = renderToString(await PricingPage());
+
+        expect(html).toContain('Seedance 2.5');
+        expect(html).toContain('Seedance 2.0');
+        expect(html).not.toContain('¥99');
+        expect(html).toContain('4k · 无参考视频 ¥88');
+    });
+
     it('renders every resolution and the correct video unit and scheduled discount', async () => {
         const details = {
             version: 1,

@@ -173,6 +173,19 @@ export type CatalogBillingDetails =
     | VideoTokenPricingDetails
     | TimeTokenPricingDetails;
 
+const SEEDANCE_25_SLUG = 'doubao-seedance-2-5-260628';
+
+/** Hide unsupported customer-facing price cells without changing stored billing metadata. */
+export function sanitizeCatalogDisplayDetails(
+    modelSlug: string,
+    details: CatalogBillingDetails | null,
+): CatalogBillingDetails | null {
+    if (modelSlug !== SEEDANCE_25_SLUG || details?.mode !== 'video_token') return details;
+    const cells = details.cells.filter((cell) => cell.resolution !== '4k');
+    if (cells.length === details.cells.length) return details;
+    return { ...details, cells };
+}
+
 /** Validate every mode before exposing it. Unknown non-null metadata never falls back to a scalar quote. */
 export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails | null {
     if (raw == null) return null;

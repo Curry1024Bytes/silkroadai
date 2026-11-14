@@ -7,7 +7,11 @@ import { HIDDEN_MODELS } from '@/lib/models/categorize';
 import type { BrowserCatalog, BrowserModelPricing } from '@/lib/models/catalog-browser-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
-import { parseCatalogBillingDetails, scaleCatalogBillingDetails } from './catalog-pricing-details';
+import {
+    parseCatalogBillingDetails,
+    sanitizeCatalogDisplayDetails,
+    scaleCatalogBillingDetails,
+} from './catalog-pricing-details';
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { resolvePriceProvenance, type PriceProvenanceVerification } from './price-provenance';
@@ -273,7 +277,8 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                     const provenance = resolvePriceProvenance(model.slug, publicPricing, verification);
                     if (provenance.verifiable) pricing.price_provenance = provenance;
                 }
-                return [tier, pricing];
+                const displayDetails = sanitizeCatalogDisplayDetails(model.slug, pricing.billing_details ?? null);
+                return [tier, displayDetails ? { ...pricing, billing_details: displayDetails } : pricing];
             }),
         );
         visibleModels.push({ slug: model.slug, pricesByTier });
