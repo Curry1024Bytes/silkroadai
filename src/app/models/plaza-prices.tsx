@@ -7,7 +7,7 @@ import { primaryTokenRates } from '@/lib/models/catalog-pricing-details';
 import { useLocale } from '@/lib/i18n/client';
 import { pickMessages } from '@/lib/i18n';
 import { modelsMessages, translateSummaryLabel } from '@/lib/i18n/messages/models';
-import { ModelTierPrices } from './model-prices';
+import { ModelTierPrices, PriceProvenanceNote } from './model-prices';
 
 /** Shared by cards and table cells so the selected tariff never changes between views. */
 export function PlazaPriceSummary({
@@ -65,6 +65,7 @@ export function PlazaPriceSummary({
                             {translateSummaryLabel(m, summary.note)}
                         </p>
                     )}
+                    <PriceProvenanceNote price={quote?.price ?? null} />
                 </>
             ) : (
                 <p className="text-muted-foreground m-0 text-sm">{m.prices.unpriced}</p>

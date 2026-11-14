@@ -10,6 +10,7 @@ const mockUserDelete = vi.fn();
 const mockTokenCreate = vi.fn();
 const mockEmailVerificationTokenCreate = vi.fn();
 const mockTransaction = vi.fn();
+const mockEnqueueCustomerProvisioningJob = vi.fn();
 
 // PR-U1: reseller resolve path needs resellerInviteCode.findUnique
 // (returns null when env-only / empty input) + user.count for IP throttle
@@ -55,6 +56,10 @@ vi.mock('@/lib/newapi/client', () => ({
     searchUser: (...args: unknown[]) => mockSearchNewApiUser(...args),
 }));
 
+vi.mock('@/lib/auth/customer-provisioning-queue', () => ({
+    enqueueCustomerProvisioningJob: (...args: unknown[]) => mockEnqueueCustomerProvisioningJob(...args),
+}));
+
 const mockGetDefaultChannelGroup = vi.fn();
 vi.mock('@/lib/channel-group', () => ({
     getDefaultChannelGroup: (...args: unknown[]) => mockGetDefaultChannelGroup(...args),
@@ -83,6 +88,9 @@ const NEWAPI_USER_ID = 42;
 
 beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PORTAL_CUSTOMER_PROVISIONING_ENC_KEY = '11'.repeat(32);
+    mockUserDelete.mockResolvedValue({ id: PORTAL_USER_ID });
+    mockDeleteNewApiUser.mockResolvedValue(undefined);
     mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
         typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
     );
@@ -107,10 +115,47 @@ beforeEach(() => {
         is_default: true,
         enabled: true,
     });
+    mockEnqueueCustomerProvisioningJob.mockResolvedValue({ id: 'job-1', status: 'queued' });
 });
 
 describe('POST /api/auth/register (new-api)', () => {
-    it('happy path: creates user, provisions new-api, returns token + sk-key', async () => {
+    it('returns a session immediately and queues new-api provisioning', async () => {
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.email) return Promise.resolve(null);
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'queued@llmroute.club',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date('2026-11-13T00:00:00Z'),
+        });
+
+        const res = await POST(makeReq({ email: 'queued@llmroute.club', password: 'goodpass123' }));
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.user_id).toBe(PORTAL_USER_ID);
+        expect(body.provisioning).toEqual({ status: 'queued' });
+        expect(body.newapi_user_id).toBeNull();
+        expect(body.newapi_token_value).toBeNull();
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                userId: PORTAL_USER_ID,
+                email: 'queued@llmroute.club',
+                tierKey: 'gpt特惠分组',
+                newapiGroup: 'GPT-特惠反代',
+            }),
+        );
+    });
+
+    it('happy path: creates user, queues provisioning, and returns a session', async () => {
         // findUnique gets called twice in this flow: once for "is email taken"
         // (where: { email }) → null, and once by session.ts:signSession for
         // session_token_version (where: { id }) → user shape.
@@ -128,13 +173,6 @@ describe('POST /api/auth/register (new-api)', () => {
             status: 'active',
             created_at: new Date('2026-05-02T00:00:00Z'),
         });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: NEWAPI_USER_ID,
-            newapi_username: 'c-aaaaaaaa',
-            newapi_access_token: 'a'.repeat(32),
-            newapi_token_id: 7,
-            newapi_token_value: 'sk-test-abc123def456ghi',
-        });
 
         const res = await POST(makeReq({ email: 'Happy@LLmRoute.club', password: 'goodpass123', nickname: 'Happy' }));
         const body = await res.json();
@@ -142,18 +180,11 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(res.status).toBe(200);
         expect(body.user_id).toBe(PORTAL_USER_ID);
         expect(body.token).toMatch(/^eyJ/);
-        expect(body.newapi_user_id).toBe(NEWAPI_USER_ID);
-        expect(body.newapi_token_value).toBe('sk-test-abc123def456ghi');
+        expect(body.newapi_user_id).toBeNull();
+        expect(body.newapi_token_value).toBeNull();
         expect(body.portal_user.email).toBe('happy@llmroute.club');
-        expect(mockProvision).toHaveBeenCalledWith({
-            portal_user_id: PORTAL_USER_ID,
-            email: 'happy@llmroute.club',
-            newapi_group: 'GPT-特惠反代',
-            initial_quota: 0,
-        });
-        expect(mockTokenCreate).toHaveBeenCalledWith(
-            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
-        );
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalled();
 
         // email lowercased on store
         expect(mockUserCreate).toHaveBeenCalledWith(
@@ -169,7 +200,7 @@ describe('POST /api/auth/register (new-api)', () => {
         // session cookie set
         expect(res.headers.get('set-cookie')).toContain('silkroad_session=');
 
-        // linkage persisted via $transaction with all three new-api fields
+        // User and durable provisioning job share one transaction.
         expect(mockTransaction).toHaveBeenCalledTimes(1);
         // no rollback paths invoked
         expect(mockUserDelete).not.toHaveBeenCalled();
@@ -288,7 +319,7 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(body.error).toBe('Invalid JSON body');
     });
 
-    it('rolls back portal user + cleans new-api orphan when provision fails mid-flow', async () => {
+    it('returns 503 and rolls back the transaction when the provisioning job write fails', async () => {
         // Step 2-6 failure scenario: provisionNewCustomer threw AFTER createUser
         // succeeded, so the new-api user exists with deterministic username
         // c-aaaaaaaa and we expect cleanupOrphanNewApiUser to find + delete it.
@@ -302,15 +333,7 @@ describe('POST /api/auth/register (new-api)', () => {
             status: 'active',
             created_at: new Date(),
         });
-        mockProvision.mockRejectedValue(new Error('new-api 422 — token endpoint failed'));
-
-        // searchUser returns the orphan that step 1 created
-        mockSearchNewApiUser.mockResolvedValue({
-            items: [{ id: NEWAPI_USER_ID, username: 'c-aaaaaaaa', display_name: 'rollback@llmroute.club' }],
-            total: 1,
-        });
-        mockDeleteNewApiUser.mockResolvedValue(undefined);
-        mockUserDelete.mockResolvedValue({ id: PORTAL_USER_ID });
+        mockEnqueueCustomerProvisioningJob.mockRejectedValue(new Error('DB transient'));
 
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -318,20 +341,16 @@ describe('POST /api/auth/register (new-api)', () => {
         const res = await POST(makeReq({ email: 'rollback@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
-        expect(res.status).toBe(502);
-        expect(body.error).toBe('provisioning_failed');
-        // Both rollback paths fired in correct order
-        expect(mockSearchNewApiUser).toHaveBeenCalledWith('c-aaaaaaaa', 1, 5);
-        expect(mockDeleteNewApiUser).toHaveBeenCalledWith(NEWAPI_USER_ID);
-        expect(mockUserDelete).toHaveBeenCalledWith({ where: { id: PORTAL_USER_ID } });
-        // linkage transaction never reached
+        expect(res.status).toBe(503);
+        expect(body.error).toBe('provisioning_unavailable');
+        expect(mockProvision).not.toHaveBeenCalled();
         expect(mockTransaction).toHaveBeenCalledTimes(1);
 
         errSpy.mockRestore();
         warnSpy.mockRestore();
     });
 
-    it('rolls back portal user only when provision fails at step 1 (no new-api orphan to clean)', async () => {
+    it('does not call new-api when job enqueue fails', async () => {
         // Step 1 failure: createUser threw, so no new-api user exists.
         // searchUser returns empty — cleanupOrphanNewApiUser should NOT call deleteUser.
         mockUserFindUnique.mockResolvedValue(null);
@@ -344,25 +363,21 @@ describe('POST /api/auth/register (new-api)', () => {
             status: 'active',
             created_at: new Date(),
         });
-        mockProvision.mockRejectedValue(new Error('new-api 401 — admin auth failed'));
-        mockSearchNewApiUser.mockResolvedValue({ items: [], total: 0 });
-        mockUserDelete.mockResolvedValue({ id: PORTAL_USER_ID });
+        mockEnqueueCustomerProvisioningJob.mockRejectedValue(new Error('DB transient'));
 
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         const res = await POST(makeReq({ email: 'step1@llmroute.club', password: 'goodpass123' }));
 
-        expect(res.status).toBe(502);
-        expect(mockSearchNewApiUser).toHaveBeenCalled();
-        // deleteUser NOT called because search found no orphan
+        expect(res.status).toBe(503);
+        expect(mockSearchNewApiUser).not.toHaveBeenCalled();
         expect(mockDeleteNewApiUser).not.toHaveBeenCalled();
-        // portal user still rolled back
-        expect(mockUserDelete).toHaveBeenCalledWith({ where: { id: PORTAL_USER_ID } });
+        expect(mockProvision).not.toHaveBeenCalled();
 
         errSpy.mockRestore();
     });
 
-    it('cascades cleanup (new-api + portal) when DB linkage transaction fails', async () => {
+    it('does not call new-api when the shared transaction fails', async () => {
         // Provision succeeds, but the prisma.$transaction persisting newapi_*
         // fields fails. We must delete BOTH the portal user AND the new-api
         // user/token to avoid orphans on either side.
@@ -376,29 +391,17 @@ describe('POST /api/auth/register (new-api)', () => {
             status: 'active',
             created_at: new Date(),
         });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: NEWAPI_USER_ID,
-            newapi_username: 'c-aaaaaaaa',
-            newapi_access_token: 'b'.repeat(32),
-            newapi_token_id: 99,
-            newapi_token_value: 'sk-linkage-test-key',
-        });
-        mockTokenCreate.mockRejectedValueOnce(new Error('connection lost'));
-        mockDeleteNewApiUser.mockResolvedValue(undefined);
-        mockUserDelete.mockResolvedValue({ id: PORTAL_USER_ID });
+        mockEnqueueCustomerProvisioningJob.mockRejectedValue(new Error('connection lost'));
 
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         const res = await POST(makeReq({ email: 'linkage@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
-        expect(res.status).toBe(500);
-        expect(body.error).toBe('persistence_failed');
-        // BOTH cleanups fired
-        expect(mockDeleteNewApiUser).toHaveBeenCalledWith(NEWAPI_USER_ID);
-        expect(mockUserDelete).toHaveBeenCalledWith({ where: { id: PORTAL_USER_ID } });
-        // search NOT called here (this is the post-provision failure path,
-        // not the mid-provision path)
+        expect(res.status).toBe(503);
+        expect(body.error).toBe('provisioning_unavailable');
+        expect(mockDeleteNewApiUser).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
         expect(mockSearchNewApiUser).not.toHaveBeenCalled();
 
         errSpy.mockRestore();

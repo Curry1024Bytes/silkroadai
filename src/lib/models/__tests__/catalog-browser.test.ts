@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
+import { BASE_FX } from '@/lib/admin/pricing-simple-core';
+import { computeVideoQuote, videoQuoteCostConfig } from '@/lib/admin/pricing-video-quote';
+import { VIDEO_TOKEN_COMBOS } from '@/lib/admin/pricing-video-token-expression';
 
 const mockModels = vi.fn();
 const mockGroups = vi.fn();
+const mockCostRules = vi.fn();
 const mockMultipliers = vi.fn();
 const mockGetOption = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: { findMany: (...args: unknown[]) => mockModels(...args) },
         channelGroup: { findMany: (...args: unknown[]) => mockGroups(...args) },
+        pricingCostRule: { findMany: (...args: unknown[]) => mockCostRules(...args) },
     },
 }));
 vi.mock('@/lib/newapi/client', () => ({ getOption: (...args: unknown[]) => mockGetOption(...args) }));
@@ -48,6 +53,31 @@ const model = (slug: string, upstream_map: unknown, prices = [price('sale')]) =>
     enabled: true,
 });
 const route = (channel_id: number) => ({ channel_id, upstream_model: 'internal-provider-name' });
+
+function videoRuleFixture(groupRatio = 0.16) {
+    const official = VIDEO_TOKEN_COMBOS.map((combo, index) => ({ ...combo, price: 31 + index * 3 }));
+    const config = videoQuoteCostConfig({ official, buy_discount: 0.5, sell_discount: 0.75 });
+    const quote = computeVideoQuote({ official, buy_discount: 0.5, sell_discount: 0.75 }, BASE_FX, groupRatio);
+    const cells = quote.map(({ resolution, video_input, actual }) => ({ resolution, video_input, price: actual }));
+    const slug = 'seedance2.0-pro-720p';
+    const mapping = { channel_id: 1, upstream_model: 'internal-provider-name' };
+    const row = {
+        tier: 'sale',
+        ...mapping,
+        config,
+        model: { slug },
+    };
+    const videoCatalogPrice = {
+        ...price('sale', null, null),
+        billing_details: {
+            version: 1,
+            mode: 'video_token',
+            unit: 'cny_per_million_tokens',
+            cells,
+        },
+    };
+    return { slug, official, config, quote, cells, row, videoCatalogPrice };
+}
 
 /** Let adversarial fixture rows reach the loader only if its DB scope admits them. */
 function catalogFixture(rows: ReturnType<typeof model>[], groups = [group('sale', 1), group('premium', 2)]) {
@@ -95,6 +125,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockMultipliers.mockReset().mockResolvedValue([]);
     mockGetOption.mockReset().mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16, 'billing-premium': 0.5 }));
+    mockCostRules.mockReset().mockResolvedValue([]);
     catalogFixture([]);
 });
 
@@ -353,5 +384,88 @@ describe('loadBrowserCatalog dedicated customer quotes', () => {
         mockMultipliers.mockResolvedValue([dedicatedRule]);
         mockGetOption.mockRejectedValue(new Error('upstream unavailable'));
         await expect(loadBrowserCatalog('customer-a')).rejects.toThrow('upstream unavailable');
+    });
+});
+
+describe('loadBrowserCatalog Seedance price provenance', () => {
+    function seedanceFixture() {
+        const fixture = videoRuleFixture();
+        catalogFixture([model(fixture.slug, { sale: route(1) }, [fixture.videoCatalogPrice])]);
+        mockCostRules.mockResolvedValue([fixture.row]);
+        mockGetOption.mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16 }));
+        return fixture;
+    }
+
+    it('shows the configured 75折 marker only when the full live quote matches', async () => {
+        seedanceFixture();
+        const catalog = await loadBrowserCatalog();
+        const pricing = catalog.models[0].pricesByTier.sale!;
+        expect(pricing.price_provenance).toMatchObject({
+            source: 'pricing_cost_rule',
+            discount: 0.75,
+            verifiable: true,
+        });
+        expect(pricing.billing_details?.mode).toBe('video_token');
+    });
+
+    it('scales customer prices once while retaining the standard sale discount provenance', async () => {
+        seedanceFixture();
+        mockMultipliers.mockResolvedValue([
+            { tier_key: 'sale', newapi_billing_group: 'billing-sale', multiplier: 0.08 },
+        ]);
+        const catalog = await loadBrowserCatalog('customer-a');
+        const pricing = catalog.models[0].pricesByTier.sale!;
+        expect(pricing.price_provenance).toMatchObject({ discount: 0.75, verifiable: true });
+        const cells = pricing.billing_details?.mode === 'video_token' ? pricing.billing_details.cells : [];
+        expect(cells[0].price).toBeCloseTo(videoRuleFixture().quote[0].actual * 0.5);
+    });
+
+    it.each([
+        ['missing cost rule', () => mockCostRules.mockResolvedValue([])],
+        ['stale mapping', () => mockCostRules.mockResolvedValue([{ ...videoRuleFixture().row, channel_id: 2 }])],
+        ['wrong GroupRatio', () => mockGetOption.mockResolvedValue(JSON.stringify({ 'billing-sale': 0.2 }))],
+        [
+            'catalog price drift',
+            () => {
+                const fixture = videoRuleFixture();
+                const cells = [...fixture.videoCatalogPrice.billing_details.cells];
+                cells[0] = { ...cells[0], price: cells[0].price + 0.01 };
+                catalogFixture([
+                    model(fixture.slug, { sale: route(1) }, [
+                        {
+                            ...fixture.videoCatalogPrice,
+                            billing_details: { ...fixture.videoCatalogPrice.billing_details, cells },
+                        },
+                    ]),
+                ]);
+                mockCostRules.mockResolvedValue([fixture.row]);
+            },
+        ],
+    ])('hides the marker for %s', async (_label, mutate) => {
+        seedanceFixture();
+        mutate();
+        const pricing = (await loadBrowserCatalog()).models[0].pricesByTier.sale!;
+        expect(pricing).not.toHaveProperty('price_provenance');
+    });
+
+    it('hides the marker for scheduled discounts', async () => {
+        const fixture = seedanceFixture();
+        catalogFixture([
+            model(fixture.slug, { sale: route(1) }, [
+                {
+                    ...fixture.videoCatalogPrice,
+                    billing_details: {
+                        ...fixture.videoCatalogPrice.billing_details,
+                        scheduled_discount: {
+                            start: '00:00',
+                            end: '08:00',
+                            timezone: 'Asia/Shanghai',
+                            multiplier: 0.75,
+                        },
+                    },
+                },
+            ]),
+        ]);
+        expect((await loadBrowserCatalog()).models[0].pricesByTier.sale!).not.toHaveProperty('price_provenance');
     });
 });

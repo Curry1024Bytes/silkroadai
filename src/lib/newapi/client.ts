@@ -120,10 +120,24 @@ export class NewApiError extends Error {
         public endpoint: string,
         public payload: unknown,
         message: string,
+        public retryAfterMs?: number,
+        public ambiguousSideEffect = false,
     ) {
         super(`new-api ${endpoint} ${status}: ${message}`);
         this.name = 'NewApiError';
     }
+}
+
+function isPatCreationRequest(method: string, path: string): boolean {
+    return method === 'POST' && path === '/api/user/access_tokens';
+}
+
+function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+    if (!value) return undefined;
+    const seconds = Number(value.trim());
+    if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? Math.max(0, at - now) : undefined;
 }
 
 export interface NewApiEnvelope<T> {
@@ -210,16 +224,33 @@ async function call<T>(
     try {
         res = await fetch(url, init);
     } catch (e) {
+        const ambiguousSideEffect = isPatCreationRequest(method, path);
         // 超时在这里现形。此前 call() 无 timeout —— new-api 一慢,SSR 的
         // server component 就无限期挂住(Promise.allSettled 也等不出结果,
         // 它只等 settle 不设 deadline),客户看到的是页面一直转圈。
         // 归一成 NewApiError 504,让既有的 try/catch + 降级分支能接住。
         if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
-            throw new NewApiError(504, `${method} ${path}`, null, `new-api timeout after ${timeoutMs}ms`);
+            throw new NewApiError(
+                504,
+                `${method} ${path}`,
+                null,
+                `new-api timeout after ${timeoutMs}ms`,
+                undefined,
+                ambiguousSideEffect,
+            );
         }
+        if (ambiguousSideEffect)
+            throw new NewApiError(502, `${method} ${path}`, null, 'new-api request outcome unknown', undefined, true);
         throw e;
     }
-    const text = await res.text();
+    let text: string;
+    try {
+        text = await res.text();
+    } catch {
+        if (isPatCreationRequest(method, path))
+            throw new NewApiError(502, `${method} ${path}`, null, 'new-api response outcome unknown', undefined, true);
+        throw new NewApiError(502, `${method} ${path}`, null, 'Unable to read new-api response');
+    }
     let data: NewApiEnvelope<T> | null = null;
     try {
         data = text ? (JSON.parse(text) as NewApiEnvelope<T>) : null;
@@ -230,10 +261,26 @@ async function call<T>(
     if (!res.ok || (data && !data.success)) {
         const sensitive = !!body && typeof body === 'object' && 'password' in body;
         const msg = sensitive ? 'Credential operation failed' : (data?.message ?? text ?? res.statusText);
-        throw new NewApiError(res.status, `${method} ${path}`, sensitive ? null : data, String(msg));
+        const ambiguousSideEffect =
+            isPatCreationRequest(method, path) && (res.status === 408 || res.status >= 500 || res.ok);
+        throw new NewApiError(
+            res.status,
+            `${method} ${path}`,
+            sensitive ? null : data,
+            String(msg),
+            parseRetryAfterMs(res.headers.get('retry-after')),
+            ambiguousSideEffect,
+        );
     }
     if (options.requireSuccess && data?.success !== true) {
-        throw new NewApiError(502, `${method} ${path}`, null, 'Unconfirmed management response');
+        throw new NewApiError(
+            502,
+            `${method} ${path}`,
+            null,
+            'Unconfirmed management response',
+            undefined,
+            isPatCreationRequest(method, path),
+        );
     }
     return (options.returnEnvelope ? data : (data?.data ?? null)) as T;
 }
@@ -291,12 +338,29 @@ async function loginAsUser(args: { username: string; password: string }): Promis
     accessToken: string | null;
 }> {
     const url = new URL('/api/user/login', NEWAPI_BASE_URL);
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: args.username, password: args.password }),
-    });
-    const text = await res.text();
+    const timeoutMs = callTimeoutMs();
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: args.username, password: args.password }),
+            signal: AbortSignal.timeout(timeoutMs),
+            redirect: 'manual',
+            cache: 'no-store',
+        });
+    } catch (error) {
+        if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+            throw new NewApiError(504, 'POST /api/user/login', null, `new-api timeout after ${timeoutMs}ms`);
+        }
+        throw new NewApiError(502, 'POST /api/user/login', null, 'Customer login request failed');
+    }
+    let text: string;
+    try {
+        text = await res.text();
+    } catch {
+        throw new NewApiError(502, 'POST /api/user/login', null, 'Unable to read customer login response');
+    }
     let data: NewApiEnvelope<unknown> | null = null;
     try {
         data = text ? JSON.parse(text) : null;
@@ -1537,6 +1601,8 @@ export async function createCustomerPersonalAccessToken(args: {
     userId: number;
     password: string;
     name?: string;
+    onPatCreationStarted?: () => Promise<void>;
+    onPatCreationDefinitiveFailure?: () => Promise<void>;
 }): Promise<string> {
     const scopes = [...CUSTOMER_PAT_SCOPES];
     const proof = await obtainSecurityProof({
@@ -1547,21 +1613,37 @@ export async function createCustomerPersonalAccessToken(args: {
         // Must carry exactly {scopes, expires_at} and match the create body.
         context: { scopes, expires_at: 0 },
     });
-    const created = await call<unknown>(
-        'POST',
-        '/api/user/access_tokens',
-        { name: args.name ?? CUSTOMER_PAT_NAME, scopes, expires_at: 0 },
-        undefined,
-        {
-            session: { auth: args.session, userId: args.userId },
-            securityProof: proof,
-            requireSuccess: true,
-            cache: 'no-store',
-        },
-    );
+    await args.onPatCreationStarted?.();
+    let created: unknown;
+    try {
+        created = await call<unknown>(
+            'POST',
+            '/api/user/access_tokens',
+            { name: args.name ?? CUSTOMER_PAT_NAME, scopes, expires_at: 0 },
+            undefined,
+            {
+                session: { auth: args.session, userId: args.userId },
+                securityProof: proof,
+                requireSuccess: true,
+                cache: 'no-store',
+            },
+        );
+    } catch (error) {
+        if (error instanceof NewApiError && !error.ambiguousSideEffect) {
+            await args.onPatCreationDefinitiveFailure?.();
+        }
+        throw error;
+    }
     const parsed = CreatedAccessTokenSchema.safeParse(created);
     if (!parsed.success) {
-        throw new NewApiError(200, 'POST /api/user/access_tokens', null, 'create OK but no nap_ token in response');
+        throw new NewApiError(
+            200,
+            'POST /api/user/access_tokens',
+            null,
+            'create OK but no nap_ token in response',
+            undefined,
+            true,
+        );
     }
     return parsed.data.token;
 }
@@ -1619,6 +1701,8 @@ export async function issueCustomerAccessToken(args: {
     session: LoginSessionAuth;
     userId: number;
     password: string;
+    onPatCreationStarted?: () => Promise<void>;
+    onPatCreationDefinitiveFailure?: () => Promise<void>;
 }): Promise<string> {
     const detected = await resolveAccessTokenMode();
     const mode = detected === 'probe' ? await probeCustomerAccessTokenMode(args) : detected;
@@ -1809,6 +1893,204 @@ export interface ProvisionedCustomer {
     newapi_access_token: string; // portal 内部 secret
     newapi_token_id: number;
     newapi_token_value: string; // sk-xxx 给客户
+}
+
+async function listCustomerTokensByName(
+    customerAuth: { accessToken: string; userId: number },
+    tokenName: string,
+): Promise<NewApiToken[]> {
+    const pageSize = 100;
+    const matches: NewApiToken[] = [];
+    for (let page = 1; page <= 100; page += 1) {
+        const tokenPage = await listTokensForCustomer(customerAuth, page, pageSize);
+        matches.push(...tokenPage.items.filter((token) => token.name === tokenName));
+        if (page * pageSize >= tokenPage.total || tokenPage.items.length === 0) return matches;
+    }
+    throw new NewApiError(502, 'GET /api/token/', null, 'Unable to confirm provisioning token');
+}
+
+function assertProvisioningTokenConfiguration(
+    token: NewApiToken,
+    customerAuth: { userId: number },
+    newapiGroup: string,
+): void {
+    if (
+        token.user_id !== customerAuth.userId ||
+        token.status !== 1 ||
+        !token.unlimited_quota ||
+        token.expired_time !== -1 ||
+        token.model_limits_enabled ||
+        token.model_limits !== '' ||
+        token.group !== newapiGroup
+    ) {
+        throw new NewApiError(409, 'GET /api/token/', null, 'Provisioning token configuration mismatch');
+    }
+}
+
+function provisioningTokenOrder(a: NewApiToken, b: NewApiToken): number {
+    return a.created_time - b.created_time || a.id - b.id;
+}
+
+/**
+ * Collapse duplicate deterministic provisioning keys after a lease race.
+ * Every matching key must already have the expected ownership/configuration;
+ * otherwise we fail closed instead of deleting a customer-managed key.
+ */
+async function reconcileProvisioningToken(
+    customerAuth: { accessToken: string; userId: number },
+    tokenName: string,
+    newapiGroup: string,
+    initialMatches: NewApiToken[],
+): Promise<NewApiToken> {
+    let matches = initialMatches;
+    for (let round = 0; round < 3; round += 1) {
+        if (matches.length === 0) {
+            throw new NewApiError(502, 'GET /api/token/', null, 'Unable to confirm provisioning token');
+        }
+        for (const candidate of matches) assertProvisioningTokenConfiguration(candidate, customerAuth, newapiGroup);
+        const ordered = [...matches].sort(provisioningTokenOrder);
+        const canonical = ordered[0];
+        if (ordered.length === 1) return canonical;
+
+        for (const duplicate of ordered.slice(1)) {
+            try {
+                await deleteTokenForCustomerStrict(customerAuth, duplicate.id);
+            } catch (error) {
+                // Another retrying worker may have removed this duplicate after
+                // the list read. A confirmed 404 is convergent; all other
+                // failures remain fail-closed.
+                if (!(error instanceof NewApiError) || error.status !== 404) throw error;
+            }
+        }
+        matches = await listCustomerTokensByName(customerAuth, tokenName);
+        if (matches.length === 1) {
+            assertProvisioningTokenConfiguration(matches[0], customerAuth, newapiGroup);
+            return matches[0];
+        }
+    }
+    throw new NewApiError(409, 'GET /api/token/', null, 'Unable to converge duplicate provisioning tokens');
+}
+
+/**
+ * Retry-safe variant used by the durable provisioning queue. The username,
+ * password, and default token name remain stable across attempts; existing
+ * remote records are reused after an ambiguous network failure.
+ */
+const PROVISIONING_USERNAME_HEX_LENGTH = 18;
+
+/**
+ * New-api usernames are capped at 20 characters. Keep 18 UUID hex characters
+ * after the `c-` prefix (72 bits of namespace) so high-volume registration does
+ * not collide at the 32-bit space used by the legacy 8-character convention.
+ */
+export function customerProvisioningUsername(portalUserId: string): string {
+    const compact = portalUserId.replaceAll('-', '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(compact)) throw new Error('Invalid portal user id');
+    return `c-${compact.slice(0, PROVISIONING_USERNAME_HEX_LENGTH)}`;
+}
+
+function legacyCustomerProvisioningUsername(portalUserId: string): string {
+    return `c-${portalUserId.slice(0, 8)}`;
+}
+
+export async function provisionNewCustomerResumable(args: {
+    portal_user_id: string;
+    email: string;
+    newapi_group: string;
+    initial_quota?: number;
+    password: string;
+    onPatCreationStarted?: () => Promise<void>;
+    onPatCreationDefinitiveFailure?: () => Promise<void>;
+}): Promise<ProvisionedCustomer> {
+    const username = customerProvisioningUsername(args.portal_user_id);
+    const legacyUsername = legacyCustomerProvisioningUsername(args.portal_user_id);
+    let selectedUsername = username;
+    let existing: NewApiUser | undefined;
+    for (const candidateUsername of [username, legacyUsername]) {
+        if (candidateUsername !== username && existing) break;
+        const candidates = await searchUser(candidateUsername, 1, 100);
+        const matchingUsers = candidates.items.filter((user) => user.username === candidateUsername);
+        if (matchingUsers.length > 1) {
+            throw new NewApiError(409, 'GET /api/user/search', null, 'Ambiguous provisioning user identity');
+        }
+        const candidate = matchingUsers[0];
+        if (!candidate) continue;
+        if (candidate.email.trim().toLowerCase() !== args.email.trim().toLowerCase()) {
+            // A legacy short-name collision must not block the new, wide-name
+            // namespace. The new username remains fail-closed on mismatch.
+            if (candidateUsername === username) {
+                throw new NewApiError(409, 'GET /api/user/search', null, 'Provisioning user identity mismatch');
+            }
+            continue;
+        }
+        selectedUsername = candidateUsername;
+        existing = candidate;
+        break;
+    }
+
+    if (!existing) {
+        // If the create response is lost, the next attempt finds the exact
+        // deterministic username above and continues with the same password.
+        try {
+            await createUser({ username, password: args.password, display_name: username, email: args.email });
+            selectedUsername = username;
+        } catch (error) {
+            // A concurrent/previous attempt may have won the unique username
+            // race. Re-read the exact identity before deciding whether it is
+            // safe to continue; never turn an unrelated collision into reuse.
+            const afterCreate = await searchUser(username, 1, 100);
+            const matching = afterCreate.items.filter((user) => user.username === username);
+            if (matching.length > 1) {
+                throw new NewApiError(409, 'GET /api/user/search', null, 'Ambiguous provisioning user identity');
+            }
+            const winner = matching[0];
+            if (!winner) throw error;
+            if (winner.email.trim().toLowerCase() !== args.email.trim().toLowerCase()) {
+                throw new NewApiError(409, 'GET /api/user/search', null, 'Provisioning user identity mismatch');
+            }
+            existing = winner;
+            selectedUsername = username;
+        }
+    }
+
+    const login = await loginAsUser({ username: selectedUsername, password: args.password });
+    const userId = login.user.id;
+    if (login.user.username !== selectedUsername || (existing && login.user.id !== existing.id)) {
+        throw new NewApiError(409, 'POST /api/user/login', null, 'Provisioning user identity mismatch');
+    }
+
+    const accessToken = await issueCustomerAccessToken({
+        session: login.auth,
+        userId,
+        password: args.password,
+        onPatCreationStarted: args.onPatCreationStarted,
+        onPatCreationDefinitiveFailure: args.onPatCreationDefinitiveFailure,
+    });
+    const customerAuth = { accessToken, userId };
+    const tokenName = `default-${args.portal_user_id.slice(0, 8)}`;
+
+    let matches = await listCustomerTokensByName(customerAuth, tokenName);
+    if (matches.length === 0) {
+        await createTokenForCustomer(customerAuth, {
+            name: tokenName,
+            unlimited_quota: true,
+            remain_quota: args.initial_quota ?? 0,
+            expired_time: -1,
+            group: args.newapi_group,
+        });
+        matches = await listCustomerTokensByName(customerAuth, tokenName);
+    }
+
+    const token = await reconcileProvisioningToken(customerAuth, tokenName, args.newapi_group, matches);
+
+    const realKey = await getTokenKey(customerAuth, token.id);
+    return {
+        newapi_user_id: userId,
+        newapi_username: selectedUsername,
+        newapi_access_token: accessToken,
+        newapi_token_id: token.id,
+        newapi_token_value: realKey,
+    };
 }
 
 /**

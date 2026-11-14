@@ -7,6 +7,7 @@ import { intlLocale, type Locale } from '@/lib/i18n';
 import { useLocale, useMessages } from '@/lib/i18n/client';
 import { commonMessages } from '@/lib/i18n/messages/common';
 import { keysMessages, type KeysMessages } from '@/lib/i18n/messages/keys';
+import { provisioningMessages, type ProvisioningQueueStatus } from '@/lib/i18n/messages/provisioning';
 import {
     buildQuotaExpiryPayload,
     EXPIRY_PRESETS,
@@ -17,6 +18,7 @@ import {
     type ExpiryPreset,
 } from '@/lib/keys/quota-expiry';
 import { Check, Clipboard, Eye, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
 // undefined in the browser bundle, so quota-units would fall back to stale
@@ -65,6 +67,13 @@ export interface TierOption {
     ratio: number | null;
     listRatio?: number | null;
     special?: boolean;
+}
+
+export interface KeyProvisioningState {
+    status: ProvisioningQueueStatus;
+    nextAttemptAt: string | null;
+    /** True only when the customer has a usable new-api account linkage. */
+    ready: boolean;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -410,6 +419,7 @@ function KeyActions({
     revealed,
     copied,
     editing,
+    actionsDisabled,
     onReveal,
     onCopy,
     onEdit,
@@ -420,6 +430,7 @@ function KeyActions({
     revealed: boolean;
     copied: boolean;
     editing: boolean;
+    actionsDisabled?: boolean;
     onReveal: () => void;
     onCopy: () => void;
     onEdit: () => void;
@@ -431,7 +442,7 @@ function KeyActions({
             <button
                 type="button"
                 onClick={onReveal}
-                disabled={busy || revealed}
+                disabled={actionsDisabled || busy || revealed}
                 className={ACTION_BUTTON}
                 aria-label={revealed ? t.revealedAria(row.key_alias) : t.revealAria(row.key_alias)}
                 title={revealed ? t.revealedTitle : t.revealTitle}
@@ -442,7 +453,7 @@ function KeyActions({
             <button
                 type="button"
                 onClick={onCopy}
-                disabled={busy}
+                disabled={actionsDisabled || busy}
                 className={ACTION_BUTTON}
                 aria-label={copied ? t.copiedAria(row.key_alias) : t.copyAria(row.key_alias)}
                 title={copied ? t.copiedTitle : t.copyTitle}
@@ -457,7 +468,7 @@ function KeyActions({
             <button
                 type="button"
                 onClick={onEdit}
-                disabled={busy || editing}
+                disabled={actionsDisabled || busy || editing}
                 className={ACTION_BUTTON}
                 aria-label={t.editAliasAria(row.key_alias)}
                 title={t.editAliasTitle}
@@ -468,7 +479,7 @@ function KeyActions({
             <button
                 type="button"
                 onClick={onRevoke}
-                disabled={busy}
+                disabled={actionsDisabled || busy}
                 className={`${ACTION_BUTTON} hover:border-status-error-border hover:bg-status-error-bg hover:text-status-error-text`}
                 aria-label={t.revokeAria(row.key_alias)}
                 title={t.revokeTitle}
@@ -536,10 +547,12 @@ export function KeysList({
     initialRows,
     tiers = [],
     quotaLimitsEnabled = false,
+    provisioning = { status: null, nextAttemptAt: null, ready: true },
 }: {
     initialRows: KeyRow[];
     tiers?: TierOption[];
     quotaLimitsEnabled?: boolean;
+    provisioning?: KeyProvisioningState;
 }) {
     // Multi-tier accounts must deliberately select a group. Missing topology
     // is an operator error; never invent a legacy `pool` tier in the browser.
@@ -549,7 +562,34 @@ export function KeysList({
     const m = useMessages(keysMessages);
     const t = m.list;
     const c = useMessages(commonMessages).auth;
+    const provisioningCopy = useMessages(provisioningMessages);
     const locale: Locale = useLocale();
+    const router = useRouter();
+    const actionsDisabled = !provisioning.ready;
+
+    const provisioningBody = (() => {
+        switch (provisioning.status) {
+            case 'queued':
+                return provisioningCopy.queued;
+            case 'running':
+                return provisioningCopy.running;
+            case 'retry_wait': {
+                const time = provisioning.nextAttemptAt ? new Date(provisioning.nextAttemptAt) : null;
+                if (!time || Number.isNaN(time.getTime())) {
+                    return `${provisioningCopy.retryWait} ${provisioningCopy.retrySoon}`;
+                }
+                return `${provisioningCopy.retryWait} ${provisioningCopy.retryAt(
+                    time.toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai' }),
+                )}`;
+            }
+            case 'failed':
+                return provisioningCopy.failed;
+            case 'completed':
+                return provisioningCopy.completedMissingLink;
+            default:
+                return provisioningCopy.unknown;
+        }
+    })();
 
     const [rows, setRows] = useState<KeyRow[]>(initialRows);
     const [reveal, setReveal] = useState<RevealMap>({});
@@ -561,6 +601,12 @@ export function KeysList({
     const [budgetEdit, setBudgetEdit] = useState<BudgetEditState | null>(null);
 
     const isOnlyKey = rows.length === 1;
+
+    useEffect(() => {
+        if (provisioning.ready || provisioning.status === null || provisioning.status === 'failed') return;
+        const timer = window.setInterval(() => router.refresh(), 5_000);
+        return () => window.clearInterval(timer);
+    }, [provisioning.ready, provisioning.status, router]);
 
     // Auto-hide revealed keys after REVEAL_AUTOHIDE_MS so a forgotten tab
     // doesn't leave the sk- visible indefinitely.
@@ -580,6 +626,7 @@ export function KeysList({
     }, [reveal]);
 
     async function fetchFullKey(id: string): Promise<string | null> {
+        if (actionsDisabled) return null;
         try {
             const r = await fetch(`/api/portal/keys/${encodeURIComponent(id)}/key`, {
                 method: 'GET',
@@ -599,7 +646,7 @@ export function KeysList({
     }
 
     async function handleReveal(id: string) {
-        if (busyId) return;
+        if (actionsDisabled || busyId) return;
         setBusyId(id);
         setGlobalError(null);
         const sk = await fetchFullKey(id);
@@ -608,7 +655,7 @@ export function KeysList({
     }
 
     async function handleCopy(id: string) {
-        if (busyId) return;
+        if (actionsDisabled || busyId) return;
         setBusyId(id);
         setGlobalError(null);
         const sk = await fetchFullKey(id);
@@ -633,7 +680,7 @@ export function KeysList({
     }
 
     async function handleRevoke(id: string) {
-        if (busyId) return;
+        if (actionsDisabled || busyId) return;
         const warning = isOnlyKey ? t.revokeConfirmOnlyKey : t.revokeConfirm;
         if (!window.confirm(warning)) return;
 
@@ -662,7 +709,7 @@ export function KeysList({
     }
 
     function startEdit(row: KeyRow) {
-        if (busyId || edit) return;
+        if (actionsDisabled || busyId || edit) return;
         setGlobalError(null);
         setEdit({ id: row.id, alias: row.key_alias, submitting: false, error: null });
     }
@@ -672,7 +719,7 @@ export function KeysList({
     }
 
     async function submitEdit() {
-        if (!edit || edit.submitting || busyId) return;
+        if (actionsDisabled || !edit || edit.submitting || busyId) return;
         const alias = edit.alias.trim();
         if (!alias) {
             setEdit((current) => current && { ...current, error: t.aliasRequired });
@@ -720,7 +767,7 @@ export function KeysList({
     }
 
     function startBudgetEdit(row: KeyRow) {
-        if (busyId || budgetEdit?.submitting) return;
+        if (actionsDisabled || busyId || budgetEdit?.submitting) return;
         setGlobalError(null);
         setBudgetEdit({
             id: row.id,
@@ -739,7 +786,7 @@ export function KeysList({
     }
 
     async function submitBudgetEdit() {
-        if (!budgetEdit || budgetEdit.submitting) return;
+        if (actionsDisabled || !budgetEdit || budgetEdit.submitting) return;
         const budget = buildQuotaExpiryPayload(
             { ...budgetEdit, quotaUnlimited: !quotaLimitsEnabled || budgetEdit.quotaUnlimited },
             new Date(),
@@ -808,7 +855,7 @@ export function KeysList({
 
     async function handleCreate(e: React.FormEvent) {
         e.preventDefault();
-        if (create.submitting) return;
+        if (actionsDisabled || create.submitting) return;
         const alias = create.alias.trim();
         if (!alias || !create.tier) {
             setCreate((prev) => ({ ...prev, error: !alias ? t.aliasRequired : m.tier.required }));
@@ -918,6 +965,16 @@ export function KeysList({
 
     return (
         <div className="space-y-4">
+            {actionsDisabled && (
+                <section
+                    role="status"
+                    aria-live="polite"
+                    className="rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-3 text-sm text-status-warning-text"
+                >
+                    <h2 className="m-0 text-sm font-semibold">{provisioningCopy.heading}</h2>
+                    <p className="m-0 mt-1 leading-relaxed">{provisioningBody}</p>
+                </section>
+            )}
             {globalError ? (
                 <div>
                     <FormError severity="banner">{globalError}</FormError>
@@ -950,7 +1007,7 @@ export function KeysList({
                         variant="primary"
                         size="sm"
                         onClick={() => setCreate({ ...emptyCreate(initialTier), open: true })}
-                        disabled={create.open || tiers.length === 0}
+                        disabled={actionsDisabled || create.open || tiers.length === 0}
                         title={tiers.length === 0 ? t.noTiersTitle : t.createTitle}
                         className="rounded-md"
                     >
@@ -980,7 +1037,8 @@ export function KeysList({
                                     maxLength={50}
                                     autoFocus
                                     aria-invalid={!!create.error}
-                                    className="h-10 w-full rounded-md border border-portal-line bg-portal-panel px-3 text-sm text-portal-ink outline-none placeholder:text-portal-subtle focus:border-navy focus:ring-2 focus:ring-navy/10"
+                                    disabled={actionsDisabled || create.submitting}
+                                    className="h-10 w-full rounded-md border border-portal-line bg-portal-panel px-3 text-sm text-portal-ink outline-none placeholder:text-portal-subtle focus:border-navy focus:ring-2 focus:ring-navy/10 disabled:opacity-60"
                                 />
                                 <p className="m-0 mt-1.5 text-xs text-portal-subtle">
                                     {t.aliasHintBefore}
@@ -994,7 +1052,7 @@ export function KeysList({
                                     variant="secondary"
                                     size="sm"
                                     onClick={() => setCreate(emptyCreate(initialTier))}
-                                    disabled={create.submitting}
+                                    disabled={actionsDisabled || create.submitting}
                                     className="rounded-md border-portal-line text-portal-muted"
                                 >
                                     {t.cancel}
@@ -1004,7 +1062,9 @@ export function KeysList({
                                     variant="primary"
                                     size="sm"
                                     loading={create.submitting}
-                                    disabled={create.submitting || !create.alias.trim() || !create.tier}
+                                    disabled={
+                                        actionsDisabled || create.submitting || !create.alias.trim() || !create.tier
+                                    }
                                     className="rounded-md"
                                 >
                                     {create.submitting ? t.creating : t.create}
@@ -1019,7 +1079,7 @@ export function KeysList({
                                     tiers={tiers}
                                     value={create.tier}
                                     onChange={(tier) => setCreate((prev) => ({ ...prev, tier, error: null }))}
-                                    disabled={create.submitting}
+                                    disabled={actionsDisabled || create.submitting}
                                 />
                                 <p className="m-0 mt-2 text-xs text-portal-subtle">
                                     {tiers.find((t) => t.key === create.tier)?.description ?? m.tier.hint}
@@ -1031,7 +1091,7 @@ export function KeysList({
                                 idPrefix="create"
                                 value={create}
                                 quotaLimitsEnabled={quotaLimitsEnabled}
-                                disabled={create.submitting}
+                                disabled={actionsDisabled || create.submitting}
                                 onChange={(patch) => setCreate((prev) => ({ ...prev, ...patch, error: null }))}
                             />
                         </div>
@@ -1048,7 +1108,7 @@ export function KeysList({
                             idPrefix={`edit-${budgetEdit.id}`}
                             value={budgetEdit}
                             quotaLimitsEnabled={quotaLimitsEnabled}
-                            disabled={budgetEdit.submitting}
+                            disabled={actionsDisabled || budgetEdit.submitting}
                             onChange={(patch) =>
                                 setBudgetEdit((prev) => (prev ? { ...prev, ...patch, error: null } : prev))
                             }
@@ -1058,7 +1118,7 @@ export function KeysList({
                                 type="button"
                                 size="sm"
                                 onClick={() => void submitBudgetEdit()}
-                                disabled={budgetEdit.submitting}
+                                disabled={actionsDisabled || budgetEdit.submitting}
                             >
                                 {t.save}
                             </Button>
@@ -1067,7 +1127,7 @@ export function KeysList({
                                 variant="secondary"
                                 size="sm"
                                 onClick={cancelBudgetEdit}
-                                disabled={budgetEdit.submitting}
+                                disabled={actionsDisabled || budgetEdit.submitting}
                             >
                                 {t.cancel}
                             </Button>
@@ -1134,6 +1194,7 @@ export function KeysList({
                                                 revealed={!!revealed}
                                                 copied={!!showCopied}
                                                 editing={!!edit}
+                                                actionsDisabled={actionsDisabled}
                                                 onReveal={() => handleReveal(row.id)}
                                                 onCopy={() => handleCopy(row.id)}
                                                 onEdit={() => startEdit(row)}
@@ -1168,7 +1229,7 @@ export function KeysList({
                                                 <button
                                                     type="button"
                                                     onClick={() => startBudgetEdit(row)}
-                                                    disabled={busy || !!budgetEdit}
+                                                    disabled={actionsDisabled || busy || !!budgetEdit}
                                                     aria-label={t.adjustAria(row.key_alias)}
                                                     className="text-xs text-portal-muted hover:underline"
                                                 >
@@ -1272,7 +1333,7 @@ export function KeysList({
                                                             <button
                                                                 type="button"
                                                                 onClick={() => startBudgetEdit(row)}
-                                                                disabled={busy || !!budgetEdit}
+                                                                disabled={actionsDisabled || busy || !!budgetEdit}
                                                                 aria-label={t.adjustAria(row.key_alias)}
                                                                 className="text-xs text-portal-muted hover:underline"
                                                             >
@@ -1295,6 +1356,7 @@ export function KeysList({
                                                         revealed={!!revealed}
                                                         copied={!!showCopied}
                                                         editing={!!edit}
+                                                        actionsDisabled={actionsDisabled}
                                                         onReveal={() => handleReveal(row.id)}
                                                         onCopy={() => handleCopy(row.id)}
                                                         onEdit={() => startEdit(row)}

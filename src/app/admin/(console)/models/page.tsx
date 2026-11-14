@@ -4,6 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import NewApiSyncDialog from '@/components/admin/NewApiSyncDialog';
+import PaginationBar from '@/components/PaginationBar';
 import { resolveLocale, type Locale } from '@/lib/locale';
 
 // ── Types ──
@@ -28,6 +29,14 @@ interface CatalogModel {
     upstream_map: Record<string, UpstreamEntry>;
     created_at: string;
     updated_at: string;
+}
+
+interface ModelsResponse {
+    models: CatalogModel[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
 }
 
 interface ModelFormData {
@@ -59,6 +68,16 @@ function getTexts(locale: Locale) {
               editModel: 'Edit Model',
               noModels: 'No models found',
               noModelsHint: 'Click "+ New Model" to add one to the catalog.',
+              noFilteredModels: 'No models match the current filters.',
+              noFilteredModelsHint: 'Adjust the filters or click Clear.',
+              searchPlaceholder: 'Search name or slug…',
+              vendorPlaceholder: 'Vendor…',
+              allModalities: 'All types',
+              allStatuses: 'All statuses',
+              enabledStatus: 'Enabled',
+              disabledStatus: 'Disabled',
+              search: 'Search',
+              clear: 'Clear',
               colName: 'Name',
               colVendor: 'Vendor',
               colModality: 'Type',
@@ -100,6 +119,16 @@ function getTexts(locale: Locale) {
               editModel: '编辑模型',
               noModels: '暂无模型',
               noModelsHint: '点击「+ 新建模型」添加到模型目录。',
+              noFilteredModels: '没有符合当前查询条件的模型。',
+              noFilteredModelsHint: '调整查询条件，或点击「清除」。',
+              searchPlaceholder: '搜索名称或 Slug…',
+              vendorPlaceholder: '厂商…',
+              allModalities: '全部类型',
+              allStatuses: '全部状态',
+              enabledStatus: '启用',
+              disabledStatus: '停用',
+              search: '查询',
+              clear: '清除',
               colName: '名称',
               colVendor: '厂商',
               colModality: '类型',
@@ -165,6 +194,18 @@ function ModelsContent() {
     const t = getTexts(locale);
 
     const [models, setModels] = useState<CatalogModel[]>([]);
+    const [total, setTotal] = useState(0);
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
+    const [totalPages, setTotalPages] = useState(1);
+    const [queryInput, setQueryInput] = useState('');
+    const [vendorInput, setVendorInput] = useState('');
+    const [modalityInput, setModalityInput] = useState('');
+    const [enabledInput, setEnabledInput] = useState('');
+    const [query, setQuery] = useState('');
+    const [vendor, setVendor] = useState('');
+    const [modality, setModality] = useState('');
+    const [enabled, setEnabled] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -182,29 +223,61 @@ function ModelsContent() {
         setLoading(true);
         setError('');
         try {
-            const res = await fetch('/api/admin/models');
+            const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+            if (query) params.set('q', query);
+            if (vendor) params.set('vendor', vendor);
+            if (modality) params.set('modality', modality);
+            if (enabled) params.set('enabled', enabled);
+
+            const res = await fetch(`/api/admin/models?${params.toString()}`);
             if (!res.ok) {
                 if (res.status === 401) {
-                    setError(t.sessionExpired);
+                    setError(
+                        locale === 'en' ? 'Your session has expired. Please sign in again.' : '登录已过期,请重新登录',
+                    );
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.loadFailed);
+                setError(data.error || (locale === 'en' ? 'Failed to load models' : '加载模型列表失败'));
                 return;
             }
-            const data = await res.json();
+            const data = (await res.json()) as Partial<ModelsResponse>;
             setModels(data.models ?? []);
+            setTotal(Number(data.total) || 0);
+            setTotalPages(Math.max(1, Number(data.total_pages) || 1));
         } catch {
-            setError(t.loadFailed);
+            setError(locale === 'en' ? 'Failed to load models' : '加载模型列表失败');
         } finally {
             setLoading(false);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [enabled, locale, modality, page, pageSize, query, vendor]);
 
     useEffect(() => {
         fetchModels();
     }, [fetchModels]);
+
+    const submitSearch = (event: React.FormEvent) => {
+        event.preventDefault();
+        setPage(1);
+        setQuery(queryInput.trim());
+        setVendor(vendorInput.trim());
+        setModality(modalityInput);
+        setEnabled(enabledInput);
+    };
+
+    const clearSearch = () => {
+        setQueryInput('');
+        setVendorInput('');
+        setModalityInput('');
+        setEnabledInput('');
+        setPage(1);
+        setQuery('');
+        setVendor('');
+        setModality('');
+        setEnabled('');
+    };
+
+    const hasFilters = Boolean(query || vendor || modality || enabled);
 
     // ── Modal handlers ──
 
@@ -340,7 +413,7 @@ function ModelsContent() {
                 setError(data.error || t.saveFailed);
                 return;
             }
-            setModels((prev) => prev.map((m) => (m.id === model.id ? { ...m, enabled: !m.enabled } : m)));
+            fetchModels();
         } catch {
             setError(t.saveFailed);
         }
@@ -397,18 +470,89 @@ function ModelsContent() {
                 </div>
             )}
 
-            {/* Action buttons */}
-            <div className="mb-4 flex flex-wrap gap-2 justify-end">
-                <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
-                    {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
-                </button>
-                <button
-                    type="button"
-                    onClick={openCreateModal}
-                    className="inline-flex items-center rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
-                >
-                    {t.newModel}
-                </button>
+            {/* Query conditions and action buttons */}
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <form onSubmit={submitSearch} className="flex flex-wrap items-center gap-2">
+                    <input
+                        type="text"
+                        value={queryInput}
+                        onChange={(event) => setQueryInput(event.target.value)}
+                        placeholder={t.searchPlaceholder}
+                        className={[
+                            'rounded-lg border px-3 py-1.5 text-xs',
+                            isDark
+                                ? 'border-slate-600 bg-slate-800 text-slate-200 placeholder:text-slate-500'
+                                : 'border-slate-300 bg-white text-slate-800 placeholder:text-slate-400',
+                        ].join(' ')}
+                    />
+                    <input
+                        type="text"
+                        value={vendorInput}
+                        onChange={(event) => setVendorInput(event.target.value)}
+                        placeholder={t.vendorPlaceholder}
+                        className={[
+                            'w-28 rounded-lg border px-3 py-1.5 text-xs',
+                            isDark
+                                ? 'border-slate-600 bg-slate-800 text-slate-200 placeholder:text-slate-500'
+                                : 'border-slate-300 bg-white text-slate-800 placeholder:text-slate-400',
+                        ].join(' ')}
+                    />
+                    <select
+                        value={modalityInput}
+                        onChange={(event) => setModalityInput(event.target.value)}
+                        className={[
+                            'rounded-lg border px-3 py-1.5 text-xs',
+                            isDark
+                                ? 'border-slate-600 bg-slate-800 text-slate-200'
+                                : 'border-slate-300 bg-white text-slate-800',
+                        ].join(' ')}
+                    >
+                        <option value="">{t.allModalities}</option>
+                        {MODALITIES.map((item) => (
+                            <option key={item} value={item}>
+                                {item}
+                            </option>
+                        ))}
+                    </select>
+                    <select
+                        value={enabledInput}
+                        onChange={(event) => setEnabledInput(event.target.value)}
+                        className={[
+                            'rounded-lg border px-3 py-1.5 text-xs',
+                            isDark
+                                ? 'border-slate-600 bg-slate-800 text-slate-200'
+                                : 'border-slate-300 bg-white text-slate-800',
+                        ].join(' ')}
+                    >
+                        <option value="">{t.allStatuses}</option>
+                        <option value="true">{t.enabledStatus}</option>
+                        <option value="false">{t.disabledStatus}</option>
+                    </select>
+                    <button
+                        type="submit"
+                        className="rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
+                    >
+                        {t.search}
+                    </button>
+                    {hasFilters && (
+                        <button type="button" onClick={clearSearch} className={btnBase}>
+                            {t.clear}
+                        </button>
+                    )}
+                </form>
+
+                <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
+                        {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={openCreateModal}
+                        className="inline-flex items-center rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
+                    >
+                        {t.newModel}
+                    </button>
+                </div>
             </div>
 
             {/* Model table */}
@@ -424,8 +568,10 @@ function ModelsContent() {
                     </div>
                 ) : models.length === 0 ? (
                     <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
-                        <p className="text-base font-medium">{t.noModels}</p>
-                        <p className="mt-1 text-sm opacity-70">{t.noModelsHint}</p>
+                        <p className="text-base font-medium">{hasFilters ? t.noFilteredModels : t.noModels}</p>
+                        <p className="mt-1 text-sm opacity-70">
+                            {hasFilters ? t.noFilteredModelsHint : t.noModelsHint}
+                        </p>
                     </div>
                 ) : (
                     <table className="w-full text-sm">
@@ -550,6 +696,23 @@ function ModelsContent() {
                     </table>
                 )}
             </div>
+
+            {!loading && total > 0 && (
+                <PaginationBar
+                    page={page}
+                    totalPages={totalPages}
+                    total={total}
+                    pageSize={pageSize}
+                    loading={loading}
+                    onPageChange={setPage}
+                    onPageSizeChange={(size) => {
+                        setPageSize(size);
+                        setPage(1);
+                    }}
+                    locale={locale}
+                    isDark={isDark}
+                />
+            )}
 
             {/* ── Edit / Create Modal ── */}
             {editModalOpen && (

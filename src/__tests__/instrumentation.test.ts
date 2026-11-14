@@ -24,6 +24,7 @@ const startShadowMeterScheduler = vi.fn();
 const startBatchScheduler = vi.fn();
 const startEnterpriseReqlogCleanupScheduler = vi.fn();
 const startRequestLogCleanupScheduler = vi.fn();
+const startCustomerProvisioningScheduler = vi.fn();
 const startEnterpriseReconcileSweepScheduler = vi.fn();
 const startSaleRuleScheduler = vi.fn();
 vi.mock('@/lib/scheduler/sale-rules', () => ({ startSaleRuleScheduler }));
@@ -37,6 +38,7 @@ vi.mock('@/lib/batch/worker', () => ({ startBatchScheduler }));
 // 不 mock 会 import 真调度器 → 初始 sweep 打真 prisma(P1 2026-09-03 的测试盲区,曾致本文件抖动超时)
 vi.mock('@/lib/scheduler/enterprise-reqlog-cleanup', () => ({ startEnterpriseReqlogCleanupScheduler }));
 vi.mock('@/lib/scheduler/request-log-cleanup', () => ({ startRequestLogCleanupScheduler }));
+vi.mock('@/lib/scheduler/customer-provisioning', () => ({ startCustomerProvisioningScheduler }));
 // 排空钩子真实现会 patch http.ServerResponse.prototype + 挂 SIGTERM 监听 —— 这里只验证被装上
 const installDrainHook = vi.fn();
 vi.mock('@/lib/server/drain', () => ({ installDrainHook }));
@@ -52,6 +54,7 @@ const ALL_SCHEDULERS = [
     startBatchScheduler,
     startEnterpriseReqlogCleanupScheduler,
     startRequestLogCleanupScheduler,
+    startCustomerProvisioningScheduler,
 ];
 
 describe('instrumentation register()', () => {

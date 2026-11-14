@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
 const mockFindMany = vi.fn();
+const mockCount = vi.fn();
 const mockGroupFindMany = vi.fn();
 const mockFindFirst = vi.fn();
 const mockCreate = vi.fn();
@@ -27,6 +28,7 @@ vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: {
             findMany: (...a: unknown[]) => mockFindMany(...a),
+            count: (...a: unknown[]) => mockCount(...a),
             findFirst: (...a: unknown[]) => mockFindFirst(...a),
             create: (...a: unknown[]) => mockCreate(...a),
             update: (...a: unknown[]) => mockUpdate(...a),
@@ -39,6 +41,7 @@ vi.mock('@/lib/db', () => ({
             fn({
                 catalogModel: {
                     findMany: (...a: unknown[]) => mockFindMany(...a),
+                    count: (...a: unknown[]) => mockCount(...a),
                     findFirst: (...a: unknown[]) => mockFindFirst(...a),
                     create: (...a: unknown[]) => mockCreate(...a),
                     update: (...a: unknown[]) => mockUpdate(...a),
@@ -78,6 +81,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAdmin.mockResolvedValue(SUPERADMIN);
     mockFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue(0);
     mockGroupFindMany.mockResolvedValue([
         {
             key: 'pool',
@@ -109,6 +113,43 @@ describe('GET /api/admin/models', () => {
         mockResolveAdmin.mockResolvedValue(PARTNER);
         await GET(req());
         expect(mockFindMany.mock.calls[1][0].where.tenant_id).toBe('tenant-7');
+    });
+
+    it('applies pagination and model query conditions', async () => {
+        mockCount.mockResolvedValue(23);
+
+        const res = await GET(
+            req(
+                'GET',
+                undefined,
+                'https://x/api/admin/models?page=2&page_size=10&q=GPT&vendor=OpenAI&modality=chat&enabled=false',
+            ),
+        );
+
+        expect(res.status).toBe(200);
+        expect(mockFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    OR: [
+                        { display_name: { contains: 'GPT', mode: 'insensitive' } },
+                        { slug: { contains: 'GPT', mode: 'insensitive' } },
+                    ],
+                    vendor: { contains: 'OpenAI', mode: 'insensitive' },
+                    modality: 'chat',
+                    enabled: false,
+                }),
+                skip: 10,
+                take: 10,
+            }),
+        );
+        expect(mockCount).toHaveBeenCalledWith({
+            where: expect.objectContaining({
+                vendor: { contains: 'OpenAI', mode: 'insensitive' },
+                modality: 'chat',
+                enabled: false,
+            }),
+        });
+        await expect(res.json()).resolves.toMatchObject({ total: 23, page: 2, page_size: 10, total_pages: 3 });
     });
 });
 

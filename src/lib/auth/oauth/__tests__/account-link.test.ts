@@ -8,7 +8,9 @@ const mockUserCreate = vi.fn();
 const mockUserUpdate = vi.fn();
 const mockUserDelete = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockEnqueueCustomerProvisioningJob = vi.fn();
 const mockTransaction = vi.fn();
+let mockTransactionClient: unknown;
 
 vi.mock('@/lib/db', () => ({
     prisma: {
@@ -30,6 +32,10 @@ vi.mock('@/lib/db', () => ({
         },
         $transaction: (...args: unknown[]) => mockTransaction(...args),
     },
+}));
+
+vi.mock('@/lib/auth/customer-provisioning-queue', () => ({
+    enqueueCustomerProvisioningJob: (...args: unknown[]) => mockEnqueueCustomerProvisioningJob(...args),
 }));
 
 // ── new-api client mock ──
@@ -56,15 +62,18 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
-        typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
-    );
+    process.env.PORTAL_CUSTOMER_PROVISIONING_ENC_KEY = '11'.repeat(32);
+    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) => {
+        mockTransactionClient = { ...(await import('@/lib/db')).prisma };
+        return typeof ops === 'function' ? ops(mockTransactionClient) : Promise.all(ops);
+    });
     mockGetDefaultChannelGroup.mockResolvedValue({
         key: 'gpt特惠分组',
         newapi_group: 'GPT-特惠反代',
         is_default: true,
         enabled: true,
     });
+    mockEnqueueCustomerProvisioningJob.mockResolvedValue({ id: 'job-1', status: 'queued' });
 });
 
 describe('linkOrCreateOAuthUser (5-branch policy)', () => {
@@ -166,18 +175,11 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         );
     });
 
-    it('Branch 4 (fresh signup): create user (no password, verified) + provision + link transaction', async () => {
+    it('Branch 4 (fresh signup): creates user, OAuth link, and queued provisioning job atomically', async () => {
         const NEW_USER_ID = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: NEW_USER_ID });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: 42,
-            newapi_username: `c-${NEW_USER_ID.slice(0, 8)}`,
-            newapi_access_token: 'access-token-xxx',
-            newapi_token_id: 7,
-            newapi_token_value: 'sk-real-key',
-        });
 
         const result = await linkOrCreateOAuthUser({
             provider: PROVIDER,
@@ -204,14 +206,15 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
                 }),
             }),
         );
-        expect(mockProvision).toHaveBeenCalledWith({
-            portal_user_id: NEW_USER_ID,
-            email: 'newbie@example.com',
-            newapi_group: 'GPT-特惠反代',
-            initial_quota: 0,
-        });
-        expect(mockTokenCreate).toHaveBeenCalledWith(
-            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalledWith(
+            mockTransactionClient,
+            expect.objectContaining({
+                userId: NEW_USER_ID,
+                email: 'newbie@example.com',
+                tierKey: 'gpt特惠分组',
+                newapiGroup: 'GPT-特惠反代',
+            }),
         );
     });
 
@@ -237,13 +240,6 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: 'newid' });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: 1,
-            newapi_username: 'c-newid',
-            newapi_access_token: 'a',
-            newapi_token_id: 1,
-            newapi_token_value: 'sk',
-        });
 
         const longName = 'x'.repeat(80);
         await linkOrCreateOAuthUser({
@@ -263,13 +259,6 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: 'google-new-id' });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: 8,
-            newapi_username: 'c-google-',
-            newapi_access_token: 'access',
-            newapi_token_id: 9,
-            newapi_token_value: 'sk-google',
-        });
 
         const result = await linkOrCreateOAuthUser({
             provider: 'google',
@@ -278,20 +267,20 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         });
 
         expect(result).toEqual({ ok: true, userId: 'google-new-id', branch: 4 });
-        expect(mockProvision).toHaveBeenCalledWith(expect.objectContaining({ newapi_group: 'GPT-特惠反代' }));
-        expect(mockTokenCreate).toHaveBeenCalledWith(
-            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalledWith(
+            mockTransactionClient,
+            expect.objectContaining({ tierKey: 'gpt特惠分组', newapiGroup: 'GPT-特惠反代' }),
         );
     });
 
-    it('Branch 4 rollback: provision failure deletes the portal user + cleans new-api orphan', async () => {
+    it('Branch 4 rolls back the portal user, OAuth link, and job when the transaction fails', async () => {
         const NEW_USER_ID = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa';
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: NEW_USER_ID });
-        mockProvision.mockRejectedValue(new Error('new-api 500'));
-        mockSearchUser.mockResolvedValue({ items: [] }); // no orphan
-        mockUserDelete.mockResolvedValue({});
+        mockEnqueueCustomerProvisioningJob.mockRejectedValue(new Error('DB transient'));
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         const result = await linkOrCreateOAuthUser({
             provider: PROVIDER,
@@ -300,25 +289,18 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         });
 
         expect(result).toEqual({ ok: false, error: 'provisioning_failed' });
-        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
+        expect(mockUserDelete).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+        errSpy.mockRestore();
     });
 
-    it('Branch 4 rollback: linkage transaction failure → deletes new-api user AND portal user', async () => {
+    it('Branch 4 rollback: job write failure does not call new-api', async () => {
         const NEW_USER_ID = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb';
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: NEW_USER_ID });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: 99,
-            newapi_username: `c-${NEW_USER_ID.slice(0, 8)}`,
-            newapi_access_token: 'access-token-xxx',
-            newapi_token_id: 3,
-            newapi_token_value: 'sk-real-key',
-        });
-        // Force the linkage transaction to fail
-        mockTokenCreate.mockRejectedValueOnce(new Error('DB transient'));
-        mockDeleteUser.mockResolvedValue({});
-        mockUserDelete.mockResolvedValue({});
+        mockEnqueueCustomerProvisioningJob.mockRejectedValueOnce(new Error('DB transient'));
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         const result = await linkOrCreateOAuthUser({
             provider: PROVIDER,
@@ -327,8 +309,9 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         });
 
         expect(result).toEqual({ ok: false, error: 'provisioning_failed' });
-        expect(mockDeleteUser).toHaveBeenCalledWith(99); // new-api side
-        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
+        expect(mockDeleteUser).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+        errSpy.mockRestore();
     });
 
     it('Branch 5 (link conflict): oauth_account.create throws → link_conflict', async () => {

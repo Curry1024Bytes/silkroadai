@@ -3,24 +3,48 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, applyLedgerEntry, syncNewapiGate, getUser, addQuota } = vi.hoisted(() => ({
+const { db, applyLedgerEntry, syncNewapiGate, getUser, addQuota, getOption } = vi.hoisted(() => ({
     db: {
+        $transaction: vi.fn(),
+        $executeRaw: vi.fn(),
+        $queryRaw: vi.fn(),
         seedanceVideoTask: { findUnique: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
         user: { findUnique: vi.fn(), update: vi.fn() },
+        catalogModel: { findMany: vi.fn() },
+        channelGroup: { findMany: vi.fn() },
+        catalogPrice: { findFirst: vi.fn() },
+        userTierMultiplier: { findMany: vi.fn() },
     },
     applyLedgerEntry: vi.fn(),
     syncNewapiGate: vi.fn(),
     getUser: vi.fn(),
     addQuota: vi.fn(),
+    getOption: vi.fn(),
 }));
+db.$transaction.mockImplementation(async (callback: (tx: typeof db) => unknown) => callback(db));
+db.$executeRaw.mockResolvedValue(0);
+db.$queryRaw.mockResolvedValue([{ id: 'newapi' }]);
+vi.mock('server-only', () => ({}));
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry }));
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate }));
-vi.mock('@/lib/newapi/client', () => ({ getUser, addQuota }));
+vi.mock('@/lib/newapi/client', () => ({ getUser, addQuota, getOption }));
 // prod-ish:1e6 quota = ¥7 → cnyToQuota(¥) = ¥ × 1e6/7
-vi.mock('@/lib/newapi/quota-units', () => ({ cnyToQuota: (cny: number) => Math.round((cny * 1e6) / 7) }));
+vi.mock('@/lib/newapi/quota-units', () => ({
+    USD_TO_CNY_RATE: 1,
+    QUOTA_PER_USD: 500_000,
+    cnyToQuota: (cny: number) => Math.round((cny * 1e6) / 7),
+}));
 
-import { computeCostCny, officialCostCny, estimateCostCny, chargeSeedanceVideoTask } from '../cn-billing';
+import {
+    computeCostCny,
+    officialCostCny,
+    estimateCostCny,
+    chargeSeedanceVideoTask,
+    getSeedancePricingSnapshot,
+    snapshotCostCny,
+} from '../cn-billing';
+import { VIDEO_TOKEN_COMBOS } from '@/lib/admin/pricing-video-token-expression';
 import { variantForModel } from '../cn-adapter';
 
 describe('computeCostCny 费率', () => {
@@ -79,6 +103,191 @@ describe('computeCostCny 费率', () => {
     });
 });
 
+describe('Seedance live pricing snapshot', () => {
+    const catalogDetails = {
+        version: 1 as const,
+        mode: 'video_token' as const,
+        unit: 'cny_per_million_tokens' as const,
+        cells: VIDEO_TOKEN_COMBOS.map((combo) => ({
+            ...combo,
+            price: combo.resolution === '720p' && combo.video_input === 'none' ? 75 : 50,
+        })),
+    };
+
+    beforeEach(() => {
+        db.catalogModel.findMany.mockResolvedValue([
+            {
+                id: 'model-1',
+                slug: 'seedance2.5-720p',
+                upstream_map: {
+                    'seedance-cn-enterprise': { channel_id: 7, upstream_model: 'seedance-upstream' },
+                },
+            },
+        ]);
+        db.channelGroup.findMany.mockResolvedValue([
+            {
+                key: 'seedance-cn-enterprise',
+                newapi_group: 'enterprise',
+                newapi_channel_ids: [7],
+                is_default: true,
+                enabled: true,
+                tier_level: 0,
+            },
+        ]);
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'catalog-price-1',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: catalogDetails,
+        });
+        db.userTierMultiplier.findMany.mockResolvedValue([]);
+        getOption.mockResolvedValue(JSON.stringify({ enterprise: 1 }));
+    });
+
+    it('freezes the live rounded actual quote and avoids applying the discount twice', async () => {
+        const readOrder: string[] = [];
+        db.$executeRaw.mockImplementation(async () => {
+            readOrder.push('coordinator-row-ready');
+            return 1;
+        });
+        db.$queryRaw.mockImplementation(async () => {
+            readOrder.push('coordinator-row-locked');
+            return [{ id: 'newapi' }];
+        });
+        db.catalogModel.findMany.mockImplementation(async () => {
+            readOrder.push('catalog-model');
+            return [
+                {
+                    id: 'model-1',
+                    slug: 'seedance2.5-720p',
+                    upstream_map: {
+                        'seedance-cn-enterprise': { channel_id: 7, upstream_model: 'seedance-upstream' },
+                    },
+                },
+            ];
+        });
+        db.channelGroup.findMany.mockImplementation(async () => {
+            readOrder.push('channel-group');
+            return [
+                {
+                    key: 'seedance-cn-enterprise',
+                    newapi_group: 'enterprise',
+                    newapi_channel_ids: [7],
+                    is_default: true,
+                    enabled: true,
+                    tier_level: 0,
+                },
+            ];
+        });
+        db.catalogPrice.findFirst.mockImplementation(async () => {
+            readOrder.push('catalog-price');
+            return {
+                id: 'catalog-price-1',
+                effective_from: new Date('2026-11-13T00:00:00.000Z'),
+                billing_details: catalogDetails,
+            };
+        });
+
+        const snapshot = await getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false);
+        expect(snapshot.rate).toBe(75);
+        expect(snapshot.discount).toBe(1);
+        expect(snapshot.rule).toMatchObject({
+            basis: { rate: 75 },
+            catalog_price_id: 'catalog-price-1',
+            identity: {
+                model: 'seedance2.5-720p',
+                tier: 'seedance-cn-enterprise',
+                resolution: '720p',
+                hasVideo: false,
+            },
+        });
+        expect(snapshotCostCny(1_000_000, snapshot)).toBe(75);
+        expect(readOrder.slice(0, 2)).toEqual(['coordinator-row-ready', 'coordinator-row-locked']);
+        expect(readOrder.slice(2)).toEqual(expect.arrayContaining(['catalog-model', 'channel-group', 'catalog-price']));
+        expect(
+            readOrder.slice(2).every((read) => readOrder.indexOf('coordinator-row-locked') < readOrder.indexOf(read)),
+        ).toBe(true);
+    });
+
+    it('rejects a missing CatalogPrice instead of falling back to cost rules or official rates', async () => {
+        db.catalogPrice.findFirst.mockResolvedValue(null);
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false),
+        ).rejects.toThrow(/catalog price unavailable/i);
+    });
+
+    it('rejects incomplete or malformed CatalogPrice video cells', async () => {
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'catalog-price-bad',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: { ...catalogDetails, cells: catalogDetails.cells.slice(0, 7) },
+        });
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false),
+        ).rejects.toThrow(/video-token catalog price is incomplete/i);
+    });
+
+    it('rejects scheduled discounts until Seedance submission and settlement can apply them consistently', async () => {
+        db.catalogPrice.findFirst.mockResolvedValue({
+            id: 'catalog-price-scheduled',
+            effective_from: new Date('2026-11-13T00:00:00.000Z'),
+            billing_details: {
+                ...catalogDetails,
+                scheduled_discount: {
+                    start: '00:00',
+                    end: '08:00',
+                    timezone: 'Asia/Shanghai',
+                    multiplier: 0.75,
+                },
+            },
+        });
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false),
+        ).rejects.toThrow(/unsupported scheduled pricing/i);
+    });
+
+    it('rejects a broken active channel-group topology instead of pricing through it', async () => {
+        db.channelGroup.findMany.mockResolvedValue([
+            {
+                key: 'seedance-cn-enterprise',
+                newapi_group: 'enterprise',
+                newapi_channel_ids: [],
+                is_default: true,
+                enabled: true,
+                tier_level: 0,
+            },
+        ]);
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false),
+        ).rejects.toThrow(/invalid channel-group topology/i);
+    });
+
+    it('applies the signed-in customer multiplier once relative to public GroupRatio', async () => {
+        db.userTierMultiplier.findMany.mockResolvedValue([{ newapi_billing_group: 'enterprise', multiplier: 0.75 }]);
+        getOption.mockResolvedValue(JSON.stringify({ enterprise: 1 }));
+
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(56.25);
+        expect(snapshot.rule).toMatchObject({
+            public_rate: 75,
+            customer_multiplier: 0.75,
+            public_group_ratio: 1,
+            customer_scale: 0.75,
+        });
+        expect(db.userTierMultiplier.findMany).toHaveBeenCalledWith({
+            where: { user_id: 'customer-1', tier_key: 'seedance-cn-enterprise', enabled: true },
+            select: { newapi_billing_group: true, multiplier: true },
+        });
+    });
+});
+
 const baseTask = {
     id: 'cgt-1',
     user_id: 'u1',
@@ -89,6 +298,22 @@ const baseTask = {
     tokens: BigInt(108872),
     billed: false,
     model: 'seedance2.0-pro-720p',
+};
+
+const frozenTask = {
+    ...baseTask,
+    tier: 'seedance-cn-enterprise',
+    pricing_discount: 1,
+    pricing_source: 'model',
+    pricing_timezone: 'Asia/Shanghai',
+    pricing_rule: {
+        type: 'model',
+        source: 'model',
+        timezone: 'Asia/Shanghai',
+        identity: { model: baseTask.model, tier: 'seedance-cn-enterprise', resolution: '720p', hasVideo: false },
+        basis: { currency: 'CNY', unit: 'token', unitQuantity: 1_000_000, rate: 75.024 },
+        evaluatedAt: '2026-11-13T00:00:00.000Z',
+    },
 };
 
 describe('chargeSeedanceVideoTask 幂等 + 双账本', () => {
@@ -135,6 +360,15 @@ describe('chargeSeedanceVideoTask 幂等 + 双账本', () => {
         expect(call.quotaDelta).toBeCloseTo(5_000_000 - Math.round((4.257 * 1e6) / 7), -2);
         expect(db.user.update).toHaveBeenCalled(); // 清缓存
         expect(applyLedgerEntry).not.toHaveBeenCalled();
+    });
+
+    it('new task uses the persisted live quote snapshot instead of static official rates', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(frozenTask);
+        db.user.findUnique.mockResolvedValue({ id: 'u1', tenant_id: 't1', billing_mode: 'portal', newapi_user_id: 42 });
+        const r = await chargeSeedanceVideoTask('cgt-1');
+        expect(r.outcome).toBe('charged');
+        expect(r.costCny).toBeCloseTo((108872 / 1_000_000) * 75.024, 6);
+        expect(applyLedgerEntry.mock.calls[0][1]).toMatchObject({ amount_cny: -r.costCny! });
     });
 
     it('portal 档:applyLedgerEntry charge 负额 + ref=taskId 幂等 + syncNewapiGate', async () => {

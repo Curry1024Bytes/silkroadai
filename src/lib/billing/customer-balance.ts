@@ -36,7 +36,12 @@ export interface CustomerBalance {
 export async function getCustomerBalance(userId: string): Promise<CustomerBalance> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { billing_mode: true, newapi_user_id: true, account: { select: { id: true, balance_cny: true } } },
+        select: {
+            billing_mode: true,
+            newapi_user_id: true,
+            newapi_username: true,
+            account: { select: { id: true, balance_cny: true } },
+        },
     });
 
     // ── portal:¥账本(Account)是唯一真相,绝不读 new-api quota(它是哑门开关)──
@@ -60,11 +65,11 @@ export async function getCustomerBalance(userId: string): Promise<CustomerBalanc
     // 净消费 = 毛 − Σ退款,否则历史消费虚高(2026-06 客户 zyt;seedance 大量失败退款)。
     // 退款查询失败 → 回退毛消费(不阻塞余额/消费展示)。
     let refundQuota = 0;
-    if (user?.newapi_user_id != null) {
+    if (user?.newapi_user_id != null && user.newapi_username != null) {
         try {
             const refunds = await fetchUserRefunds({
                 user_id: user.newapi_user_id,
-                username: `c-${userId.slice(0, 8)}`, // 与 provisionNewCustomer 约定一致
+                username: user.newapi_username,
             });
             refundQuota = refunds.reduce((sum, r) => sum + r.quota, 0);
         } catch (err) {

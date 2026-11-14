@@ -346,6 +346,7 @@ model User {
   oss_config                UserOssConfig?
   account                   Account? // P4c-1 ¥账本(零客户影响,默认无 row)
   tier_multipliers          UserTierMultiplier[]
+  customer_provisioning_job CustomerProvisioningJob?
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -490,6 +491,36 @@ model NewApiToken {
   @@index([user_id])
   @@index([newapi_token_id])
   @@map("newapi_tokens")
+}
+
+// Durable customer onboarding queue. The encrypted password is retained only
+// until the job finishes so retries can resume a remote create/login flow.
+model CustomerProvisioningJob {
+  id                  String   @id @default(uuid()) @db.Uuid
+  user_id             String   @unique @db.Uuid
+  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  idempotency_key     String   @unique @db.VarChar(160)
+  email               String
+  tier_key            String
+  newapi_group        String
+  initial_quota       Int      @default(0)
+  password_ciphertext String   @db.Text
+  status              String   @default("queued") @db.VarChar(20)
+  attempts            Int      @default(0)
+  max_attempts        Int      @default(8)
+  next_attempt_at     DateTime @default(now())
+  runner_token        String?  @db.Uuid
+  lease_until         DateTime?
+  last_error_code     String?  @db.VarChar(80)
+  last_error_message  String?  @db.Text
+  result              Json?
+  completed_at        DateTime?
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@index([status, next_attempt_at])
+  @@index([lease_until])
+  @@map("customer_provisioning_jobs")
 }
 
 enum KeyStatus {

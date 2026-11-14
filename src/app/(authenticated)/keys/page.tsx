@@ -20,6 +20,7 @@ import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-g
 import { getVerifiedEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
 import { getTokenMetaForCustomer, expiredTimeToIso } from '@/lib/newapi/token-meta';
 import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
+import { getCustomerProvisioningStatus } from '@/lib/auth/customer-provisioning-queue';
 import { getLocale } from '@/lib/i18n/server';
 import { pickMessages } from '@/lib/i18n';
 import { keysMessages } from '@/lib/i18n/messages/keys';
@@ -54,22 +55,28 @@ export default async function KeysPage() {
     // Layout already gated; null branch only to satisfy TS narrowing.
     if (!user) return null;
 
-    const tokens = await prisma.newApiToken.findMany({
-        where: { user_id: user.id, status: 'active' },
-        orderBy: { created_at: 'asc' },
-        select: {
-            id: true,
-            key_alias: true,
-            newapi_token_value: true,
-            newapi_token_id: true,
-            tier: true,
-            created_at: true,
-            // 2026-08-15:把 60s 行缓存的两列一并捞出来传给 getTokenUsageWithCache,
-            // 省掉它内部对【刚查过的同一行】再做一次 findUnique(N 个 key = N 次多余往返)。
-            cached_used_quota: true,
-            cached_used_at: true,
-        },
-    });
+    const [tokens, provisioningStatus] = await Promise.all([
+        prisma.newApiToken.findMany({
+            where: { user_id: user.id, status: 'active' },
+            orderBy: { created_at: 'asc' },
+            select: {
+                id: true,
+                key_alias: true,
+                newapi_token_value: true,
+                newapi_token_id: true,
+                tier: true,
+                created_at: true,
+                // 2026-08-15:把 60s 行缓存的两列一并捞出来传给 getTokenUsageWithCache,
+                // 省掉它内部对【刚查过的同一行】再做一次 findUnique(N 个 key = N 次多余往返)。
+                cached_used_quota: true,
+                cached_used_at: true,
+            },
+        }),
+        getCustomerProvisioningStatus(user.id).catch((err) => {
+            console.warn(`[keys] provisioning status fetch failed for user ${user.id}:`, err);
+            return null;
+        }),
+    ]);
 
     // W6 D4: parallel per-token usage fetch,每 token 走各自的 60s 行缓存
     // (⚠️ 不是批量合并的,冷缓存时是 N 发上游,见 token-usage.ts 头注释)。
@@ -159,6 +166,15 @@ export default async function KeysPage() {
         special: effective?.special.has(g.newapi_group) ?? false,
     }));
 
+    const provisioning = {
+        status: provisioningStatus?.status ?? null,
+        nextAttemptAt: provisioningStatus?.nextAttemptAt?.toISOString() ?? null,
+        // A usable linkage is the source of truth for whether key operations
+        // can proceed. The queue status remains visible when a completed job
+        // has not yet produced that linkage.
+        ready: customerAuth !== null,
+    } as const;
+
     return (
         <section className="space-y-6">
             <div>
@@ -166,7 +182,12 @@ export default async function KeysPage() {
                 <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">API Keys</h1>
                 <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">{m.subtitle}</p>
             </div>
-            <KeysList initialRows={rows} tiers={tiers} quotaLimitsEnabled={keyQuotaLimitsEnabled()} />
+            <KeysList
+                initialRows={rows}
+                tiers={tiers}
+                quotaLimitsEnabled={keyQuotaLimitsEnabled()}
+                provisioning={provisioning}
+            />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G
              *  used to stitch into each row. Static `YOUR_API_KEY`

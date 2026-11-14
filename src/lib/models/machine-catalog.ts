@@ -22,6 +22,7 @@ import { categorizeByType, categorizeByVendor, type TypeName, type VendorName } 
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
+import type { PriceProvenance } from './price-provenance';
 import {
     parseCatalogBillingDetails,
     primaryTokenRates,
@@ -38,6 +39,8 @@ export interface TierPricing {
     per_image_cny: number | null;
     /** Scalar token prices are the first tier when full conditional prices are present. */
     billing_details?: CatalogBillingDetails;
+    /** Present only when the displayed Seedance quote matches the active operator-maintained pricing rule. */
+    price_provenance?: PriceProvenance;
 }
 
 export interface CatalogPricingContext {

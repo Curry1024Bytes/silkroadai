@@ -14,7 +14,12 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance } from '@/lib/billing/customer-balance';
 import { MODEL_MAP, extractVideoUrls, maxDurationForVariant, resolveRequestedDuration } from './cn-adapter';
-import { chargeSeedanceVideoTask, estimateCostCny, type Resolution } from './cn-billing';
+import {
+    chargeSeedanceVideoTask,
+    estimateCostCnyFromSnapshot,
+    getSeedancePricingSnapshot,
+    type Resolution,
+} from './cn-billing';
 
 /** 适配器内网地址(同 portal 进程自调);渠道 base_url 同款,默认自指 127.0.0.1。 */
 const ADAPTER_BASE = process.env.SEEDANCE_CN_ADAPTER_BASE || 'http://127.0.0.1:3002/seedance-cn-adapter';
@@ -104,10 +109,31 @@ export async function handleSeedanceVideoSubmit(
     const duration = resolveRequestedDuration(body, maxDur) ?? 5;
     const estDuration = duration === -1 ? maxDur : duration;
 
+    // Resolve the live catalog price once and freeze it on the task. A missing or ambiguous
+    // route/rule must stop submission before the adapter accepts a billable generation.
+    let pricingSnapshot;
+    try {
+        pricingSnapshot = await getSeedancePricingSnapshot(
+            model,
+            cust.tier,
+            map.resolution as Resolution,
+            hasVideo,
+            cust.tenantId,
+            cust.userId,
+        );
+    } catch (e) {
+        console.error('[seedance-cn-proxy] pricing snapshot unavailable', {
+            model,
+            tier: cust.tier,
+            error: e instanceof Error ? e.message : String(e),
+        });
+        return errJson(503, 'pricing_unavailable', 'current model pricing is unavailable, please retry later');
+    }
+
     // 2) 余额门(视频后付费 + 绕过 new-api,提交时先估价挡,防大额透支)
     try {
         const bal = await getCustomerBalance(cust.userId);
-        const est = estimateCostCny(map.resolution as Resolution, estDuration, hasVideo, map.variant);
+        const est = estimateCostCnyFromSnapshot(pricingSnapshot, map.resolution as Resolution, estDuration, hasVideo);
         if (bal.balanceCny < est)
             return errJson(
                 402,
@@ -150,6 +176,10 @@ export async function handleSeedanceVideoSubmit(
                 resolution: map.resolution,
                 has_video: hasVideo,
                 duration,
+                pricing_discount: pricingSnapshot.discount,
+                pricing_source: pricingSnapshot.source,
+                pricing_rule: pricingSnapshot.rule,
+                pricing_timezone: pricingSnapshot.timezone,
             },
         });
     } catch (e) {

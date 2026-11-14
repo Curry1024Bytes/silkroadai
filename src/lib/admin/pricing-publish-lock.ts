@@ -1,5 +1,5 @@
 import 'server-only';
-import type { Prisma } from '@prisma/client';
+import type { Prisma as PrismaTypes } from '@prisma/client';
 
 export class PricingPublishError extends Error {
     constructor(
@@ -14,7 +14,7 @@ export class PricingPublishError extends Error {
 
 /** Must run inside the same transaction as the protected mutations. No expiring
  * lease: the database releases this mutex only on transaction end/disconnection. */
-export async function lockPricingPublisher(tx: Prisma.TransactionClient) {
+export async function lockPricingPublisher(tx: PrismaTypes.TransactionClient) {
     return tx.pricingPublishCoordinator.upsert({
         where: { id: 'newapi' },
         create: { id: 'newapi', revision: 1 },
@@ -22,7 +22,30 @@ export async function lockPricingPublisher(tx: Prisma.TransactionClient) {
     });
 }
 
-export async function assertNoRetirementJob(tx: Prisma.TransactionClient, options: { retirementJobId?: string } = {}) {
+/**
+ * Serialize readers of the live pricing snapshot with the pricing publisher
+ * without advancing the publication revision. Must run in the same database
+ * transaction as every protected read.
+ */
+export async function lockPricingPublisherReadOnly(tx: PrismaTypes.TransactionClient) {
+    await tx.$executeRaw`
+        INSERT INTO "pricing_publish_coordinator" ("id", "revision")
+        VALUES ('newapi', 1)
+        ON CONFLICT ("id") DO NOTHING
+    `;
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "pricing_publish_coordinator"
+        WHERE "id" = 'newapi'
+        FOR UPDATE
+    `;
+    if (rows.length !== 1) throw new Error('pricing publish coordinator row unavailable');
+}
+
+export async function assertNoRetirementJob(
+    tx: PrismaTypes.TransactionClient,
+    options: { retirementJobId?: string } = {},
+) {
     const job = await tx.channelGroupRetirementJob.findFirst({
         where: {
             status: { notIn: ['succeeded', 'cancelled'] },
@@ -39,7 +62,7 @@ export async function assertNoRetirementJob(tx: Prisma.TransactionClient, option
 }
 
 export async function assertPricingCatalogWritable(
-    tx: Prisma.TransactionClient,
+    tx: PrismaTypes.TransactionClient,
     options: { retirementJobId?: string } = {},
 ) {
     const coordinator = await lockPricingPublisher(tx);

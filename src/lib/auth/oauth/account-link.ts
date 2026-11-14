@@ -12,8 +12,8 @@
  *   1. existing (provider, providerAccountId) → return that user
  *   2. no link, email matches a verified portal user → silent link
  *   3. no link, email matches an UNverified portal user → bootstrap-verify + link
- *   4. no link, email is brand new → create user (verified, no password) +
- *      provisionNewCustomer + persist linkage; rollback on any failure
+ *   4. no link, email is brand new → create user (verified, no password),
+ *      persist linkage, and queue durable new-api provisioning atomically
  *   5. (caught implicitly) the providerAccountId is already linked to a
  *      DIFFERENT portal user — link create throws unique violation, we
  *      surface 'link_conflict' rather than silently moving the link.
@@ -23,14 +23,9 @@
  * verified email, etc). This helper does not re-verify.
  */
 import { prisma } from '@/lib/db';
-import {
-    provisionNewCustomer,
-    deleteUser as deleteNewApiUser,
-    searchUser as searchNewApiUser,
-    type ProvisionedCustomer,
-} from '@/lib/newapi/client';
-import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
+import { withCustomerKeyMutation } from '@/lib/newapi/customer-key-mutation';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
+import { enqueueCustomerProvisioningJob } from '@/lib/auth/customer-provisioning-queue';
 
 export interface OAuthIdentity {
     /** 'google', 'github', etc — matches `oauth_accounts.provider`. */
@@ -48,36 +43,9 @@ export type LinkOrCreateOutcome =
     | { ok: false; error: 'account_disabled' | 'link_conflict' | 'provisioning_failed' | 'signup_disabled' };
 
 /**
- * Best-effort cleanup of any new-api user that may have been created before
- * provisionNewCustomer threw. Mirrors register/route.ts:cleanupOrphanNewApiUser
- * — same deterministic `c-{portal_uuid8}` username convention.
- */
-async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: string): Promise<void> {
-    const username = `c-${portalUserId.slice(0, 8)}`;
-    try {
-        const search = await searchNewApiUser(username, 1, 5);
-        const orphan = search.items.find((u) => u.username === username);
-        if (orphan) {
-            await deleteNewApiUser(orphan.id);
-            console.warn(
-                `[oauth/account-link] cleaned orphan new-api user id=${orphan.id} username=${username} after provision failure for ${contextEmail}`,
-            );
-        }
-    } catch (err) {
-        console.error(
-            `[oauth/account-link] orphan new-api cleanup failed for ${contextEmail} (username=${username}):`,
-            err,
-        );
-    }
-}
-
-/**
- * Branch 4 — fresh signup. Creates the portal user with password_hash=null
- * and email_verified=true (provider already vouched), then provisions the
- * new-api side, then persists linkage. Rolls back both sides on any failure.
  *
  * Returns the new userId on success, null on failure (caller maps to
- * 'provisioning_failed').
+ * 'provisioning_failed'). The new-api setup itself runs asynchronously.
  */
 async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string): Promise<string | null> {
     let defaultGroup;
@@ -92,108 +60,49 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
         return null;
     }
 
-    let user;
     try {
-        user = await prisma.user.create({
-            data: {
-                email: identity.email,
-                password_hash: null,
-                nickname: identity.nameHint?.slice(0, 64) || null,
-                email_verified: true,
-                email_verified_at: new Date(),
-                // P6a: attribute the OAuth signup to the request-domain's tenant.
-                tenant_id: tenantId ?? null,
-                oauth_accounts: {
-                    create: {
-                        provider: identity.provider,
-                        provider_account_id: identity.providerAccountId,
-                    },
-                },
+        return await withCustomerKeyMutation(
+            {
+                tenantId: tenantId ?? null,
+                tierKey: defaultGroup.key,
+                newapiGroup: defaultGroup.newapi_group,
+                requireDefault: true,
             },
-            select: { id: true },
-        });
+            async (tx) => {
+                const user = await tx.user.create({
+                    data: {
+                        email: identity.email,
+                        password_hash: null,
+                        nickname: identity.nameHint?.slice(0, 64) || null,
+                        email_verified: true,
+                        email_verified_at: new Date(),
+                        tenant_id: tenantId ?? null,
+                        oauth_accounts: {
+                            create: {
+                                provider: identity.provider,
+                                provider_account_id: identity.providerAccountId,
+                            },
+                        },
+                    },
+                    select: { id: true },
+                });
+                await enqueueCustomerProvisioningJob(tx, {
+                    userId: user.id,
+                    email: identity.email,
+                    tierKey: defaultGroup.key,
+                    newapiGroup: defaultGroup.newapi_group,
+                    initialQuota: 0,
+                });
+                return user.id;
+            },
+        );
     } catch (err) {
         console.error(
-            `[oauth/account-link] portal user create failed for ${identity.email} (provider=${identity.provider}):`,
+            `[oauth/account-link] portal user + provisioning job create failed for ${identity.email} (provider=${identity.provider}):`,
             err,
         );
         return null;
     }
-
-    let phase: 'coordination' | 'provision' | 'persistence' = 'coordination';
-    let createdCustomer: ProvisionedCustomer | undefined;
-    const provisionOutcome = await withCustomerKeyMutation(
-        {
-            tenantId: tenantId ?? null,
-            tierKey: defaultGroup.key,
-            newapiGroup: defaultGroup.newapi_group,
-            requireDefault: true,
-        },
-        async (tx) => {
-            phase = 'provision';
-            createdCustomer = await provisionNewCustomer({
-                portal_user_id: user.id,
-                email: identity.email,
-                newapi_group: defaultGroup.newapi_group,
-                initial_quota: 0,
-            });
-            phase = 'persistence';
-            await customerKeyMutationTimeout();
-            await Promise.all([
-                tx.user.update({
-                    where: { id: user.id },
-                    data: {
-                        newapi_user_id: createdCustomer.newapi_user_id,
-                        newapi_username: createdCustomer.newapi_username,
-                        newapi_access_token: createdCustomer.newapi_access_token,
-                    },
-                }),
-                tx.newApiToken.create({
-                    data: {
-                        user_id: user.id,
-                        newapi_token_id: createdCustomer.newapi_token_id,
-                        newapi_token_value: createdCustomer.newapi_token_value,
-                        key_alias: `default-${user.id.slice(0, 8)}`,
-                        tier: defaultGroup.key,
-                    },
-                }),
-            ]);
-            return createdCustomer;
-        },
-    ).catch(async (error) => {
-        // The interactive transaction has ended before cleanup. Never swallow a
-        // SQL error inside an aborted transaction and leave the initial user behind.
-        if (createdCustomer) {
-            await deleteNewApiUser(createdCustomer.newapi_user_id).catch((cleanupError) =>
-                console.error('[oauth/account-link] new-api account cleanup failed', cleanupError),
-            );
-        } else if (phase === 'provision') {
-            await cleanupOrphanNewApiUser(user.id, identity.email);
-        }
-        await prisma.user
-            .delete({ where: { id: user.id } })
-            .catch((cleanupError) => console.error('[oauth/account-link] Portal account cleanup failed', cleanupError));
-        console.error('[oauth/account-link] coordinated provisioning failed', { phase, error });
-        return null;
-    });
-    if (!provisionOutcome) return null;
-
-    // PR-T1 Phase 0c — eagerly provision the portal system token used by
-    // server-managed services (image gen / future internal flows). Mirrors
-    // the same hook in /api/auth/register. Best-effort: failure logged
-    // but doesn't roll back the OAuth account; first portal-managed call
-    // retries lazily.
-    try {
-        const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
-        await getOrCreateSystemToken(user.id, defaultGroup.newapi_group);
-    } catch (sysTokErr) {
-        console.warn(
-            `[oauth/account-link] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,
-            sysTokErr,
-        );
-    }
-
-    return user.id;
 }
 
 /**
@@ -293,7 +202,7 @@ export async function linkOrCreateOAuthUser(
         return { ok: false, error: 'signup_disabled' };
     }
 
-    // Brand new email. Create user + provision + link.
+    // Brand new email. Create user + link + durable provisioning job.
     const createdId = await createUserFromIdentity(identity, tenantId);
     if (!createdId) {
         return { ok: false, error: 'provisioning_failed' };

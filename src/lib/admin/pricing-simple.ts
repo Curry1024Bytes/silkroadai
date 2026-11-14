@@ -28,8 +28,7 @@ import {
     type VideoQuoteInput,
     type VideoQuoteOfficialCell,
 } from './pricing-video-quote';
-import { VIDEO_TOKEN_COMBOS, videoTokenKey } from './pricing-video-token-expression';
-import { arkOfficialPrice } from '@/lib/seedance/official-rates';
+import { videoTokenKey } from './pricing-video-token-expression';
 import {
     BASE_FX,
     EXPR_KEY,
@@ -126,7 +125,7 @@ export interface SimpleUpstreamModel {
     video_quote?: SimpleVideoQuote;
 }
 
-/** One video-token model's quote: stored official prices and discounts, or a prefill. */
+/** One video-token model's quote: stored official prices and discounts, or an empty draft. */
 export interface SimpleVideoQuote {
     model_id: string;
     tier: string;
@@ -135,7 +134,7 @@ export interface SimpleVideoQuote {
     group_ratio: number | null;
     /** The stored Portal quote (official prices, buy and sell discount), if any. */
     rule: { id: string; revision: number; quote: VideoQuoteInput | null; updated_at: string } | null;
-    /** Official prices to start from when no quote is stored. Null = fill in by hand. */
+    /** Always null when no quote is stored: official prices must be checked and entered manually. */
     prefill: VideoQuoteOfficialCell[] | null;
     /** True when the stored quote no longer produces the live coefficients. */
     drift: boolean;
@@ -416,14 +415,6 @@ function storedQuote(rule: CostRuleRow | undefined) {
     };
 }
 
-function officialPrefill(name: string): VideoQuoteOfficialCell[] | null {
-    const cells = VIDEO_TOKEN_COMBOS.map((combo) => ({
-        ...combo,
-        price: arkOfficialPrice(name, combo.resolution, combo.video_input === 'video'),
-    }));
-    return cells.every((cell) => cell.price !== null) ? (cells as VideoQuoteOfficialCell[]) : null;
-}
-
 /** A discount quote prices one catalog model in one tier; a shared upstream name has no single ratio. */
 function planVideoQuote(
     catalog: Awaited<ReturnType<typeof loadCatalog>>,
@@ -524,7 +515,11 @@ async function attachVideoQuotes(
             newapi_group: group.newapi_group,
             group_ratio: ratio,
             rule,
-            prefill: rule?.quote ? null : officialPrefill(model.name),
+            // The repository's historical Seedance table is a manual snapshot, not a live
+            // official source. Never prefill a new quote from it: the operator must verify the
+            // current upstream rate before the first save, otherwise the configured discount
+            // would turn an unverified number into a customer-facing price.
+            prefill: null,
             drift,
             customer_overrides: counts.overrides.get(use.tier) ?? 0,
             sale_rules_managed: counts.managed.has(group.newapi_group),

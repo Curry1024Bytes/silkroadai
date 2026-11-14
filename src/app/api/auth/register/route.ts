@@ -4,12 +4,6 @@ import { hash } from 'bcryptjs';
 import { randomBytes, createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import {
-    provisionNewCustomer,
-    deleteUser as deleteNewApiUser,
-    searchUser as searchNewApiUser,
-    type ProvisionedCustomer,
-} from '@/lib/newapi/client';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { sendVerificationEmail } from '@/lib/email/send';
 import { getAppUrl } from '@/lib/url/app-url';
@@ -17,8 +11,9 @@ import { extractClientIP } from '@/lib/auth/extract-ip';
 import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
 import { resolveTenantByHost } from '@/lib/tenant/resolve';
-import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
+import { enqueueCustomerProvisioningJob } from '@/lib/auth/customer-provisioning-queue';
+import { withCustomerKeyMutation } from '@/lib/newapi/customer-key-mutation';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -54,30 +49,6 @@ const RegisterSchema = z.object({
             return trimmed.length > 0 ? trimmed : undefined;
         }),
 });
-
-/**
- * Best-effort cleanup of any new-api user that may have been created before
- * provisionNewCustomer threw. provisionNewCustomer is a 6-step flow; if step 1
- * (createUser) failed, nothing exists and search returns nothing. If step 2-6
- * failed, the new-api user exists with the deterministic `c-{portal_uuid8}`
- * username and we need to delete it (this also disposes any token created
- * in step 4 since deleteUser is a soft-delete that disables the user record).
- */
-async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: string): Promise<void> {
-    const username = `c-${portalUserId.slice(0, 8)}`;
-    try {
-        const search = await searchNewApiUser(username, 1, 5);
-        const orphan = search.items.find((u) => u.username === username);
-        if (orphan) {
-            await deleteNewApiUser(orphan.id);
-            console.warn(
-                `[register] cleaned orphan new-api user id=${orphan.id} username=${username} after provision failure for ${contextEmail}`,
-            );
-        }
-    } catch (err) {
-        console.error(`[register] orphan new-api cleanup failed for ${contextEmail} (username=${username}):`, err);
-    }
-}
 
 export async function POST(req: NextRequest) {
     let body: unknown;
@@ -170,123 +141,67 @@ export async function POST(req: NextRequest) {
     const signupUa = req.headers.get('user-agent')?.slice(0, 500) ?? null;
 
     let user;
+    let provisioningJob;
     try {
-        user = await prisma.user.create({
-            data: {
-                email,
-                password_hash,
-                nickname: nickname || null,
-                // P6a: customer belongs to the request-domain's tenant.
-                tenant_id: tenant.id,
-                // W7 D4 env allow-list path — set raw typed code.
-                invite_code: resolved.kind === 'env_invite_code' ? resolved.invite_code : null,
-                // PR-U1 reseller attribution path — set FK + expiry.
-                inviter_code_id: resolved.kind === 'reseller' ? resolved.inviter_code_id : null,
-                inviter_reseller_id: resolved.kind === 'reseller' ? resolved.inviter_reseller_id : null,
-                attribution_expires_at: resolved.kind === 'reseller' ? resolved.attribution_expires_at : null,
-                signup_ip: signupIp,
-                signup_ua: signupUa,
+        ({ user, job: provisioningJob } = await withCustomerKeyMutation(
+            {
+                tenantId: tenant.id,
+                tierKey: defaultGroup.key,
+                newapiGroup: defaultGroup.newapi_group,
+                requireDefault: true,
             },
-            select: {
-                id: true,
-                email: true,
-                nickname: true,
-                email_verified: true,
-                locale: true,
-                status: true,
-                created_at: true,
+            async (tx) => {
+                const createdUser = await tx.user.create({
+                    data: {
+                        email,
+                        password_hash,
+                        nickname: nickname || null,
+                        // P6a: customer belongs to the request-domain's tenant.
+                        tenant_id: tenant.id,
+                        // W7 D4 env allow-list path — set raw typed code.
+                        invite_code: resolved.kind === 'env_invite_code' ? resolved.invite_code : null,
+                        // PR-U1 reseller attribution path — set FK + expiry.
+                        inviter_code_id: resolved.kind === 'reseller' ? resolved.inviter_code_id : null,
+                        inviter_reseller_id: resolved.kind === 'reseller' ? resolved.inviter_reseller_id : null,
+                        attribution_expires_at: resolved.kind === 'reseller' ? resolved.attribution_expires_at : null,
+                        signup_ip: signupIp,
+                        signup_ua: signupUa,
+                    },
+                    select: {
+                        id: true,
+                        email: true,
+                        nickname: true,
+                        email_verified: true,
+                        locale: true,
+                        status: true,
+                        created_at: true,
+                    },
+                });
+
+                // The job row is created in the same transaction as the portal
+                // user. A concurrent registration can therefore never leave a
+                // usable portal account without a durable new-api setup task.
+                const job = await enqueueCustomerProvisioningJob(tx, {
+                    userId: createdUser.id,
+                    email,
+                    tierKey: defaultGroup.key,
+                    newapiGroup: defaultGroup.newapi_group,
+                    initialQuota: 0,
+                });
+                return { user: createdUser, job };
             },
-        });
+        ));
     } catch (err) {
-        // Unique-violation race (someone registered between findUnique and create)
+        // Unique-violation race (someone registered between findUnique and
+        // the transaction). The whole transaction rolls back, including the
+        // provisioning job, so retrying is safe.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
             return NextResponse.json({ error: 'email_already_registered' }, { status: 409 });
         }
-        throw err;
-    }
-
-    let phase: 'coordination' | 'provision' | 'persistence' = 'coordination';
-    let createdCustomer: ProvisionedCustomer | undefined;
-    const provisionOutcome = await withCustomerKeyMutation(
-        {
-            tenantId: tenant.id,
-            tierKey: defaultGroup.key,
-            newapiGroup: defaultGroup.newapi_group,
-            requireDefault: true,
-        },
-        async (tx) => {
-            phase = 'provision';
-            createdCustomer = await provisionNewCustomer({
-                portal_user_id: user.id,
-                email: email,
-                newapi_group: defaultGroup.newapi_group,
-                initial_quota: 0,
-            });
-            phase = 'persistence';
-            await customerKeyMutationTimeout();
-            await Promise.all([
-                tx.user.update({
-                    where: { id: user.id },
-                    data: {
-                        newapi_user_id: createdCustomer.newapi_user_id,
-                        newapi_username: createdCustomer.newapi_username,
-                        newapi_access_token: createdCustomer.newapi_access_token,
-                    },
-                }),
-                tx.newApiToken.create({
-                    data: {
-                        user_id: user.id,
-                        newapi_token_id: createdCustomer.newapi_token_id,
-                        newapi_token_value: createdCustomer.newapi_token_value,
-                        key_alias: `default-${user.id.slice(0, 8)}`,
-                        tier: defaultGroup.key,
-                    },
-                }),
-            ]);
-            return createdCustomer;
-        },
-    ).catch(async (error) => {
-        // The interactive transaction has ended before cleanup. Never swallow a
-        // SQL error inside an aborted transaction and leave the initial user behind.
-        if (createdCustomer) {
-            await deleteNewApiUser(createdCustomer.newapi_user_id).catch((cleanupError) =>
-                console.error('[register] new-api account cleanup failed', cleanupError),
-            );
-        } else if (phase === 'provision') {
-            await cleanupOrphanNewApiUser(user.id, email);
-        }
-        await prisma.user
-            .delete({ where: { id: user.id } })
-            .catch((cleanupError) => console.error('[register] Portal account cleanup failed', cleanupError));
-        console.error('[register] coordinated provisioning failed', { phase, error });
+        console.error('[register] failed to create portal account + provisioning job:', err);
         return NextResponse.json(
-            {
-                error:
-                    phase === 'persistence'
-                        ? 'persistence_failed'
-                        : phase === 'provision'
-                          ? 'provisioning_failed'
-                          : 'provisioning_unavailable',
-                message: 'Account provisioning failed, please retry',
-            },
-            { status: phase === 'persistence' ? 500 : phase === 'provision' ? 502 : 503 },
-        );
-    });
-    if (provisionOutcome instanceof NextResponse) return provisionOutcome;
-    const provisioned = provisionOutcome;
-
-    // PR-T1 Phase 0c — eagerly provision the portal system token used by
-    // server-managed services (image gen / future internal flows). Best-
-    // effort: failure here is logged but does not block registration; the
-    // first call to getOrCreateSystemToken from a portal-managed handler
-    // will retry. Idempotent + race-safe (CAS via WHERE … IS NULL).
-    try {
-        const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
-        await getOrCreateSystemToken(user.id, defaultGroup.newapi_group);
-    } catch (sysTokErr) {
-        console.warn(
-            `[register] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,
-            sysTokErr,
+            { error: 'provisioning_unavailable', message: 'Account provisioning is temporarily unavailable' },
+            { status: 503 },
         );
     }
 
@@ -359,8 +274,9 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
         user_id: user.id,
         token,
-        newapi_user_id: provisioned.newapi_user_id,
-        newapi_token_value: provisioned.newapi_token_value,
+        newapi_user_id: null,
+        newapi_token_value: null,
+        provisioning: { status: provisioningJob.status },
         portal_user: {
             id: user.id,
             email: user.email,

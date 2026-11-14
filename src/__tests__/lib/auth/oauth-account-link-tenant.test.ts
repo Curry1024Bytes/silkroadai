@@ -9,6 +9,7 @@ const mockUserFindUnique = vi.fn();
 const mockUserCreate = vi.fn();
 const mockUserDelete = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockProvisioningJobUpsert = vi.fn();
 const mockTransaction = vi.fn();
 const mockProvision = vi.fn();
 const mockGetOrCreateSystemToken = vi.fn();
@@ -26,6 +27,7 @@ vi.mock('@/lib/db', () => ({
             delete: (...a: unknown[]) => mockUserDelete(...a),
         },
         newApiToken: { create: (...a: unknown[]) => mockTokenCreate(...a) },
+        customerProvisioningJob: { upsert: (...a: unknown[]) => mockProvisioningJobUpsert(...a) },
         $transaction: (...a: unknown[]) => mockTransaction(...a),
     },
 }));
@@ -48,9 +50,11 @@ const IDENTITY = { provider: 'github', providerAccountId: 'gh-1', email: 'new@ex
 
 beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PORTAL_CUSTOMER_PROVISIONING_ENC_KEY = '11'.repeat(32);
     mockOAuthFindUnique.mockResolvedValue(null); // no existing link
     mockUserFindUnique.mockResolvedValue(null); // brand new email → branch 4
     mockUserCreate.mockResolvedValue({ id: 'u1' });
+    mockProvisioningJobUpsert.mockResolvedValue({ id: 'job-1', status: 'queued' });
     mockProvision.mockResolvedValue({
         newapi_user_id: 42,
         newapi_username: 'c-u1',
@@ -76,6 +80,15 @@ describe('linkOrCreateOAuthUser — tenant attribution (branch 4)', () => {
         expect(out).toEqual({ ok: true, userId: 'u1', branch: 4 });
         expect(mockUserCreate.mock.calls[0][0].data.tenant_id).toBe('tenant-7');
         expect(mockGetDefaultChannelGroup).toHaveBeenCalledWith('tenant-7');
+        expect(mockProvisioningJobUpsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                create: expect.objectContaining({
+                    user_id: 'u1',
+                    email: IDENTITY.email,
+                    newapi_group: 'GPT-特惠反代',
+                }),
+            }),
+        );
     });
 
     it('no tenantId → tenant_id null (back-compat)', async () => {

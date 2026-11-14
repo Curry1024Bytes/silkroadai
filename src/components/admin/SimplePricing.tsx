@@ -1312,6 +1312,14 @@ function VideoQuoteEditor({ model, view, en, isDark, onSaved, onError }: PanelPr
                         {en ? 'Stored cost data is not a video-token quote.' : '已保存的成本资料不是视频 token 报价。'}
                     </p>
                 )}
+                {!quote.rule?.quote && !quote.prefill && (
+                    <p className="mt-1 text-xs text-amber-600" role="note">
+                        ⚠{' '}
+                        {en
+                            ? 'No rate is auto-filled because the repository table is a manual snapshot, not a live official feed. Verify the current upstream pricing and enter all 8 rates before saving.'
+                            : '未自动填入费率：仓库中的 Seedance 价格表是人工维护的历史快照，不是官方实时同步。请先核对当前上游价格，再填写全部 8 档后保存。'}
+                    </p>
+                )}
             </div>
 
             <div className="flex flex-wrap gap-3">

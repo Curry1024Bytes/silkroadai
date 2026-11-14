@@ -1,4 +1,8 @@
 import { LocaleProvider } from '@/lib/i18n/client';
+
+vi.mock('next/navigation', () => ({
+    useRouter: () => ({ refresh: vi.fn() }),
+}));
 /**
  * W4-2 D5 + W6 D4 — <KeysList /> initial render smoke (react-dom/server).
  *
@@ -11,7 +15,7 @@ import { LocaleProvider } from '@/lib/i18n/client';
  *   - "从未调用" copy when last_used_at is null
  *   - API key creation remains available regardless of the current count
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import {
     KeysList,
@@ -64,6 +68,53 @@ const SAMPLE_ROWS: KeyRow[] = [
 ];
 
 describe('<KeysList /> SSR smoke', () => {
+    it('shows queued provisioning state and disables key operations until setup is ready', () => {
+        const html = renderToString(
+            <KeysList
+                initialRows={SAMPLE_ROWS}
+                tiers={VALID_TIERS}
+                provisioning={{ status: 'queued', nextAttemptAt: null, ready: false }}
+            />,
+        );
+        expect(html).toContain('正在排队处理');
+        expect(html).toContain('请勿重复注册');
+        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?创建新 Key/);
+
+        const buttonTags = html.match(/<button\b[^>]*>/g) ?? [];
+        const blockedActionTags = buttonTags.filter((tag) =>
+            /aria-label="(?:显示|复制|修改别名|撤销|调整额度与到期) production"/.test(tag),
+        );
+        // Reveal/copy/rename/revoke appear once per responsive layout, and
+        // the quota editor appears once per layout when metadata is present.
+        expect(blockedActionTags.length).toBe(10);
+        expect(blockedActionTags.every((tag) => tag.includes('disabled=""'))).toBe(true);
+    });
+
+    it('shows the automatic retry time without exposing internal errors', () => {
+        const html = renderToString(
+            <KeysList
+                initialRows={[]}
+                tiers={VALID_TIERS}
+                provisioning={{ status: 'retry_wait', nextAttemptAt: '2026-11-13T04:00:00.000Z', ready: false }}
+            />,
+        );
+        expect(html).toContain('系统会自动重试');
+        expect(html).toContain('预计下次重试');
+        expect(html).not.toContain('stack trace');
+    });
+
+    it('shows a support message when automated provisioning has failed', () => {
+        const html = renderToString(
+            <KeysList
+                initialRows={[]}
+                tiers={VALID_TIERS}
+                provisioning={{ status: 'failed', nextAttemptAt: null, ready: false }}
+            />,
+        );
+        expect(html).toContain('请联系客服');
+        expect(html).toContain('请勿重复注册');
+    });
+
     it('renders empty-state hint when initialRows is []', () => {
         const html = renderToString(<KeysList initialRows={[]} tiers={VALID_TIERS} />);
         // W7 P2: empty-state copy moved into the <EmptyState> primitive.

@@ -9,7 +9,9 @@ const mockUserCreate = vi.fn();
 const mockUserUpdate = vi.fn();
 const mockUserDelete = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockEnqueueCustomerProvisioningJob = vi.fn();
 const mockTransaction = vi.fn();
+let mockTransactionClient: unknown;
 
 vi.mock('@/lib/db', () => ({
     prisma: {
@@ -67,6 +69,10 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteUser: (...args: unknown[]) => mockDeleteUser(...args),
 }));
 
+vi.mock('@/lib/auth/customer-provisioning-queue', () => ({
+    enqueueCustomerProvisioningJob: (...args: unknown[]) => mockEnqueueCustomerProvisioningJob(...args),
+}));
+
 const mockGetDefaultChannelGroup = vi.fn();
 vi.mock('@/lib/channel-group', () => ({
     getDefaultChannelGroup: (...args: unknown[]) => mockGetDefaultChannelGroup(...args),
@@ -110,9 +116,10 @@ beforeEach(() => {
     delete process.env.APP_URL;
     delete process.env.NEXT_PUBLIC_APP_URL;
 
-    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
-        typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
-    );
+    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) => {
+        mockTransactionClient = { ...(await import('@/lib/db')).prisma };
+        return typeof ops === 'function' ? ops(mockTransactionClient) : Promise.all(ops);
+    });
     // last_login_at update + signSession DB read default
     mockUserUpdate.mockResolvedValue({});
     mockGetDefaultChannelGroup.mockResolvedValue({
@@ -121,6 +128,7 @@ beforeEach(() => {
         is_default: true,
         enabled: true,
     });
+    mockEnqueueCustomerProvisioningJob.mockResolvedValue({ id: 'job-1', status: 'queued' });
 });
 
 afterEach(() => {
@@ -327,7 +335,7 @@ describe('GET /api/auth/oauth/google/callback', () => {
         );
     });
 
-    it('Branch 4 (fresh signup): no existing user → create user (verified, no password) + provision + link', async () => {
+    it('Branch 4 (fresh signup): creates user, OAuth link, and queued provisioning job atomically', async () => {
         const NEW_USER_ID = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
         mockExchange.mockResolvedValue({
             id_token: 'idtoken',
@@ -344,14 +352,6 @@ describe('GET /api/auth/oauth/google/callback', () => {
             return Promise.resolve({ session_token_version: 1 });
         });
         mockUserCreate.mockResolvedValue({ id: NEW_USER_ID });
-        mockProvision.mockResolvedValue({
-            newapi_user_id: 42,
-            newapi_username: `c-${NEW_USER_ID.slice(0, 8)}`,
-            newapi_access_token: 'access-token-xxx',
-            newapi_token_id: 7,
-            newapi_token_value: 'sk-real-key',
-        });
-
         const res = await GET(
             makeReq({
                 query: { code: 'authcode', state: 'good' },
@@ -376,20 +376,23 @@ describe('GET /api/auth/oauth/google/callback', () => {
                 }),
             }),
         );
-        // new-api provision invoked with correct args
-        expect(mockProvision).toHaveBeenCalledWith(
+        expect(mockTransaction).toHaveBeenCalledTimes(1);
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalledWith(
+            mockTransactionClient,
             expect.objectContaining({
-                portal_user_id: NEW_USER_ID,
+                userId: NEW_USER_ID,
                 email: 'newbie@example.com',
-                initial_quota: 0,
+                tierKey: 'gpt特惠分组',
+                newapiGroup: 'GPT-特惠反代',
+                initialQuota: 0,
             }),
         );
+        expect(mockProvision).not.toHaveBeenCalled();
         // session cookie set
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(true);
     });
 
-    it('Branch 4 rollback: provision failure deletes the portal user + cleans new-api orphan', async () => {
-        const NEW_USER_ID = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa';
+    it('Branch 4 rollback: provisioning job write failure fails atomically without calling new-api', async () => {
         mockExchange.mockResolvedValue({
             id_token: 'idtoken',
             access_token: 'a',
@@ -400,10 +403,8 @@ describe('GET /api/auth/oauth/google/callback', () => {
         mockVerify.mockResolvedValue(happyClaims({ email: 'unlucky@example.com' }));
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
-        mockUserCreate.mockResolvedValue({ id: NEW_USER_ID });
-        mockProvision.mockRejectedValue(new Error('new-api 500'));
-        mockSearchUser.mockResolvedValue({ items: [] }); // no orphan to clean
-        mockUserDelete.mockResolvedValue({});
+        mockUserCreate.mockResolvedValue({ id: 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa' });
+        mockEnqueueCustomerProvisioningJob.mockRejectedValue(new Error('database unavailable'));
 
         const res = await GET(
             makeReq({
@@ -414,8 +415,10 @@ describe('GET /api/auth/oauth/google/callback', () => {
 
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toContain('oauth_error=provisioning_failed');
-        // portal user rolled back
-        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
+        expect(mockEnqueueCustomerProvisioningJob).toHaveBeenCalledTimes(1);
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockSearchUser).not.toHaveBeenCalled();
+        expect(mockUserDelete).not.toHaveBeenCalled();
     });
 
     it('Branch 5 (link conflict): when oauth_account.create throws (e.g. sub already linked elsewhere), redirects with link_conflict', async () => {

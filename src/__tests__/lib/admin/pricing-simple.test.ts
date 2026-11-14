@@ -460,7 +460,7 @@ describe('video-token quotes', () => {
         ];
     });
 
-    it('shows the stored quote, the official prefill and the live coefficients', async () => {
+    it('shows the stored quote, leaves unverified static rates blank and shows the live coefficients', async () => {
         const view = await loadSimplePricing(admin);
         const model = view.upstream_models.find((row) => row.name === SEEDANCE)!;
         expect(model.base).toMatchObject({ mode: 'video_token' });
@@ -473,8 +473,9 @@ describe('video-token quotes', () => {
             rule: null,
             drift: false,
         });
-        // Official prices come from the shared Seedance rate table, not from new-api.
-        expect(videoQuote.prefill?.map((cell) => cell.price)).toEqual(OFFICIAL);
+        // The shared Seedance table is only a manual snapshot, not a live official source.
+        // Do not turn it into a sale quote without the operator verifying every rate.
+        expect(videoQuote.prefill).toBeNull();
     });
 
     it('previews the coefficients, margins and what new-api bills today', async () => {

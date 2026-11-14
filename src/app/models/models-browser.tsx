@@ -17,7 +17,7 @@ import type { TierPricing } from '@/lib/models/machine-catalog';
 import { formatTieredPrice } from '@/lib/models/tiered-pricing-details';
 import { catalogPriceSummary, catalogSummaryTier } from '@/lib/models/catalog-price-summary';
 import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
-import { ModelPriceDialog } from './model-prices';
+import { ModelPriceDialog, PriceProvenanceNote } from './model-prices';
 
 export { ModelTierPrices } from './model-prices';
 
@@ -304,6 +304,7 @@ function ModelCard({
                         {summary.note && (
                             <p className="m-0 mt-1 text-xs leading-relaxed text-muted-ink">{summary.note}</p>
                         )}
+                        <PriceProvenanceNote price={displayTier ? prices[displayTier.key] : null} />
                     </>
                 ) : (
                     <p className="m-0 py-2 text-sm text-muted-ink">未定价</p>

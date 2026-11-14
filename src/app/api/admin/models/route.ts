@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
+import { Prisma } from '@prisma/client';
 import {
     ChannelGroupTopologyError,
     loadChannelGroupTopology,
@@ -43,11 +44,43 @@ export async function GET(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
-    const models = await prisma.catalogModel.findMany({
-        where: { ...tenantScope(admin) },
-        orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+    const searchParams = request.nextUrl.searchParams;
+    const pageValue = Number(searchParams.get('page') || '1');
+    const pageSizeValue = Number(searchParams.get('page_size') || '20');
+    const page = Number.isFinite(pageValue) ? Math.max(1, Math.trunc(pageValue)) : 1;
+    const pageSize = Number.isFinite(pageSizeValue) ? Math.min(100, Math.max(1, Math.trunc(pageSizeValue))) : 20;
+    const query = searchParams.get('q')?.trim();
+    const vendor = searchParams.get('vendor')?.trim();
+    const modality = searchParams.get('modality')?.trim();
+    const enabled = searchParams.get('enabled');
+
+    const where: Prisma.CatalogModelWhereInput = { ...tenantScope(admin) };
+    if (query) {
+        where.OR = [
+            { display_name: { contains: query, mode: 'insensitive' } },
+            { slug: { contains: query, mode: 'insensitive' } },
+        ];
+    }
+    if (vendor) where.vendor = { contains: vendor, mode: 'insensitive' };
+    if (modality && ['chat', 'image', 'embedding'].includes(modality)) where.modality = modality;
+    if (enabled === 'true' || enabled === 'false') where.enabled = enabled === 'true';
+
+    const [models, total] = await Promise.all([
+        prisma.catalogModel.findMany({
+            where,
+            orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }, { id: 'asc' }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+        }),
+        prisma.catalogModel.count({ where }),
+    ]);
+    return NextResponse.json({
+        models,
+        total,
+        page,
+        page_size: pageSize,
+        total_pages: Math.ceil(total / pageSize),
     });
-    return NextResponse.json({ models });
 }
 
 export async function POST(request: NextRequest) {

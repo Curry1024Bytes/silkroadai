@@ -24,6 +24,8 @@ interface Options {
     legacyFailure?: Error;
     verifyStatus?: number;
     createFailure?: Error;
+    createStatus?: number;
+    createData?: unknown;
 }
 function setup(options: Options = {}) {
     vi.stubGlobal(
@@ -73,7 +75,8 @@ function setup(options: Options = {}) {
             }
             if (method === 'POST' && url.pathname === '/api/user/access_tokens') {
                 if (options.createFailure) throw options.createFailure;
-                return json({ token: 'nap_new-persistent-credential' });
+                if (options.createStatus) return json(null, options.createStatus);
+                return json(options.createData ?? { token: 'nap_new-persistent-credential' });
             }
             throw new Error(`Unexpected request ${method} ${url.pathname}`);
         }),
@@ -179,9 +182,36 @@ describe('unknown-version read-only PAT capability detection', () => {
     );
     it('does not replay or rotate after an ambiguous PAT creation timeout', async () => {
         setup({ modern: true, createFailure: new DOMException('timeout after acceptance', 'TimeoutError') });
-        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({ status: 504 });
+        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({
+            status: 504,
+            ambiguousSideEffect: true,
+        });
         expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
         expect(calls('GET', '/api/user/token')).toHaveLength(0);
+    });
+    it.each([408, 500, 503])('marks PAT creation HTTP %s as an ambiguous side effect', async (createStatus) => {
+        setup({ modern: true, createStatus });
+        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({
+            status: createStatus,
+            ambiguousSideEffect: true,
+        });
+        expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
+    });
+    it('marks a lost PAT creation connection as an ambiguous side effect', async () => {
+        setup({ modern: true, createFailure: new TypeError('connection reset') });
+        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({
+            status: 502,
+            ambiguousSideEffect: true,
+        });
+        expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
+    });
+    it('marks a successful but unusable PAT creation response as ambiguous', async () => {
+        setup({ modern: true, createData: {} });
+        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({
+            status: 200,
+            ambiguousSideEffect: true,
+        });
+        expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
     });
     it('does not repeat legacy rotation after a timeout once the catalog is definitively absent', async () => {
         setup({ legacyFailure: new DOMException('rotation outcome unknown', 'TimeoutError') });

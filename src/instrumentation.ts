@@ -112,6 +112,11 @@ export async function register() {
     // 客户 /v1 请求日志:按记录到期时间清理 PG 元数据，R2 原文由桶生命周期清理。
     const { startRequestLogCleanupScheduler } = await import('@/lib/scheduler/request-log-cleanup');
     startRequestLogCleanupScheduler();
+    // Customer new-api account provisioning is durable and idempotent. Keep
+    // the worker on the same single main-site scheduler instance so API
+    // replicas and the enterprise flavor never process the same job twice.
+    const { startCustomerProvisioningScheduler } = await import('@/lib/scheduler/customer-provisioning');
+    startCustomerProvisioningScheduler();
     // 企业任务对账 sweep(2026-10-19):客户提交后不轮询也不开页面的滞留任务,由主站实例每 10 分钟
     // 代为对账(终态 + 幂等补扣 + 回调投递)。主站 .env 要配齐各线上游 key。
     const { startEnterpriseReconcileSweepScheduler } = await import('@/lib/scheduler/enterprise-reconcile-sweep');
