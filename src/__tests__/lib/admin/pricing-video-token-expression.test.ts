@@ -34,6 +34,25 @@ describe('videoTokenCombosForModel', () => {
         expect(videoTokenCombosForModel('doubao-seedance-2-0-260128')).toHaveLength(8);
         expect(videoTokenCombosForModel()).toHaveLength(8);
     });
+
+    it('uses the domestic Fast and 2.5 matrices while leaving global names unchanged', () => {
+        expect(videoTokenCombosForModel('doubao-seedance-2-0-fast-260128').map(videoTokenKey)).toEqual([
+            '480p·none',
+            '480p·video',
+            '720p·none',
+            '720p·video',
+        ]);
+        expect(videoTokenCombosForModel('doubao-seedance-2-5-260628').map(videoTokenKey)).toEqual([
+            '480p·none',
+            '480p·video',
+            '720p·none',
+            '720p·video',
+            '1080p·none',
+            '1080p·video',
+        ]);
+        expect(videoTokenCombosForModel('seedance2.5-global-720p')).toHaveLength(8);
+        expect(videoTokenCombosForModel('seedance2.0-fast-promax-720p')).toHaveLength(8);
+    });
 });
 
 describe('parseVideoTokenExpression', () => {
@@ -177,6 +196,19 @@ describe('rewriteVideoTokenExpression', () => {
 
         expect(rewritten.startsWith('v1:')).toBe(true);
         expect(parseVideoTokenExpression(rewritten, 'doubao-seedance-2-0-mini-260615').cells).toEqual(miniCells);
+    });
+
+    it.each([
+        ['doubao-seedance-2-0-fast-260128', 4],
+        ['doubao-seedance-2-0-mini-260615', 4],
+        ['doubao-seedance-2-5-260628', 6],
+    ])('reduces legacy eight-tier formulas for %s', (model, count) => {
+        const expected = videoTokenCombosForModel(model).map((combo, index) => ({ ...combo, price: index + 1.25 }));
+        const rewritten = rewriteVideoTokenExpression(LIVE, expected, model);
+        expect(parseVideoTokenExpression(rewritten, model).cells).toEqual(expected);
+        expect(rewritten.match(/tier\(/g)).toHaveLength(count);
+        expect(rewritten).not.toContain('4k');
+        if (count === 4) expect(rewritten).not.toContain('1080p');
     });
 });
 

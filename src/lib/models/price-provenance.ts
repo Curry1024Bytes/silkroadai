@@ -5,7 +5,6 @@ import { computeVideoQuote, videoQuoteFromCostConfig } from '@/lib/admin/pricing
 import { BASE_FX } from '@/lib/admin/pricing-simple-core';
 import {
     VIDEO_TOKEN_COMBOS,
-    isSeedanceMiniModel,
     videoTokenCombosForModel,
     videoTokenKey,
 } from '@/lib/admin/pricing-video-token-expression';
@@ -88,14 +87,14 @@ function verifyLiveQuote(
         return null;
     const combos = videoTokenCombosForModel(model);
     if (details.scheduled_discount) return null;
-    // Existing Mini snapshots may still contain the historical 8-cell matrix.
-    // The public catalog removes unsupported 1080p/4K cells after provenance
-    // is resolved, so verify the supported subset before that display filter.
+    // Existing reduced-matrix models may still have a historical 8-cell
+    // catalog snapshot. Verify the supported subset before filtering display.
+    const supported = new Set(combos.map(videoTokenKey));
     const effectiveDetails =
-        isSeedanceMiniModel(model) && details.cells.length === VIDEO_TOKEN_COMBOS.length
+        combos.length < VIDEO_TOKEN_COMBOS.length && details.cells.length === VIDEO_TOKEN_COMBOS.length
             ? {
                   ...details,
-                  cells: details.cells.filter((cell) => cell.resolution === '480p' || cell.resolution === '720p'),
+                  cells: details.cells.filter((cell) => supported.has(videoTokenKey(cell))),
               }
             : details;
     if (effectiveDetails.cells.length !== combos.length) return null;

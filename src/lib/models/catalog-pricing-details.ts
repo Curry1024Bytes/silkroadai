@@ -12,7 +12,7 @@ import {
     VIDEO_TOKEN_RESOLUTIONS,
     videoTokenInputLabel,
     videoTokenKey,
-    isSeedanceMiniModel,
+    videoTokenCombosForModel,
 } from '@/lib/admin/pricing-video-token-expression';
 import { TIME_TOKEN_TIMEZONE } from '@/lib/admin/pricing-time-token-expression';
 
@@ -180,11 +180,8 @@ export function sanitizeCatalogDisplayDetails(
     details: CatalogBillingDetails | null,
 ): CatalogBillingDetails | null {
     if (details?.mode !== 'video_token') return details;
-    const cells = isSeedanceMiniModel(modelSlug)
-        ? details.cells.filter((cell) => cell.resolution === '480p' || cell.resolution === '720p')
-        : modelSlug === 'doubao-seedance-2-5-260628'
-          ? details.cells.filter((cell) => cell.resolution !== '4k')
-          : details.cells;
+    const supported = new Set(videoTokenCombosForModel(modelSlug).map(videoTokenKey));
+    const cells = details.cells.filter((cell) => supported.has(videoTokenKey(cell)));
     if (cells.length === details.cells.length) return details;
     return { ...details, cells };
 }

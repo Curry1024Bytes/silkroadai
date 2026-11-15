@@ -13,7 +13,6 @@ import {
     VIDEO_TOKEN_MAX_PRICE,
     videoTokenInputLabel,
     videoTokenCombosForModel,
-    isSeedanceMiniModel,
     videoTokenKey,
     type VideoTokenInput,
     type VideoTokenResolution,
@@ -188,10 +187,10 @@ export function videoQuoteFromCostConfig(config: PricingCostConfig, model?: stri
         if (matches.length !== 1) return null;
         official.push({ ...combo, price: matches[0].price });
     }
-    const legacyMini = isSeedanceMiniModel(model) && config.variants.length === VIDEO_TOKEN_COMBOS.length;
-    if (config.variants.length !== official.length && !legacyMini) return null;
+    const legacyEightCellRule = combos.length < VIDEO_TOKEN_COMBOS.length && config.variants.length === VIDEO_TOKEN_COMBOS.length;
+    if (config.variants.length !== official.length && !legacyEightCellRule) return null;
     if (
-        legacyMini &&
+        legacyEightCellRule &&
         VIDEO_TOKEN_COMBOS.some((combo) => {
             const wanted = combo.video_input === 'video' ? 'with' : 'without';
             return (

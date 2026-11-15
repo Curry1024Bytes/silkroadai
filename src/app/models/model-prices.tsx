@@ -18,12 +18,12 @@ export function PriceProvenanceNote({ price }: { price: TierPricing | null }) {
     const locale = useLocale();
     const provenance = price?.price_provenance;
     if (!provenance?.verifiable || provenance.official == null || provenance.discount == null) return null;
-    const fraction = `${Number((provenance.discount * 100).toFixed(1))}%`;
+    const discount = formatTieredPrice(provenance.discount * 10);
     return (
         <p className="m-0 mt-2 text-xs leading-relaxed text-emerald-700" role="note">
             {locale === 'zh'
-                ? `后台配置基准价（需人工核对，非官方实时同步）¥${formatTieredPrice(provenance.official)} / 百万 token · 标准售价为该基准价的 ${fraction}（${formatTieredPrice(provenance.discount * 10)} 折；客户专属倍率另行影响所示价格）`
-                : `Portal-configured reference price (not live official sync): ¥${formatTieredPrice(provenance.official)} / 1M tokens · standard sale price is ${fraction} of this reference (customer-specific scaling is applied separately)`}
+                ? `当前标准售价为 ${discount} 折`
+                : `Current standard sale price: ${discount}x`}
         </p>
     );
 }
