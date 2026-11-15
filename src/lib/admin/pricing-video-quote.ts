@@ -187,7 +187,8 @@ export function videoQuoteFromCostConfig(config: PricingCostConfig, model?: stri
         if (matches.length !== 1) return null;
         official.push({ ...combo, price: matches[0].price });
     }
-    const legacyEightCellRule = combos.length < VIDEO_TOKEN_COMBOS.length && config.variants.length === VIDEO_TOKEN_COMBOS.length;
+    const legacyEightCellRule =
+        combos.length < VIDEO_TOKEN_COMBOS.length && config.variants.length === VIDEO_TOKEN_COMBOS.length;
     if (config.variants.length !== official.length && !legacyEightCellRule) return null;
     if (
         legacyEightCellRule &&

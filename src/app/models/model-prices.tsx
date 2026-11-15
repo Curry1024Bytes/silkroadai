@@ -21,9 +21,7 @@ export function PriceProvenanceNote({ price }: { price: TierPricing | null }) {
     const discount = formatTieredPrice(provenance.discount * 10);
     return (
         <p className="m-0 mt-2 text-xs leading-relaxed text-emerald-700" role="note">
-            {locale === 'zh'
-                ? `当前标准售价为 ${discount} 折`
-                : `Current standard sale price: ${discount}x`}
+            {locale === 'zh' ? `当前标准售价为 ${discount} 折` : `Current standard sale price: ${discount}x`}
         </p>
     );
 }

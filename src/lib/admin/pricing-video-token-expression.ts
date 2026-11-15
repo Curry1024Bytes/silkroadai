@@ -38,9 +38,7 @@ export const VIDEO_TOKEN_FAST_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_COMBOS.fil
 export const VIDEO_TOKEN_MINI_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_FAST_COMBOS.map((combo) => ({ ...combo }));
 
 /** Seedance 2.5's official token matrix supports 480p, 720p and 1080p. */
-export const VIDEO_TOKEN_25_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_COMBOS.filter(
-    (combo) => combo.resolution !== '4k',
-);
+export const VIDEO_TOKEN_25_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_COMBOS.filter((combo) => combo.resolution !== '4k');
 
 /**
  * Return the supported matrix cells for a model. Unknown models keep the
@@ -63,13 +61,17 @@ export function isSeedanceMiniModel(model: string | undefined): boolean {
 
 /** Domestic Seedance 2.0 Fast customer models use the 480p/720p token matrix. */
 export function isSeedanceFastModel(model: string | undefined): boolean {
-    const name = String(model ?? '').trim().toLowerCase();
+    const name = String(model ?? '')
+        .trim()
+        .toLowerCase();
     return name === 'doubao-seedance-2-0-fast-260128';
 }
 
 /** Domestic Seedance 2.5 customer models use the 480p/720p/1080p matrix. */
 export function isSeedance25Model(model: string | undefined): boolean {
-    const name = String(model ?? '').trim().toLowerCase();
+    const name = String(model ?? '')
+        .trim()
+        .toLowerCase();
     return name === 'doubao-seedance-2-5-260628';
 }
 
@@ -250,7 +252,8 @@ function parseWithSpans(
     // cells so a subsequent save can canonicalize the formula.
     const expected = videoTokenCombosForModel(model);
     const reducedModel = expected.length < VIDEO_TOKEN_COMBOS.length;
-    const formulaCombos = reducedModel && branches.length + 1 === VIDEO_TOKEN_COMBOS.length ? VIDEO_TOKEN_COMBOS : expected;
+    const formulaCombos =
+        reducedModel && branches.length + 1 === VIDEO_TOKEN_COMBOS.length ? VIDEO_TOKEN_COMBOS : expected;
     const seen = new Set(branches.map((row) => videoTokenKey(row)));
     const missing = formulaCombos.filter((combo) => !seen.has(videoTokenKey(combo)));
     if (
@@ -322,7 +325,10 @@ export function rewriteVideoTokenExpression(expression: string, cells: VideoToke
     if (cells.length !== expected.length || next.size !== expected.length)
         fail(`须给出全部 ${expected.length} 档的单价。`);
     for (const combo of expected) if (!next.has(videoTokenKey(combo))) fail(`须给出全部 ${expected.length} 档的单价。`);
-    if (videoTokenCombosForModel(model).length < VIDEO_TOKEN_COMBOS.length && spans.length === VIDEO_TOKEN_COMBOS.length) {
+    if (
+        videoTokenCombosForModel(model).length < VIDEO_TOKEN_COMBOS.length &&
+        spans.length === VIDEO_TOKEN_COMBOS.length
+    ) {
         const canonicalCells = expected.map((combo) => ({ ...combo, price: next.get(videoTokenKey(combo))! }));
         const result = buildReducedVideoTokenExpression(canonicalCells, model, expression.startsWith('v1:'));
         const reread = parseVideoTokenExpression(result, model);
