@@ -159,6 +159,17 @@ describe('GET /api/admin/models', () => {
         await expect(res.json()).resolves.toMatchObject({ total: 23, page: 2, page_size: 10, total_pages: 3 });
     });
 
+    it('hides archived models by default and supports archived-only or all-model views', async () => {
+        await GET(req());
+        expect(mockFindMany.mock.calls[0][0].where.archived).toBe(false);
+
+        await GET(req('GET', undefined, 'https://x/api/admin/models?archived=true'));
+        expect(mockFindMany.mock.calls[1][0].where.archived).toBe(true);
+
+        await GET(req('GET', undefined, 'https://x/api/admin/models?archived=all'));
+        expect(mockFindMany.mock.calls[2][0].where).not.toHaveProperty('archived');
+    });
+
     it('returns tier and channel labels for upstream mappings', async () => {
         mockGroupFindMany.mockResolvedValue([
             {
@@ -221,6 +232,7 @@ describe('POST /api/admin/models', () => {
         expect(res.status).toBe(201);
         expect(mockCreate.mock.calls[0][0].data.tenant_id).toBe(PLATFORM_TENANT_ID);
         expect(mockCreate.mock.calls[0][0].data.slug).toBe('gpt-5.4');
+        expect(mockCreate.mock.calls[0][0].data.archived).toBe(false);
     });
 
     it('stamps the partner admin tenant_id', async () => {
@@ -269,13 +281,35 @@ describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
             tenant_id: PLATFORM_TENANT_ID,
             slug: 'gpt-5.4',
             enabled: true,
-            upstream_map: VALID_CREATE.upstream_map,
+            upstream_map: { pool: { channel_id: 99, upstream_model: 'retired-upstream-model' } },
         });
         const res = await PUT(req('PUT', { display_name: 'New Name' }, 'https://x/api/admin/models/m1'), {
             params: params(),
         });
         expect(res.status).toBe(200);
         expect(mockUpdate.mock.calls[0][0].data.display_name).toBe('New Name');
+    });
+
+    it('PUT archives and restores a model without changing its enabled state', async () => {
+        mockFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            slug: 'gpt-5.4',
+            enabled: true,
+            upstream_map: { pool: { channel_id: 99, upstream_model: 'retired-upstream-model' } },
+        });
+
+        const archive = await PUT(req('PUT', { archived: true }, 'https://x/api/admin/models/m1'), {
+            params: params(),
+        });
+        expect(archive.status).toBe(200);
+        expect(mockUpdate.mock.calls[0][0].data).toEqual({ archived: true });
+
+        const restore = await PUT(req('PUT', { archived: false }, 'https://x/api/admin/models/m1'), {
+            params: params(),
+        });
+        expect(restore.status).toBe(200);
+        expect(mockUpdate.mock.calls[1][0].data).toEqual({ archived: false });
     });
 
     it('PUT rejects moving an enabled model onto a channel owned by another tier', async () => {

@@ -28,6 +28,7 @@ const updateModelSchema = z.object({
     modality: z.enum(['chat', 'image', 'embedding']).optional(),
     context_window: z.number().int().positive().nullable().optional(),
     enabled: z.boolean().optional(),
+    archived: z.boolean().optional(),
     sort_order: z.number().int().min(0).optional(),
     upstream_map: upstreamMapSchema.optional(),
     // slug 是客户调用名 + 计费锚点,改了会断历史价归属;P2 不允许改 slug。
@@ -71,27 +72,32 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
             const existing = await tx.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
             if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
 
-            const nextMap = (parsed.data.upstream_map ?? existing.upstream_map) as UpstreamMapLike;
-            const nextEnabled = parsed.data.enabled ?? existing.enabled;
-            try {
-                const topology = await loadChannelGroupTopology(existing.tenant_id, tx);
-                const issues = topology.validateUpstreamMap(nextMap, { allowEmpty: !nextEnabled });
-                if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
-            } catch (error) {
-                if (error instanceof ChannelGroupTopologyError) {
-                    return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+            // Only routing changes need topology validation. Archiving or editing
+            // display metadata must remain possible when an old channel mapping
+            // has become stale.
+            if (parsed.data.enabled !== undefined || parsed.data.upstream_map !== undefined) {
+                const nextMap = (parsed.data.upstream_map ?? existing.upstream_map) as UpstreamMapLike;
+                const nextEnabled = parsed.data.enabled ?? existing.enabled;
+                try {
+                    const topology = await loadChannelGroupTopology(existing.tenant_id, tx);
+                    const issues = topology.validateUpstreamMap(nextMap, { allowEmpty: !nextEnabled });
+                    if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+                } catch (error) {
+                    if (error instanceof ChannelGroupTopologyError) {
+                        return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+                    }
+                    if (
+                        error &&
+                        typeof error === 'object' &&
+                        'code' in error &&
+                        ['P2028', 'P2034'].includes(String(error.code))
+                    )
+                        return NextResponse.json(
+                            { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                            { status: 409 },
+                        );
+                    throw error;
                 }
-                if (
-                    error &&
-                    typeof error === 'object' &&
-                    'code' in error &&
-                    ['P2028', 'P2034'].includes(String(error.code))
-                )
-                    return NextResponse.json(
-                        { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
-                        { status: 409 },
-                    );
-                throw error;
             }
 
             const model = await tx.catalogModel.update({

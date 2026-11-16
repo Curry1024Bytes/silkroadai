@@ -940,6 +940,7 @@ model CatalogModel {
   modality       String   @default("chat") // chat / image / embedding
   context_window Int?
   enabled        Boolean  @default(true)
+  archived       Boolean  @default(false)
   sort_order     Int      @default(0)
   // 该模型在各档次下对应 new-api 的渠道 + 上游模型名(sync 用)。对象 key 必须
   // 是当前租户启用的 ChannelGroup.key，channel_id 必须由该档唯一持有；禁止
@@ -953,6 +954,7 @@ model CatalogModel {
 
   @@unique([tenant_id, slug])
   @@index([tenant_id, sort_order])
+  @@index([tenant_id, archived, sort_order])
   @@map("catalog_models")
 }
 

@@ -37,6 +37,7 @@ const createModelSchema = z.object({
     modality: z.enum(['chat', 'image', 'embedding']).default('chat'),
     context_window: z.number().int().positive().nullable().optional(),
     enabled: z.boolean().optional().default(true),
+    archived: z.boolean().optional().default(false),
     sort_order: z.number().int().min(0).optional().default(0),
     upstream_map: upstreamMapSchema.default({}),
 });
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
     const vendor = searchParams.get('vendor')?.trim();
     const modality = searchParams.get('modality')?.trim();
     const enabled = searchParams.get('enabled');
+    const archived = searchParams.get('archived')?.trim().toLowerCase();
 
     const where: Prisma.CatalogModelWhereInput = { ...tenantScope(admin) };
     if (query) {
@@ -65,6 +67,10 @@ export async function GET(request: NextRequest) {
     if (vendor) where.vendor = { contains: vendor, mode: 'insensitive' };
     if (modality && ['chat', 'image', 'embedding'].includes(modality)) where.modality = modality;
     if (enabled === 'true' || enabled === 'false') where.enabled = enabled === 'true';
+    // Default to active models. The management page uses `all` to include
+    // archived models and `true` can be used to inspect only archived ones.
+    if (archived === 'true') where.archived = true;
+    else if (archived !== 'all') where.archived = false;
 
     const [models, total, groups, channels] = await Promise.all([
         prisma.catalogModel.findMany({
@@ -173,6 +179,7 @@ export async function POST(request: NextRequest) {
                     modality: data.modality,
                     context_window: data.context_window ?? null,
                     enabled: data.enabled,
+                    archived: data.archived,
                     sort_order: data.sort_order,
                     upstream_map: data.upstream_map,
                 },

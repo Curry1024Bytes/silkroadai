@@ -26,6 +26,7 @@ interface CatalogModel {
     modality: Modality;
     context_window: number | null;
     enabled: boolean;
+    archived: boolean;
     sort_order: number;
     upstream_map: Record<string, UpstreamEntry>;
     created_at: string;
@@ -106,6 +107,8 @@ function getTexts(locale: Locale) {
               allStatuses: 'All statuses',
               enabledStatus: 'Enabled',
               disabledStatus: 'Disabled',
+              showArchived: 'Show archived models',
+              archiveScope: 'Only hides models from this management list.',
               search: 'Search',
               clear: 'Clear',
               colName: 'Name',
@@ -114,7 +117,11 @@ function getTexts(locale: Locale) {
               colUpstream: 'Upstream Mapping',
               colSortOrder: 'Sort',
               colEnabled: 'Enabled',
+              colArchived: 'Archived',
               colActions: 'Actions',
+              archiveModel: 'Archive model',
+              restoreModel: 'Restore model',
+              archiveFailed: 'Failed to update archive status',
               edit: 'Edit',
               delete: 'Delete',
               deleteConfirm: (slug: string) => `Are you sure you want to delete the model "${slug}"?`,
@@ -169,6 +176,8 @@ function getTexts(locale: Locale) {
               allStatuses: '全部状态',
               enabledStatus: '启用',
               disabledStatus: '停用',
+              showArchived: '显示已归档模型',
+              archiveScope: '仅从此管理列表隐藏，不影响客户调用。',
               search: '查询',
               clear: '清除',
               colName: '名称',
@@ -177,7 +186,11 @@ function getTexts(locale: Locale) {
               colUpstream: '上游映射',
               colSortOrder: '排序',
               colEnabled: '启用',
+              colArchived: '归档',
               colActions: '操作',
+              archiveModel: '归档模型',
+              restoreModel: '取消归档',
+              archiveFailed: '更新归档状态失败',
               edit: '编辑',
               delete: '删除',
               deleteConfirm: (slug: string) => `确定要删除模型「${slug}」吗？`,
@@ -268,6 +281,7 @@ function ModelsContent() {
     const [vendorInput, setVendorInput] = useState('');
     const [modalityInput, setModalityInput] = useState('');
     const [enabledInput, setEnabledInput] = useState('');
+    const [showArchived, setShowArchived] = useState(false);
     const [query, setQuery] = useState('');
     const [vendor, setVendor] = useState('');
     const [modality, setModality] = useState('');
@@ -299,6 +313,7 @@ function ModelsContent() {
             if (vendor) params.set('vendor', vendor);
             if (modality) params.set('modality', modality);
             if (enabled) params.set('enabled', enabled);
+            if (showArchived) params.set('archived', 'all');
 
             const res = await fetch(`/api/admin/models?${params.toString()}`);
             if (!res.ok) {
@@ -322,7 +337,7 @@ function ModelsContent() {
         } finally {
             setLoading(false);
         }
-    }, [enabled, locale, modality, page, pageSize, query, vendor]);
+    }, [enabled, locale, modality, page, pageSize, query, showArchived, vendor]);
 
     useEffect(() => {
         fetchModels();
@@ -342,6 +357,7 @@ function ModelsContent() {
         setVendorInput('');
         setModalityInput('');
         setEnabledInput('');
+        setShowArchived(false);
         setPage(1);
         setQuery('');
         setVendor('');
@@ -349,7 +365,7 @@ function ModelsContent() {
         setEnabled('');
     };
 
-    const hasFilters = Boolean(query || vendor || modality || enabled);
+    const hasFilters = Boolean(query || vendor || modality || enabled || showArchived);
 
     // ── Modal handlers ──
 
@@ -489,6 +505,30 @@ function ModelsContent() {
             fetchModels();
         } catch {
             setError(t.saveFailed);
+        }
+    };
+
+    const handleToggleArchived = async (model: CatalogModel) => {
+        setError('');
+        try {
+            const res = await fetch(`/api/admin/models/${model.id}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ archived: !model.archived }),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setError(t.sessionExpired);
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                setError(data.message || data.error || t.archiveFailed);
+                return;
+            }
+            fetchModels();
+        } catch {
+            setError(t.archiveFailed);
         }
     };
 
@@ -667,6 +707,23 @@ function ModelsContent() {
                         <option value="true">{t.enabledStatus}</option>
                         <option value="false">{t.disabledStatus}</option>
                     </select>
+                    <label
+                        className={`inline-flex items-center gap-1.5 px-1 text-xs ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
+                    >
+                        <input
+                            type="checkbox"
+                            checked={showArchived}
+                            onChange={(event) => {
+                                setPage(1);
+                                setShowArchived(event.target.checked);
+                            }}
+                            className="accent-emerald-500"
+                        />
+                        {t.showArchived}
+                    </label>
+                    <span className={`text-[11px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                        {t.archiveScope}
+                    </span>
                     <button
                         type="submit"
                         className="rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
@@ -736,6 +793,7 @@ function ModelsContent() {
                                 <th className="px-4 py-3 text-left font-medium">{t.colUpstream}</th>
                                 <th className="px-4 py-3 text-center font-medium">{t.colSortOrder}</th>
                                 <th className="px-4 py-3 text-center font-medium">{t.colEnabled}</th>
+                                <th className="px-4 py-3 text-center font-medium">{t.colArchived}</th>
                                 <th className="px-4 py-3 text-right font-medium">{t.colActions}</th>
                             </tr>
                         </thead>
@@ -812,6 +870,15 @@ function ModelsContent() {
                                                     ].join(' ')}
                                                 />
                                             </button>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <input
+                                                type="checkbox"
+                                                checked={model.archived}
+                                                onChange={() => handleToggleArchived(model)}
+                                                aria-label={`${model.archived ? t.restoreModel : t.archiveModel}: ${model.display_name}`}
+                                                className="accent-amber-500"
+                                            />
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             <div className="inline-flex gap-1">
