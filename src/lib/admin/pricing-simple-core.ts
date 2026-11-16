@@ -254,13 +254,25 @@ function requestRuleReadonly(): SimplePricingError {
 
 export function hasStructuredMediaPrice(options: Record<string, unknown>, name: string): boolean {
     const expr = optionDict(options, EXPR_KEY, true)[name];
+    const mode = optionDict(options, MODE_KEY, true)[name];
+    const hasTaskBilling = Object.hasOwn(optionDict(options, 'billing_setting.task_billing_pricing', true), name);
+    // Seedance stores task metadata alongside its token formula. Treat that
+    // combination as editable video-token pricing only when the strict matrix
+    // parser accepts it; malformed or other task billing stays read-only.
+    let taskBillingIsVideoToken = false;
+    if (hasTaskBilling && mode === 'tiered_expr' && typeof expr === 'string' && isTaskUsageExpression(expr)) {
+        try {
+            parseVideoTokenExpression(expr, name);
+            taskBillingIsVideoToken = true;
+        } catch {
+            // Keep the media rule read-only when the formula is unsupported.
+        }
+    }
     return (
         Object.hasOwn(optionDict(options, 'ImageResolutionPrice', true), name) ||
-        Object.hasOwn(optionDict(options, 'billing_setting.task_billing_pricing', true), name) ||
-        optionDict(options, MODE_KEY, true)[name] === 'per-second' ||
-        (optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
-            typeof expr === 'string' &&
-            /\bimg(?:_cr)?\b/.test(expr))
+        (hasTaskBilling && !taskBillingIsVideoToken) ||
+        mode === 'per-second' ||
+        (mode === 'tiered_expr' && typeof expr === 'string' && /\bimg(?:_cr)?\b/.test(expr))
     );
 }
 

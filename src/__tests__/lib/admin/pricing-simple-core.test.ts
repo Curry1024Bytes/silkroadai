@@ -162,6 +162,15 @@ describe('readBasePrice', () => {
             { tier: null, field: 'billing_rule', catalog: null, expected: null },
         ]);
     });
+    it('keeps image-token expressions read-only', () => {
+        const source = options({
+            [MODE]: JSON.stringify({ 'img-1': 'tiered_expr' }),
+            [EXPR]: JSON.stringify({ 'img-1': 'tier("standard", p * 2 + img * 8)' }),
+        });
+        expect(() => readBasePrice(source, 'img-1')).toThrow(
+            expect.objectContaining({ code: 'pricing_media_readonly' }),
+        );
+    });
     it('reads token prices in official $ per 1M', () => {
         expect(readBasePrice(options(), 'gpt-5.5')).toEqual({
             mode: 'token',
@@ -434,6 +443,32 @@ describe('video-token matrices', () => {
             '720p·none',
             '720p·video',
         ]);
+    });
+
+    it('reads a valid Seedance token matrix when task metadata is also configured', () => {
+        const source = video({
+            'billing_setting.task_billing_pricing': JSON.stringify({
+                seedance: { mode: 'per-request', resolution_prices: { '720p': 1 } },
+            }),
+        });
+        const base = readBasePrice(source, 'seedance');
+        expect(base?.mode).toBe('video_token');
+        expect(() =>
+            planModelWrites(source, 'seedance', {
+                mode: 'per_call',
+                price: 1,
+            }),
+        ).toThrow(expect.objectContaining({ code: 'pricing_video_token_quote_only' }));
+    });
+
+    it('fails closed when task metadata accompanies an invalid video-token formula', () => {
+        const source = video({
+            [EXPR]: JSON.stringify({ seedance: `${expression} + 1` }),
+            'billing_setting.task_billing_pricing': JSON.stringify({ seedance: { mode: 'per-request' } }),
+        });
+        expect(() => readBasePrice(source, 'seedance')).toThrow(
+            expect.objectContaining({ code: 'pricing_media_readonly' }),
+        );
     });
 
     it('refuses to turn a video matrix into another billing mode', () => {
