@@ -25,15 +25,16 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
         expect(html.length).toBeGreaterThan(0);
     });
 
-    it('labels both catalog update entry points with the direction from new-api', () => {
+    it('labels model import and publication directions explicitly', () => {
         const network = vi.fn().mockRejectedValue(new Error('SSR network is sealed'));
         vi.stubGlobal('fetch', network);
         try {
-            for (const Page of [ModelsPage, ChannelGroupsPage]) {
-                const html = renderToString(<Page />);
-                expect(html).toContain('从 new-api 更新目录');
-                expect(html).not.toContain('>同步 new-api<');
-            }
+            const modelsHtml = renderToString(<ModelsPage />);
+            expect(modelsHtml).toContain('同步到 new-api');
+            expect(modelsHtml).toContain('从 new-api 导入');
+
+            const groupsHtml = renderToString(<ChannelGroupsPage />);
+            expect(groupsHtml).toContain('从 new-api 更新目录');
             expect(network).not.toHaveBeenCalled();
         } finally {
             vi.unstubAllGlobals();

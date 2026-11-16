@@ -1083,6 +1083,24 @@ export async function getChannel(id: number): Promise<NewApiChannel> {
 }
 
 /**
+ * Read a complete channel for a publication preview or write preflight.
+ * Publication must never accept a redirect, cached response, or an
+ * application-level failure hidden behind HTTP 200.
+ */
+export async function getChannelStrict(id: number): Promise<NewApiChannel> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid channel id');
+    const channel = await call<NewApiChannel>('GET', `/api/channel/${id}`, undefined, undefined, {
+        requireSuccess: true,
+        cache: 'no-store',
+        redirect: 'error',
+    });
+    if (!channel || typeof channel !== 'object' || channel.id !== id) {
+        throw new NewApiError(502, `GET /api/channel/${id}`, channel, 'Incomplete channel response');
+    }
+    return channel;
+}
+
+/**
  * 列出所有渠道(P2.5 导入预览的「渠道菜单」用,让 operator 看到/挑选要导哪几个)。
  *
  * new-api list 端点的 envelope `data` 形态在不同版本间不一致(可能是裸数组,也
@@ -1409,6 +1427,23 @@ export async function getPricingRuntimeModels(modelNames: string[]): Promise<New
  */
 export async function updateChannel(channel: NewApiChannel): Promise<void> {
     await call<unknown>('PUT', '/api/channel/', channel);
+}
+
+/**
+ * Write a complete channel and require an explicit successful new-api
+ * envelope. `status` is returned by some new-api versions as read-only data;
+ * sending it back can make an otherwise valid full-channel update fail.
+ */
+export async function updateChannelStrict(channel: NewApiChannel): Promise<void> {
+    if (!channel || typeof channel !== 'object' || !Number.isSafeInteger(channel.id) || channel.id <= 0)
+        throw new Error('Invalid channel');
+    const { status: _status, ...writable } = channel;
+    void _status;
+    await call<unknown>('PUT', '/api/channel/', writable, undefined, {
+        requireSuccess: true,
+        cache: 'no-store',
+        redirect: 'error',
+    });
 }
 
 // ============================================

@@ -39,6 +39,16 @@ interface ModelsResponse {
     total_pages: number;
 }
 
+interface ModelPublishChange {
+    slug: string;
+}
+
+interface ModelPublishPreview {
+    preview_token: string;
+    channels: Array<{ id: number; name: string | null; changes: ModelPublishChange[] }>;
+    blocked: Array<{ code: string }> | null;
+}
+
 interface ModelFormData {
     slug: string;
     display_name: string;
@@ -61,8 +71,21 @@ function getTexts(locale: Locale) {
         ? {
               sessionExpired: 'Your session has expired. Please sign in again.',
               title: 'Model Management',
-              subtitle: 'Model catalog — slug / vendor / upstream mapping',
+              subtitle: 'Model catalog — Portal manages models; new-api handles channel weights and priority',
               refresh: 'Refresh',
+              publish: 'Sync to new-api',
+              publishing: 'Syncing...',
+              publishPreviewTitle: 'Sync models to new-api',
+              publishPreviewHint:
+                  'Enabled Portal models will be synced to their registered channels. new-api continues to apply channel weights and priority.',
+              publishSummary: (models: number, channels: number) => `Sync ${models} model(s) to ${channels} channel(s)`,
+              confirmPublish: 'Confirm sync',
+              publishNoChanges: 'The Portal catalog already matches new-api.',
+              publishBlocked: 'Sync is blocked by the current model or channel configuration.',
+              publishBlockedHint: 'Check the enabled tier, registered channels, and upstream mapping.',
+              publishSuccess: 'Model catalog synced to new-api.',
+              publishFailed: 'Model catalog sync failed',
+              importCatalog: 'Import from new-api',
               loading: 'Loading...',
               newModel: '+ New Model',
               editModel: 'Edit Model',
@@ -112,8 +135,20 @@ function getTexts(locale: Locale) {
         : {
               sessionExpired: '登录已过期,请重新登录',
               title: '模型管理',
-              subtitle: '模型目录 — slug / 厂商 / 上游映射',
+              subtitle: '模型目录 — Portal 管模型，new-api 按渠道权重和优先级路由',
               refresh: '刷新',
+              publish: '同步到 new-api',
+              publishing: '同步中...',
+              publishPreviewTitle: '同步模型到 new-api',
+              publishPreviewHint: '启用的 Portal 模型会同步到所属渠道，渠道权重和优先级继续由 new-api 处理。',
+              publishSummary: (models: number, channels: number) => `将同步 ${models} 个模型到 ${channels} 个渠道`,
+              confirmPublish: '确认同步',
+              publishNoChanges: 'Portal 模型目录与 new-api 已一致。',
+              publishBlocked: '当前模型或渠道配置有问题，暂不能同步。',
+              publishBlockedHint: '请检查启用档次、登记渠道和上游映射。',
+              publishSuccess: '模型目录已同步到 new-api。',
+              publishFailed: '模型目录同步失败',
+              importCatalog: '从 new-api 导入',
               loading: '加载中...',
               newModel: '+ 新建模型',
               editModel: '编辑模型',
@@ -149,8 +184,7 @@ function getTexts(locale: Locale) {
               fieldSortOrder: '排序',
               fieldEnabled: '启用',
               fieldUpstreamMap: '上游映射(JSON)',
-              fieldUpstreamMapHint:
-                  '以启用的 Portal 档次 key 为键(如 "图片模型")；每个 channel_id 必须唯一登记在该档次下。',
+              fieldUpstreamMapHint: '按档次填写上游模型；同步时会写入该档次的全部渠道，由 new-api 按权重和优先级选择。',
               cancel: '取消',
               save: '保存',
               saving: '保存中...',
@@ -216,6 +250,11 @@ function ModelsContent() {
     const [saving, setSaving] = useState(false);
 
     const [syncOpen, setSyncOpen] = useState(false);
+    const [publishPreview, setPublishPreview] = useState<ModelPublishPreview | null>(null);
+    const [publishLoading, setPublishLoading] = useState(false);
+    const [publishApplying, setPublishApplying] = useState(false);
+    const [publishError, setPublishError] = useState('');
+    const [notice, setNotice] = useState('');
 
     // ── Fetch models ──
 
@@ -419,6 +458,61 @@ function ModelsContent() {
         }
     };
 
+    const previewPublish = async () => {
+        setPublishLoading(true);
+        setError('');
+        setPublishError('');
+        setNotice('');
+        try {
+            const res = await fetch('/api/admin/model-publish', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+            });
+            const data = (await res.json().catch(() => ({}))) as {
+                preview?: ModelPublishPreview;
+                message?: string;
+                error?: string;
+            };
+            if (!res.ok || !data.preview) {
+                setError(data.message || data.error || t.publishFailed);
+                return;
+            }
+            setPublishPreview(data.preview);
+        } catch {
+            setError(t.publishFailed);
+        } finally {
+            setPublishLoading(false);
+        }
+    };
+
+    const applyPublish = async () => {
+        if (!publishPreview || publishPreview.blocked || publishPreview.channels.length === 0) return;
+        setPublishApplying(true);
+        setPublishError('');
+        try {
+            const res = await fetch('/api/admin/model-publish?dryRun=false', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preview_token: publishPreview.preview_token }),
+            });
+            const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+            if (!res.ok) {
+                setPublishError(data.message || data.error || t.publishFailed);
+                return;
+            }
+            setPublishPreview(null);
+            setNotice(t.publishSuccess);
+            await fetchModels();
+        } catch {
+            setPublishError(t.publishFailed);
+        } finally {
+            setPublishApplying(false);
+        }
+    };
+
     // ── Shared styles ──
 
     const btnBase = [
@@ -465,6 +559,16 @@ function ModelsContent() {
                 >
                     {error}
                     <button onClick={() => setError('')} className="ml-2 opacity-60 hover:opacity-100">
+                        ✕
+                    </button>
+                </div>
+            )}
+            {notice && (
+                <div
+                    className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-emerald-800 bg-emerald-950/50 text-emerald-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}
+                >
+                    {notice}
+                    <button onClick={() => setNotice('')} className="ml-2 opacity-60 hover:opacity-100" type="button">
                         ✕
                     </button>
                 </div>
@@ -543,7 +647,15 @@ function ModelsContent() {
 
                 <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
-                        {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
+                        {t.importCatalog}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={previewPublish}
+                        disabled={publishLoading}
+                        className="inline-flex items-center rounded-lg border border-indigo-500 bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {publishLoading ? t.publishing : t.publish}
                     </button>
                     <button
                         type="button"
@@ -712,6 +824,95 @@ function ModelsContent() {
                     locale={locale}
                     isDark={isDark}
                 />
+            )}
+
+            {publishPreview && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+                    <section
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="model-publish-title"
+                        className={`w-full max-w-2xl overflow-y-auto rounded-2xl border p-6 shadow-2xl ${isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}`}
+                        style={{ maxHeight: '90vh' }}
+                    >
+                        <h2
+                            id="model-publish-title"
+                            className={`text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                        >
+                            {t.publishPreviewTitle}
+                        </h2>
+                        <p className={`mt-2 text-sm ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                            {t.publishPreviewHint}
+                        </p>
+
+                        {publishError && (
+                            <div
+                                role="alert"
+                                className={`mt-4 rounded-lg border p-3 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-300' : 'border-red-200 bg-red-50 text-red-700'}`}
+                            >
+                                {publishError}
+                            </div>
+                        )}
+
+                        {publishPreview.blocked && publishPreview.blocked.length > 0 ? (
+                            <div
+                                className={`mt-5 rounded-xl border p-4 ${isDark ? 'border-amber-700 bg-amber-950/30' : 'border-amber-200 bg-amber-50'}`}
+                            >
+                                <p
+                                    className={`mb-2 text-sm font-semibold ${isDark ? 'text-amber-300' : 'text-amber-800'}`}
+                                >
+                                    {t.publishBlocked}
+                                </p>
+                                <p className={`text-sm ${isDark ? 'text-amber-200' : 'text-amber-900'}`}>
+                                    {t.publishBlockedHint}
+                                </p>
+                            </div>
+                        ) : publishPreview.channels.length === 0 ? (
+                            <div
+                                className={`mt-5 rounded-xl border p-4 text-sm ${isDark ? 'border-slate-700 bg-slate-900/40 text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-700'}`}
+                            >
+                                {t.publishNoChanges}
+                            </div>
+                        ) : (
+                            <div
+                                className={`mt-5 rounded-xl border p-4 text-sm ${isDark ? 'border-slate-700 bg-slate-900/40 text-slate-200' : 'border-slate-200 bg-slate-50 text-slate-700'}`}
+                            >
+                                {t.publishSummary(
+                                    new Set(
+                                        publishPreview.channels.flatMap((channel) =>
+                                            channel.changes.map((change) => change.slug),
+                                        ),
+                                    ).size,
+                                    publishPreview.channels.length,
+                                )}
+                            </div>
+                        )}
+
+                        <div className="mt-6 flex flex-wrap justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setPublishPreview(null)}
+                                disabled={publishApplying}
+                                className={`rounded-lg px-4 py-2 text-sm font-medium ${isDark ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100'} disabled:opacity-50`}
+                            >
+                                {t.cancel}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={applyPublish}
+                                disabled={
+                                    publishApplying ||
+                                    publishLoading ||
+                                    !!publishPreview.blocked ||
+                                    publishPreview.channels.length === 0
+                                }
+                                className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                {publishApplying ? t.publishing : t.confirmPublish}
+                            </button>
+                        </div>
+                    </section>
+                </div>
             )}
 
             {/* ── Edit / Create Modal ── */}
