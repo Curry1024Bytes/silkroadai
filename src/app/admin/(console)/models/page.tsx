@@ -394,7 +394,7 @@ function ModelsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.saveFailed);
+                setError(data.message || data.error || t.saveFailed);
                 return;
             }
 
@@ -412,6 +412,7 @@ function ModelsContent() {
     const handleDelete = async (model: CatalogModel) => {
         if (!confirm(t.deleteConfirm(model.slug))) return;
         setError('');
+        setNotice('');
         try {
             const res = await fetch(`/api/admin/models/${model.id}`, {
                 method: 'DELETE',
@@ -423,7 +424,7 @@ function ModelsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.deleteFailed);
+                setError(data.message || data.error || t.deleteFailed);
                 return;
             }
             fetchModels();
@@ -449,7 +450,7 @@ function ModelsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.saveFailed);
+                setError(data.message || data.error || t.saveFailed);
                 return;
             }
             fetchModels();
@@ -504,6 +505,7 @@ function ModelsContent() {
                 return;
             }
             setPublishPreview(null);
+            setError('');
             setNotice(t.publishSuccess);
             await fetchModels();
         } catch {
