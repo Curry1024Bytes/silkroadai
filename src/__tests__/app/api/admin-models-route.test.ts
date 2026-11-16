@@ -18,10 +18,14 @@ const mockUpdate = vi.fn();
 const mockDelete = vi.fn();
 const mockFindCostRule = vi.fn();
 const mockFindPrice = vi.fn();
+const mockListChannels = vi.fn();
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
 vi.mock('@/lib/admin-auth', () => ({
     unauthorizedResponse: () => NextResponse.json({ error: '未授权' }, { status: 401 }),
+}));
+vi.mock('@/lib/newapi/client', () => ({
+    listChannels: (...args: unknown[]) => mockListChannels(...args),
 }));
 // Real tenant-scope so the where-wiring is exercised end-to-end.
 vi.mock('@/lib/db', () => ({
@@ -84,6 +88,7 @@ beforeEach(() => {
     mockCount.mockResolvedValue(0);
     mockGroupFindMany.mockResolvedValue([
         {
+            tenant_id: PLATFORM_TENANT_ID,
             key: 'pool',
             newapi_group: 'default',
             newapi_channel_ids: [3],
@@ -97,6 +102,7 @@ beforeEach(() => {
     mockUpdate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'm1', ...data }));
     mockFindCostRule.mockResolvedValue(null);
     mockFindPrice.mockResolvedValue(null);
+    mockListChannels.mockResolvedValue([]);
 });
 
 describe('GET /api/admin/models', () => {
@@ -104,6 +110,7 @@ describe('GET /api/admin/models', () => {
         mockResolveAdmin.mockResolvedValue(null);
         expect((await GET(req())).status).toBe(401);
         expect(mockFindMany).not.toHaveBeenCalled();
+        expect(mockListChannels).not.toHaveBeenCalled();
     });
 
     it('superadmin → no tenant filter; partner admin → tenant-scoped', async () => {
@@ -150,6 +157,45 @@ describe('GET /api/admin/models', () => {
             }),
         });
         await expect(res.json()).resolves.toMatchObject({ total: 23, page: 2, page_size: 10, total_pages: 3 });
+    });
+
+    it('returns tier and channel labels for upstream mappings', async () => {
+        mockGroupFindMany.mockResolvedValue([
+            {
+                tenant_id: PLATFORM_TENANT_ID,
+                key: 'sale-tier',
+                display_name: 'GPT 特惠',
+            },
+            {
+                tenant_id: 'tenant-7',
+                key: 'sale-tier',
+                display_name: '企业特惠',
+            },
+        ]);
+        mockListChannels.mockResolvedValue([{ id: 3, name: 'GPT 特惠主渠道' }]);
+
+        const res = await GET(req());
+
+        expect(res.status).toBe(200);
+        await expect(res.json()).resolves.toMatchObject({
+            labels: {
+                tiers: {
+                    [PLATFORM_TENANT_ID]: { 'sale-tier': { display_name: 'GPT 特惠' } },
+                    'tenant-7': { 'sale-tier': { display_name: '企业特惠' } },
+                },
+                channels: { '3': { name: 'GPT 特惠主渠道' } },
+            },
+        });
+        expect(mockListChannels).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps model listing available when channel labels cannot be loaded', async () => {
+        mockListChannels.mockRejectedValue(new Error('new-api unavailable'));
+
+        const res = await GET(req());
+
+        expect(res.status).toBe(200);
+        await expect(res.json()).resolves.toMatchObject({ labels: { tiers: expect.any(Object), channels: {} } });
     });
 });
 

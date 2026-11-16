@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
-import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
+import { PLATFORM_TENANT_ID, tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { Prisma } from '@prisma/client';
+import { listChannels } from '@/lib/newapi/client';
 import {
     ChannelGroupTopologyError,
     loadChannelGroupTopology,
@@ -65,7 +66,7 @@ export async function GET(request: NextRequest) {
     if (modality && ['chat', 'image', 'embedding'].includes(modality)) where.modality = modality;
     if (enabled === 'true' || enabled === 'false') where.enabled = enabled === 'true';
 
-    const [models, total] = await Promise.all([
+    const [models, total, groups, channels] = await Promise.all([
         prisma.catalogModel.findMany({
             where,
             orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }, { id: 'asc' }],
@@ -73,13 +74,41 @@ export async function GET(request: NextRequest) {
             take: pageSize,
         }),
         prisma.catalogModel.count({ where }),
+        prisma.channelGroup.findMany({
+            where: tenantScope(admin),
+            select: { tenant_id: true, key: true, display_name: true, newapi_group: true },
+        }),
+        listChannels().catch(() => []),
     ]);
+
+    const labels = {
+        tiers: groups.reduce<Record<string, Record<string, { display_name: string; newapi_group: string }>>>(
+            (tiersByTenant, group) => {
+                const tenantId = group.tenant_id ?? PLATFORM_TENANT_ID;
+                const tenantTiers = tiersByTenant[tenantId] ?? {};
+                tenantTiers[group.key] = {
+                    display_name: group.display_name,
+                    newapi_group: group.newapi_group,
+                };
+                tiersByTenant[tenantId] = tenantTiers;
+                return tiersByTenant;
+            },
+            {},
+        ),
+        channels: Object.fromEntries(
+            channels.map((channel) => [
+                String(channel.id),
+                { name: typeof channel.name === 'string' && channel.name.trim() ? channel.name : null },
+            ]),
+        ),
+    };
     return NextResponse.json({
         models,
         total,
         page,
         page_size: pageSize,
         total_pages: Math.ceil(total / pageSize),
+        labels,
     });
 }
 

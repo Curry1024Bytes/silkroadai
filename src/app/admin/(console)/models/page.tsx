@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import NewApiSyncDialog from '@/components/admin/NewApiSyncDialog';
 import PaginationBar from '@/components/PaginationBar';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { resolveLocale, type Locale } from '@/lib/locale';
 
 // ── Types ──
@@ -31,12 +32,18 @@ interface CatalogModel {
     updated_at: string;
 }
 
+interface RoutingLabels {
+    tiers: Record<string, Record<string, { display_name: string }>>;
+    channels: Record<string, { name: string | null }>;
+}
+
 interface ModelsResponse {
     models: CatalogModel[];
     total: number;
     page: number;
     page_size: number;
     total_pages: number;
+    labels?: RoutingLabels;
 }
 
 interface ModelPublishChange {
@@ -198,11 +205,35 @@ function getTexts(locale: Locale) {
 
 // ── Helpers ──
 
-/** Compact one-line summary of upstream_map, e.g. `default → ch3:gpt-5.4`. */
-function summarizeUpstreamMap(map: Record<string, UpstreamEntry>): string {
+/** Human-readable one-line summary of upstream_map with tier/channel labels. */
+function summarizeUpstreamMap(
+    map: Record<string, UpstreamEntry>,
+    tenantId: string | null,
+    labels: RoutingLabels,
+    locale: Locale,
+): string {
     const entries = Object.entries(map ?? {});
     if (entries.length === 0) return '';
-    return entries.map(([route, entry]) => `${route} → ch${entry.channel_id}:${entry.upstream_model}`).join('  ·  ');
+    return entries
+        .map(([route, entry]) => {
+            const tier = labels.tiers[tenantId ?? PLATFORM_TENANT_ID]?.[route];
+            const channel = labels.channels[String(entry.channel_id)];
+            const tierName = tier?.display_name?.trim() || route;
+            const tierText =
+                tierName === route ? route : locale === 'en' ? `${tierName} (${route})` : `${tierName}（${route}）`;
+            const channelText = channel?.name?.trim()
+                ? locale === 'en'
+                    ? `${channel.name.trim()} (#${entry.channel_id})`
+                    : `${channel.name.trim()}（#${entry.channel_id}）`
+                : locale === 'en'
+                  ? `Channel #${entry.channel_id}`
+                  : `渠道 #${entry.channel_id}`;
+            if (locale === 'en') {
+                return `Tier: ${tierText} · Channel: ${channelText} · Upstream model: ${entry.upstream_model}`;
+            }
+            return `档次：${tierText} · 渠道：${channelText} · 上游模型：${entry.upstream_model}`;
+        })
+        .join('  ·  ');
 }
 
 const emptyForm: ModelFormData = {
@@ -228,6 +259,7 @@ function ModelsContent() {
     const t = getTexts(locale);
 
     const [models, setModels] = useState<CatalogModel[]>([]);
+    const [routingLabels, setRoutingLabels] = useState<RoutingLabels>({ tiers: {}, channels: {} });
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(20);
@@ -282,6 +314,7 @@ function ModelsContent() {
             }
             const data = (await res.json()) as Partial<ModelsResponse>;
             setModels(data.models ?? []);
+            setRoutingLabels(data.labels ?? { tiers: {}, channels: {} });
             setTotal(Number(data.total) || 0);
             setTotalPages(Math.max(1, Number(data.total_pages) || 1));
         } catch {
@@ -708,7 +741,12 @@ function ModelsContent() {
                         </thead>
                         <tbody>
                             {models.map((model) => {
-                                const upstreamSummary = summarizeUpstreamMap(model.upstream_map);
+                                const upstreamSummary = summarizeUpstreamMap(
+                                    model.upstream_map,
+                                    model.tenant_id,
+                                    routingLabels,
+                                    locale,
+                                );
                                 return (
                                     <tr
                                         key={model.id}
