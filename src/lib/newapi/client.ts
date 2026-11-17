@@ -543,7 +543,15 @@ export async function searchUser(
  * username='' 行冲突触发 unique violation。fetch + merge 后 PUT 才稳。
  */
 export async function updateUser(user: Partial<NewApiUser> & { id: number }, timeoutMs?: number): Promise<void> {
-    await call<null>('PUT', '/api/user/', user, undefined, { timeoutMs });
+    await call<null>('PUT', '/api/user/', editableUserPayload(user), undefined, { timeoutMs });
+}
+
+/** GET user includes a permission matrix whose presence makes PUT a protected permission rewrite. */
+function editableUserPayload(user: Partial<NewApiUser> & { id: number }): Record<string, unknown> {
+    const editable: Record<string, unknown> = { ...user };
+    for (const field of ['admin_permissions', 'DeletedAt', 'original_password', 'verification_code'])
+        delete editable[field];
+    return editable;
 }
 
 /** 删 user(soft delete) */
@@ -1305,6 +1313,12 @@ export async function putSaleRuleOption(key: SaleRuleWritableOption, value: stri
  * user id and ratio leave this function; the response also carries PII.
  */
 export async function listGroupUserRatios(group: string): Promise<Array<{ user_id: number; ratio: number }>> {
+    // Only an explicitly selected official distribution lacks this fork-only
+    // override feature. A missing route or failed request is never proof that
+    // no overrides exist on the configured fork.
+    const distribution = (process.env.NEWAPI_DISTRIBUTION ?? 'fork').trim().toLowerCase();
+    if (distribution === 'official') return [];
+    if (distribution !== 'fork') throw new Error('Invalid NEWAPI_DISTRIBUTION; expected fork or official');
     const rows = await call<unknown>(
         'GET',
         `/api/group/${encodeURIComponent(group)}/user-ratios`,
@@ -1520,12 +1534,16 @@ export type NewApiAccessTokenMode = 'legacy' | 'pat';
 /** Prefix new-api puts on every rc.41+ personal access token. */
 export const NEWAPI_PAT_PREFIX = 'nap_';
 
-/** Scopes the per-customer act-as PAT needs: exactly the /api/token/* routes
- *  portal calls on the customer's behalf (create / list / rename / delete /
- *  reveal). Kept minimal on purpose — usage, balance and quota are read via
- *  the admin credential. Sorted: the verify-step context must normalise to
- *  the same set as the create-step body. */
-export const CUSTOMER_PAT_SCOPES: readonly string[] = ['api_key:read', 'api_key:reveal', 'api_key:write'];
+/** Scopes the per-customer act-as PAT needs: /api/token/* operations plus
+ *  /api/user/self for the identity checks before and after key revocation.
+ *  Usage, balance and quota are read via the admin credential. Sorted: the
+ *  verify-step context must normalise to the same set as the create-step body. */
+export const CUSTOMER_PAT_SCOPES: readonly string[] = [
+    'api_key:read',
+    'api_key:reveal',
+    'api_key:write',
+    'profile:read',
+];
 
 /** Name shown in the customer's new-api "Security & Access" list. */
 export const CUSTOMER_PAT_NAME = 'portal-act-as';
@@ -1780,20 +1798,7 @@ export async function reissueCustomerAccessTokenViaAdminReset(args: {
     });
     // PUT /api/user/ validates the whole struct (username required) → send
     // the fetched user back with only the password changed.
-    // Strip server-managed echoes before sending the user back: a non-null
-    // `admin_permissions` map makes new-api treat the PUT as a permission
-    // rewrite (rc.44 rehearsal finding), gorm:"-" fields are noise.
-    const {
-        admin_permissions: _perm,
-        DeletedAt: _deleted,
-        original_password: _orig,
-        verification_code: _code,
-        ...editable
-    } = existing as NewApiUser & Record<string, unknown>;
-    void _perm;
-    void _deleted;
-    void _orig;
-    void _code;
+    const editable = editableUserPayload(existing);
     await call<null>('PUT', '/api/user/', { ...editable, password: newPassword }, undefined, {
         session: { auth: args.admin.session, userId: args.admin.userId },
         securityProof: proof,

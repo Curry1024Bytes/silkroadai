@@ -22,6 +22,7 @@ import {
     NewApiError,
     _resetAccessTokenModeCache,
     accessTokenModeForVersion,
+    getTokenRevocationCustomerIdentity,
     isLegacyNewApiAccessToken,
     provisionNewCustomer,
     reissueCustomerAccessTokenViaAdminReset,
@@ -81,6 +82,7 @@ interface MockServer {
 }
 
 function installFetchMock(server: MockServer) {
+    let grantedPatScopes: unknown[] = [];
     vi.stubGlobal(
         'fetch',
         vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -158,11 +160,18 @@ function installFetchMock(server: MockServer) {
                 if (headers['x-security-proof'] !== 'proof-access_token.generate') {
                     return jsonResponse({ success: false, code: 'SECURITY_PROOF_REQUIRED' }, { status: 403 });
                 }
+                grantedPatScopes = Array.isArray(body?.scopes) ? body.scopes : [];
                 return jsonResponse({
                     success: true,
                     message: '',
                     data: { token: 'nap_freshPATvalue', item: { id: 7 } },
                 });
+            }
+            if (method === 'GET' && url.pathname === '/api/user/self') {
+                if (server.flavour === 'pat' && !grantedPatScopes.includes('profile:read')) {
+                    return jsonResponse({ success: false, code: 'ACCESS_TOKEN_SCOPE_DENIED' }, { status: 403 });
+                }
+                return jsonResponse({ success: true, data: { id: NEWAPI_USER_ID, status: 1 } });
             }
             if (method === 'POST' && url.pathname === '/api/token/') {
                 return jsonResponse({ success: true, message: '' });
@@ -300,6 +309,27 @@ describe('provisionNewCustomer login session handling (≤ rc.40 legacy rotate)'
 });
 
 describe('provisionNewCustomer on rc.41+ (named personal access tokens)', () => {
+    it('the issued PAT can read the customer identity required to confirm key revocation', async () => {
+        installFetchMock({ version: 'v1.0.0-rc.51', flavour: 'pat', loginBody: RC22_LOGIN_BODY });
+
+        const result = await provisionNewCustomer({
+            portal_user_id: PORTAL_USER_ID,
+            email: EMAIL,
+            newapi_group: 'test-group',
+        });
+
+        await expect(
+            getTokenRevocationCustomerIdentity({ accessToken: result.newapi_access_token, userId: NEWAPI_USER_ID }),
+        ).resolves.toEqual({ id: NEWAPI_USER_ID, status: 1 });
+        expect(find('POST', '/api/user/access_tokens')!.body!.scopes).toEqual([
+            'api_key:read',
+            'api_key:reveal',
+            'api_key:write',
+            'profile:read',
+        ]);
+        expect(find('GET', '/api/user/self')!.headers['authorization']).toBe('nap_freshPATvalue');
+    });
+
     it('auto mode detects rc.44 from /api/status and mints a never-expiring PAT instead of rotating', async () => {
         installFetchMock({ version: 'v1.0.0-rc.44', flavour: 'pat', loginBody: RC22_LOGIN_BODY });
 
