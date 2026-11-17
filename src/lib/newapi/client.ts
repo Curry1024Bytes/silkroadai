@@ -2044,6 +2044,7 @@ export async function provisionNewCustomerResumable(args: {
 }): Promise<ProvisionedCustomer> {
     const username = customerProvisioningUsername(args.portal_user_id);
     const legacyUsername = legacyCustomerProvisioningUsername(args.portal_user_id);
+    const email = args.email.trim().toLowerCase();
     let selectedUsername = username;
     let existing: NewApiUser | undefined;
     for (const candidateUsername of [username, legacyUsername]) {
@@ -2055,7 +2056,13 @@ export async function provisionNewCustomerResumable(args: {
         }
         const candidate = matchingUsers[0];
         if (!candidate) continue;
-        if (candidate.email.trim().toLowerCase() !== args.email.trim().toLowerCase()) {
+        const candidateEmail = candidate.email.trim().toLowerCase();
+        // Both the fork and official CreateUser discard the submitted email.
+        // An empty email is therefore recoverable only in the wide namespace:
+        // ownership still requires the stable job password and the exact ID
+        // check below before issuing any PAT or API key. Never adopt a blank
+        // legacy short-name match or a non-empty conflicting email.
+        if (candidateEmail !== email && !(candidateEmail === '' && candidateUsername === username)) {
             // A legacy short-name collision must not block the new, wide-name
             // namespace. The new username remains fail-closed on mismatch.
             if (candidateUsername === username) {
@@ -2085,7 +2092,8 @@ export async function provisionNewCustomerResumable(args: {
             }
             const winner = matching[0];
             if (!winner) throw error;
-            if (winner.email.trim().toLowerCase() !== args.email.trim().toLowerCase()) {
+            const winnerEmail = winner.email.trim().toLowerCase();
+            if (winnerEmail !== email && winnerEmail !== '') {
                 throw new NewApiError(409, 'GET /api/user/search', null, 'Provisioning user identity mismatch');
             }
             existing = winner;
@@ -2095,7 +2103,13 @@ export async function provisionNewCustomerResumable(args: {
 
     const login = await loginAsUser({ username: selectedUsername, password: args.password });
     const userId = login.user.id;
-    if (login.user.username !== selectedUsername || (existing && login.user.id !== existing.id)) {
+    if (
+        !Number.isSafeInteger(userId) ||
+        userId <= 0 ||
+        login.user.role !== 1 ||
+        login.user.username !== selectedUsername ||
+        (existing && login.user.id !== existing.id)
+    ) {
         throw new NewApiError(409, 'POST /api/user/login', null, 'Provisioning user identity mismatch');
     }
 

@@ -33,12 +33,22 @@ function installFetch(
     existingUsers: Array<{ id: number; username: string; email: string }> = [
         { id: USER_ID, username: USERNAME, email: 'customer@example.com' },
     ],
-    options: { createUsernameRace?: boolean; deleteAlreadyGone?: boolean } = {},
+    options: {
+        createUsernameRace?: boolean;
+        createResponseLost?: boolean;
+        ignoreCreateEmail?: boolean;
+        deleteAlreadyGone?: boolean;
+        loginFailures?: number;
+        expectedPassword?: string;
+        loginUser?: { id?: number; username?: string; role?: number };
+    } = {},
 ) {
     let tokens: unknown[] = [];
     const users = [...existingUsers];
     const deleted: number[] = [];
     let created = false;
+    let loginFailures = options.loginFailures ?? 0;
+    let userCreateCount = 0;
     let createdUser: { username: string; email: string } | undefined;
     vi.stubGlobal(
         'fetch',
@@ -59,9 +69,15 @@ function installFetch(
                 );
             }
             if (method === 'POST' && url.pathname === '/api/user/') {
+                userCreateCount += 1;
                 createdUser = JSON.parse(String(init?.body)) as { username: string; email: string };
+                users.push({
+                    id: USER_ID,
+                    username: createdUser.username,
+                    email: options.ignoreCreateEmail ? '' : createdUser.email,
+                });
+                if (options.createResponseLost) throw new TypeError('Create response lost');
                 if (options.createUsernameRace) {
-                    users.push({ id: USER_ID, username: createdUser.username, email: createdUser.email });
                     return new Response(JSON.stringify({ success: false, message: 'duplicate username' }), {
                         status: 409,
                     });
@@ -69,13 +85,27 @@ function installFetch(
                 return new Response(JSON.stringify({ success: true, data: null }));
             }
             if (method === 'POST' && url.pathname === '/api/user/login') {
-                const username = createdUser?.username ?? USERNAME;
+                const { username, password } = JSON.parse(String(init?.body)) as {
+                    username: string;
+                    password: string;
+                };
+                if (loginFailures > 0) {
+                    loginFailures -= 1;
+                    return new Response(JSON.stringify({ success: false, message: 'Login failed' }), {
+                        status: 503,
+                    });
+                }
+                if (password !== (options.expectedPassword ?? 'stable-password')) {
+                    return new Response(JSON.stringify({ success: false, message: 'Login failed' }), {
+                        status: 401,
+                    });
+                }
                 return new Response(
                     JSON.stringify({
                         success: true,
                         data: {
                             access_token: 'session.jwt',
-                            user: { id: USER_ID, username, role: 1 },
+                            user: { id: USER_ID, username, role: 1, ...options.loginUser },
                         },
                     }),
                 );
@@ -106,7 +136,12 @@ function installFetch(
             throw new Error(`Unexpected request: ${method} ${url.pathname}`);
         }),
     );
-    return { deleted, wasCreated: () => created, createdUser: () => createdUser };
+    return {
+        deleted,
+        wasCreated: () => created,
+        createdUser: () => createdUser,
+        userCreateCount: () => userCreateCount,
+    };
 }
 
 beforeEach(() => {
@@ -155,6 +190,91 @@ describe('provisionNewCustomerResumable default token convergence', () => {
         expect(state.createdUser()?.username).toBe(customerProvisioningUsername(PORTAL_USER_ID));
         expect(result.newapi_username).toBe(customerProvisioningUsername(PORTAL_USER_ID));
         expect(vi.mocked(fetch)).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ method: 'POST' }));
+    });
+
+    it('resumes after creation succeeds without storing email and the first login fails', async () => {
+        const state = installFetch([token(1)], [], { ignoreCreateEmail: true, loginFailures: 1 });
+
+        await expect(provisionNewCustomerResumable(args)).rejects.toMatchObject({ status: 503 });
+        expect(state.wasCreated()).toBe(false);
+        const result = await provisionNewCustomerResumable(args);
+
+        expect(result).toMatchObject({
+            newapi_user_id: USER_ID,
+            newapi_username: customerProvisioningUsername(PORTAL_USER_ID),
+            newapi_token_id: 1,
+        });
+        expect(state.userCreateCount()).toBe(1);
+    });
+
+    it.each(['createUsernameRace', 'createResponseLost'] as const)(
+        'authenticates an email-less create winner after %s before issuing credentials',
+        async (failure) => {
+            const state = installFetch([token(1)], [], { ignoreCreateEmail: true, [failure]: true });
+
+            const result = await provisionNewCustomerResumable(args);
+
+            expect(result.newapi_user_id).toBe(USER_ID);
+            expect(state.userCreateCount()).toBe(1);
+            expect(state.wasCreated()).toBe(true);
+        },
+    );
+
+    it('does not adopt an email-less wide-name match without the original password', async () => {
+        const state = installFetch(
+            [token(1)],
+            [{ id: USER_ID, username: customerProvisioningUsername(PORTAL_USER_ID), email: '' }],
+            { expectedPassword: 'another-job-password' },
+        );
+
+        await expect(provisionNewCustomerResumable(args)).rejects.toMatchObject({ status: 401 });
+
+        expect(state.wasCreated()).toBe(false);
+        expect(state.userCreateCount()).toBe(0);
+        expect(
+            vi.mocked(fetch).mock.calls.some(([input]) => new URL(String(input)).pathname === '/api/user/token'),
+        ).toBe(false);
+    });
+
+    it.each([{ id: USER_ID + 1 }, { username: 'another-user' }, { role: 10 }])(
+        'rejects authenticated identity mismatch %j before issuing credentials',
+        async (loginUser) => {
+            const state = installFetch(
+                [token(1)],
+                [{ id: USER_ID, username: customerProvisioningUsername(PORTAL_USER_ID), email: '' }],
+                { loginUser },
+            );
+
+            await expect(provisionNewCustomerResumable(args)).rejects.toMatchObject({ status: 409 });
+
+            expect(state.wasCreated()).toBe(false);
+            expect(
+                vi.mocked(fetch).mock.calls.some(([input]) => new URL(String(input)).pathname === '/api/user/token'),
+            ).toBe(false);
+        },
+    );
+
+    it('rejects a conflicting non-empty email before trying its password', async () => {
+        const state = installFetch(
+            [token(1)],
+            [{ id: USER_ID, username: customerProvisioningUsername(PORTAL_USER_ID), email: 'other@example.com' }],
+        );
+
+        await expect(provisionNewCustomerResumable(args)).rejects.toMatchObject({ status: 409 });
+
+        expect(state.userCreateCount()).toBe(0);
+        expect(
+            vi.mocked(fetch).mock.calls.some(([input]) => new URL(String(input)).pathname === '/api/user/login'),
+        ).toBe(false);
+    });
+
+    it('does not reuse an email-less legacy short-name collision', async () => {
+        const state = installFetch([token(1)], [{ id: USER_ID + 1, username: USERNAME, email: '' }]);
+
+        const result = await provisionNewCustomerResumable(args);
+
+        expect(state.userCreateCount()).toBe(1);
+        expect(result.newapi_username).toBe(customerProvisioningUsername(PORTAL_USER_ID));
     });
 
     it('deletes duplicate deterministic keys and returns the oldest valid key', async () => {
