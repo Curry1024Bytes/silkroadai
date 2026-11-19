@@ -1089,3 +1089,11 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 活动Compose文件为`/opt/llmroute-releases/04f0bdf1/source/docker-compose.prod.yml`与`/opt/llmroute-releases/04f0bdf1/release.json`；project directory/env位置不变，继续`--no-build --no-deps --pull never`只发布Portal。
 - 最新备份`/opt/backups/silkroadai-portal/releases/model-layout-20261025-113233/`；旧应用5a0e613e与回退标签`rollback-model-layout-20261025-113233`保留。先前停用的临时BuildKit已保存日志/配置/4个元数据DB后清理，业务卷与其他构建器未动；取证文件在`upstream-final-20261025-073943/failed-builder-forensics/`。
 - 详情见`docs/MODEL-CARD-LAYOUT-2026-10-25.md`。后续文档/构建流程提交不重建应用镜像，禁止再在这台4GB生产VPS重型编译。
+
+## 客户官方价专属倍率（2026-11-19，已发布）
+
+- 运行应用源 `4f5bdff04781e7507254ebb85297841bddf95cfa`，镜像 `release-4f5bdff0`；生产 94 applied、0 unfinished，保留 1 条既有 rolled-back migration。完整版本、验收与切换中断记录见 `docs/RELEASE-CUSTOMER-PRICING-2026-11-19.md`。
+- 客户专属价按官方参考乘客户倍率，模型规则优先于客户分组规则，不叠加公开倍率；无新规则时保留原公开价或旧客户倍率。用户端标识固定为「专属倍率:0.2x」。发布本身未调整任何客户价格或 Key，未做收费调用。
+- 通过 new-api 原生内部模型组及渠道副本执行，继续禁止改 new-api 源码。type61 仅支持静态 Key 安全复制；封装登录凭据必须拒绝或按明确恢复流程处理，不能读取/持久化供应商 Key。
+- 新绑定生效后，禁止直接回滚不认识这些绑定的旧 Portal。必须先恢复/撤销并核对原生配置，或执行两侧一致性恢复。
+- 后续部署必须先将 Nginx 接入已验收的临时实例，再排空旧主实例。禁止直接让唯一入口等待 630 秒退出宽限；本次曾因此发生约 7 分半中断，16:08:01 恢复入口，16:12:31 回到正式主实例。具体步骤以当前运维手册为准。
