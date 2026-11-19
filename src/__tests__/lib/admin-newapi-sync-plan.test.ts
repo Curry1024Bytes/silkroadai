@@ -43,6 +43,7 @@ function model(overrides: Partial<SyncModel> = {}): SyncModel {
         vendor: 'openai',
         modality: 'chat',
         enabled: true,
+        archived: false,
         sort_order: 3,
         upstream_map: { [TIER]: { channel_id: 6, upstream_model: MODEL } },
         updated_at: '2026-09-10T08:00:00.000Z',
@@ -301,6 +302,34 @@ describe('buildNewApiSyncPlan follows new-api channels', () => {
         expect(plan.models[0].next.enabled).toBe(true);
         expect(plan.prices).toHaveLength(1);
         expect(plan.summary.models_published).toBe(1);
+    });
+
+    it('restores an archived model to the management list when republishing it', () => {
+        const plan = buildNewApiSyncPlan(state({ models: [model({ enabled: false, archived: true })] }), source(), NOW);
+        expect(plan.models[0].next).toMatchObject({ enabled: true, archived: false });
+        expect(plan.models[0].item.after).toContain('取消归档，恢复模型管理列表显示');
+    });
+
+    it('preserves an archived model when no priced channel can republish it', () => {
+        const upstream = source();
+        upstream.prices.modelRatio = {};
+        const plan = buildNewApiSyncPlan(
+            state({ models: [model({ enabled: false, archived: true, upstream_map: {} })] }),
+            upstream,
+            NOW,
+        );
+        expect(plan.models).toEqual([]);
+        expect(plan.warnings.join(' ')).toContain('未读取到 new-api 价格');
+    });
+
+    it('preserves a deliberate archive on an already-enabled model during a channel remap', () => {
+        const plan = buildNewApiSyncPlan(
+            state({ models: [model({ archived: true })] }),
+            source({ channels: [channel({ id: 7 })] }),
+            NOW,
+        );
+        expect(plan.models[0].next).toMatchObject({ enabled: true, archived: true });
+        expect(plan.models[0].item.after).not.toContain('取消归档，恢复模型管理列表显示');
     });
 
     it('does not publish a model whose new-api price is missing', () => {

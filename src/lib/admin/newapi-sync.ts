@@ -65,6 +65,7 @@ export async function readSyncState(db: SyncDb, tenantId: string): Promise<SyncS
                 vendor: true,
                 modality: true,
                 enabled: true,
+                archived: true,
                 sort_order: true,
                 upstream_map: true,
                 updated_at: true,
@@ -203,7 +204,7 @@ export async function applyNewApiSync(tenantId: string, userId: string | null, t
                 if (current)
                     await tx.catalogModel.update({
                         where: { id: current.id, tenant_id: tenantId, updated_at: new Date(current.updated_at) },
-                        data: { upstream_map: upstreamMap, enabled: next.enabled },
+                        data: { upstream_map: upstreamMap, enabled: next.enabled, archived: next.archived },
                     });
                 else {
                     const created = await tx.catalogModel.create({
@@ -216,6 +217,7 @@ export async function applyNewApiSync(tenantId: string, userId: string | null, t
                             sort_order: next.sort_order,
                             upstream_map: upstreamMap,
                             enabled: next.enabled,
+                            archived: next.archived,
                         },
                     });
                     ids.set(next.slug, created.id);

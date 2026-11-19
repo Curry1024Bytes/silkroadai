@@ -70,6 +70,7 @@ function model(tenant = TENANT): ModelRow {
         vendor: 'openai',
         modality: 'chat',
         enabled: true,
+        archived: false,
         sort_order: 0,
         upstream_map: { sale: { channel_id: 1, upstream_model: 'gpt-test' } },
         updated_at: OLD,
@@ -420,6 +421,41 @@ describe('new-api sync keeps the catalog aligned', () => {
             cost_cny_per_1m: before.prices[0].cost_cny_per_1m,
             created_by: 'admin-1',
         });
+    });
+
+    it('persists archive restoration when republishing and preserves other tenants', async () => {
+        store.models[0].enabled = false;
+        store.models[0].archived = true;
+        store.models[1].archived = true;
+        source.channels[0].models = ['gpt-test'];
+        const foreign = structuredClone(store.models[1]);
+        const preview = await previewNewApiSync(TENANT);
+        expect(preview.items.find((item) => item.kind === 'model')?.after).toContain('取消归档，恢复模型管理列表显示');
+        await applyNewApiSync(TENANT, 'admin-1', preview.preview_token);
+        expect(store.models[0]).toMatchObject({ enabled: true, archived: false });
+        expect(store.models[1]).toEqual(foreign);
+    });
+
+    it('rolls back archive restoration if the price write fails', async () => {
+        store.models[0].enabled = false;
+        store.models[0].archived = true;
+        source.channels[0].models = ['gpt-test'];
+        const before = structuredClone(store);
+        const preview = await previewNewApiSync(TENANT);
+        failPriceWrite = true;
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toThrow(
+            'fixture database failure',
+        );
+        expect(store).toEqual(before);
+    });
+
+    it('rejects an old preview after the archive state changes', async () => {
+        const preview = await previewNewApiSync(TENANT);
+        store.models[0].archived = true;
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
+        expect(writes).toEqual([]);
     });
 
     it.each(['chat', 'image'] as const)(

@@ -312,6 +312,38 @@ describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
         expect(mockUpdate.mock.calls[1][0].data).toEqual({ archived: false });
     });
 
+    it.each([false, true])('PUT enabling a model restores visibility when enabled was %s', async (enabled) => {
+        mockFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            slug: 'gpt-5.4',
+            enabled,
+            archived: true,
+            upstream_map: VALID_CREATE.upstream_map,
+        });
+        const res = await PUT(req('PUT', { enabled: true }, 'https://x/api/admin/models/m1'), {
+            params: params(),
+        });
+        expect(res.status).toBe(200);
+        expect(mockUpdate.mock.calls[0][0].data).toEqual({ enabled: true, archived: false });
+    });
+
+    it('PUT preserves an explicitly requested archive state while enabling a model', async () => {
+        mockFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            slug: 'gpt-5.4',
+            enabled: false,
+            archived: false,
+            upstream_map: VALID_CREATE.upstream_map,
+        });
+        const res = await PUT(req('PUT', { enabled: true, archived: true }, 'https://x/api/admin/models/m1'), {
+            params: params(),
+        });
+        expect(res.status).toBe(200);
+        expect(mockUpdate.mock.calls[0][0].data).toEqual({ enabled: true, archived: true });
+    });
+
     it('PUT rejects moving an enabled model onto a channel owned by another tier', async () => {
         mockFindFirst.mockResolvedValue({
             id: 'm1',

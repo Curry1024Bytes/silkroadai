@@ -48,6 +48,7 @@ export interface SyncModel {
     vendor: string;
     modality: string;
     enabled: boolean;
+    archived: boolean;
     sort_order: number;
     upstream_map: UpstreamMapLike;
     updated_at: string;
@@ -440,6 +441,7 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
             vendor: inferVendor(slug),
             modality: syncModelModality(source.prices, slug, isImageModel(slug) ? 'image' : 'chat'),
             enabled: false,
+            archived: false,
             sort_order: 0,
             upstream_map: {},
             updated_at: '',
@@ -480,7 +482,15 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
         if (!current && !enabled) continue;
         // A published model lists only the tiers that actually sell it.
         if (enabled) for (const [tier, entry] of Object.entries(map)) if (!sellable(tier, entry)) delete map[tier];
-        const next: SyncModel = { ...base, upstream_map: map, enabled, sort_order: current ? base.sort_order : ++sort };
+        const next: SyncModel = {
+            ...base,
+            upstream_map: map,
+            enabled,
+            // Republishing a retired model must restore it to the management list.
+            // An already-enabled model keeps any deliberate management-only archive.
+            archived: enabled && !base.enabled ? false : base.archived,
+            sort_order: current ? base.sort_order : ++sort,
+        };
         finalModels.push(next);
         for (const [tier] of selling) {
             const status = statuses.get(tier);
@@ -521,6 +531,7 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
             continue;
         }
         const after = [...lines(map), modelStatus(enabled)];
+        if (current?.archived && !next.archived) after.push('取消归档，恢复模型管理列表显示');
         if (change === 'unpublish') after.push('new-api 已没有启用渠道提供该模型');
         const row = item(
             'model',

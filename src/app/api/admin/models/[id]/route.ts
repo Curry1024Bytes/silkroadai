@@ -102,7 +102,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
             const model = await tx.catalogModel.update({
                 where: { id: existing.id },
-                data: parsed.data,
+                data: {
+                    ...parsed.data,
+                    // An explicit enable restores visibility unless this request
+                    // deliberately chooses a separate archive state.
+                    ...(parsed.data.enabled === true && parsed.data.archived === undefined ? { archived: false } : {}),
+                },
             });
             return NextResponse.json({ model });
         });
