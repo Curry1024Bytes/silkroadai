@@ -1,0 +1,8 @@
+{
+    "postgres": "16",
+    "isolated_network": "none",
+    "forward_migration": "passed",
+    "target_schema_match_except_intentional_stronger_constraints": true,
+    "constraints_verified": ["multiplier positive", "multiplier max 100", "unique customer tier model", "FX positive"],
+    "production_connections": 0
+}

@@ -25,7 +25,13 @@ import {
     listTokensForCustomer,
     getTokenKey,
     deleteToken as newapiDeleteToken,
+    getTokenForCustomer,
 } from '@/lib/newapi/client';
+import {
+    CustomerTokenBindingError,
+    nativeTokenBindingMatches,
+    resolveCustomerTokenBinding,
+} from '@/lib/customer-pricing/token-binding';
 import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
 import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
@@ -191,6 +197,7 @@ export async function POST(req: NextRequest) {
     let createFailed = false;
     try {
         return await withCustomerKeyMutation({ tenantId: user.tenant_id, tierKey: tier, newapiGroup }, async (tx) => {
+            const tokenBinding = await resolveCustomerTokenBinding(user.id, tier, newapiGroup);
             // 3-step new-api flow (mirrors provisionNewCustomer):
             //   1. createTokenForCustomer(name=alias)  — returns void
             //   2. listTokensForCustomer → find by name → get id
@@ -203,7 +210,7 @@ export async function POST(req: NextRequest) {
                     unlimited_quota: quotaCny === null, // finite key budgets require the explicit operator switch
                     ...(quotaCny === null ? {} : { remain_quota: cnyToQuota(quotaCny) }),
                     expired_time: isoToExpiredTime(expiresAt),
-                    group: newapiGroup, // P3: 当前动态档次显式下发的 new-api group
+                    ...tokenBinding,
                 });
 
                 // Find newly-created by name. Same-alias collisions are possible but
@@ -215,6 +222,14 @@ export async function POST(req: NextRequest) {
                 }
                 newapiTokenId = found.id;
                 issuedTokenId = found.id;
+                if (tokenBinding.group === 'auto') {
+                    const confirmed = await getTokenForCustomer(customerAuth, newapiTokenId);
+                    if (
+                        confirmed.user_id !== user.newapi_user_id ||
+                        !nativeTokenBindingMatches(confirmed, tokenBinding)
+                    )
+                        throw new CustomerTokenBindingError('新 Key 的专属计费分组未通过核对。');
+                }
                 realKey = await getTokenKey(customerAuth, newapiTokenId);
             } catch (newapiErr) {
                 // Unwind the SQL transaction before compensation. Never search
@@ -269,6 +284,9 @@ export async function POST(req: NextRequest) {
             await newapiDeleteToken(customerAuth, issuedTokenId).catch((cleanupError) =>
                 console.error('[portal/keys POST] remote cleanup failed after transaction rollback', cleanupError),
             );
+        }
+        if (error instanceof CustomerTokenBindingError) {
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
         }
         if (createFailed) {
             console.error(`[portal/keys POST] new-api create flow failed for user ${user.id}:`, error);

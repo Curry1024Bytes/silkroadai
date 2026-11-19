@@ -1,0 +1,137 @@
+{
+    "version": "v1.0.0-rc.51",
+    "network": "Docker internal network",
+    "real_provider_requests": 0,
+    "checks": [
+        {
+            "name": "target_key_secret_preserved",
+            "passed": true
+        },
+        {
+            "name": "kiro_key_unchanged",
+            "passed": true
+        },
+        {
+            "name": "alice_lab-chat-a_cost",
+            "passed": true
+        },
+        {
+            "name": "alice_lab-chat-b_cost",
+            "passed": true
+        },
+        {
+            "name": "bob_lab-chat-a_cost",
+            "passed": true
+        },
+        {
+            "name": "bob_lab-chat-b_cost",
+            "passed": true
+        },
+        {
+            "name": "model_catalog_does_not_include_kiro",
+            "passed": true
+        },
+        {
+            "name": "auto_groups_do_not_fall_back_to_global_kiro",
+            "passed": true
+        },
+        {
+            "name": "four_mock_video_tasks_completed_after_restart",
+            "passed": true
+        },
+        {
+            "name": "alice_doubao-seedance-2-0-260128_frozen_snapshot",
+            "passed": true
+        },
+        {
+            "name": "alice_doubao-seedance-2-0-fast-260128_frozen_snapshot",
+            "passed": true
+        },
+        {
+            "name": "bob_doubao-seedance-2-0-260128_frozen_snapshot",
+            "passed": true
+        },
+        {
+            "name": "bob_doubao-seedance-2-0-fast-260128_frozen_snapshot",
+            "passed": true
+        },
+        {
+            "name": "alice_task_net_charge_uses_old_prices",
+            "passed": true
+        },
+        {
+            "name": "bob_task_net_charge_remains_public",
+            "passed": true
+        },
+        {
+            "name": "keys_still_identical_after_restart",
+            "passed": true
+        }
+    ],
+    "sync_requests": {
+        "alice_lab-chat-a": {
+            "quota": 3000,
+            "cny": 0.006,
+            "official_factor": 0.19999999999999998
+        },
+        "alice_lab-chat-b": {
+            "quota": 2250,
+            "cny": 0.0045,
+            "official_factor": 0.15
+        },
+        "bob_lab-chat-a": {
+            "quota": 4500,
+            "cny": 0.009,
+            "official_factor": 0.3
+        },
+        "bob_lab-chat-b": {
+            "quota": 4500,
+            "cny": 0.009,
+            "official_factor": 0.3
+        }
+    },
+    "tasks": [
+        {
+            "user": "alice",
+            "model": "doubao-seedance-2-0-260128",
+            "task_id": "task_r9YXlIHRb2rHgnzbxTMXuM9Jl6BmeP5X",
+            "status": "succeeded",
+            "quota": 1000000,
+            "cny": 2.0,
+            "snapshot_group_ratio": 0.6666666666666666,
+            "completion_tokens": 48037.5
+        },
+        {
+            "user": "alice",
+            "model": "doubao-seedance-2-0-fast-260128",
+            "task_id": "task_ZZOO9AGLKUbt4KlAx6wM7N014h6AiRyZ",
+            "status": "succeeded",
+            "quota": 750000,
+            "cny": 1.5,
+            "snapshot_group_ratio": 0.5,
+            "completion_tokens": 48037.5
+        },
+        {
+            "user": "bob",
+            "model": "doubao-seedance-2-0-260128",
+            "task_id": "task_WqcrAIBvbz5Z1gTNlyXQSJOoHONhM9Pz",
+            "status": "succeeded",
+            "quota": 1500000,
+            "cny": 3.0,
+            "snapshot_group_ratio": 1,
+            "completion_tokens": 48037.5
+        },
+        {
+            "user": "bob",
+            "model": "doubao-seedance-2-0-fast-260128",
+            "task_id": "task_JSDw7ldtb2aP0uTb1sSxh0m5IYBc23fs",
+            "status": "succeeded",
+            "quota": 1500000,
+            "cny": 3.0,
+            "snapshot_group_ratio": 1,
+            "completion_tokens": 48037.5
+        }
+    ],
+    "all_passed": true,
+    "internal_network": true
+}

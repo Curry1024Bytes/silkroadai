@@ -7,6 +7,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
+// These fixtures exercise ordinary forwarding; dedicated pricing-guard tests cover
+// binding verification and fail-closed behavior independently of stream/capture mocks.
+vi.mock('@/lib/customer-pricing/request-guard', () => ({
+    rejectUnsupportedCustomerPricingRequest: vi.fn(async () => null),
+}));
+
 // reqlog capture mock:默认关(beginCapture → null,与 prod 开关 off 一致);
 // 捕获接线用例里单独开。captureResponse 简化成 body 直传。
 const mockBeginCapture = vi.fn((..._a: unknown[]) => null as unknown);

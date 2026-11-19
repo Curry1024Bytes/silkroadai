@@ -493,9 +493,9 @@ describe('<TierSelect /> 专属倍率徽章(2026-10-23)', () => {
             special: false,
         },
     ];
-    it('renders 「Nx 专属倍率」 for a GroupGroupRatio-overridden tier and plain 「Nx 倍率」 otherwise', () => {
+    it('renders 「专属倍率:Nx」 for a GroupGroupRatio-overridden tier and plain 「Nx 倍率」 otherwise', () => {
         const special = renderToString(<TierSelect tiers={TIERS} value="pool-gpt" onChange={() => {}} />);
-        expect(special).toContain('0.25x 专属倍率');
+        expect(special).toContain('专属倍率:0.25x');
         const plain = renderToString(<TierSelect tiers={TIERS} value="pool-claude" onChange={() => {}} />);
         expect(plain).toContain('1.6x 倍率');
         expect(plain).not.toContain('专属倍率');
@@ -599,7 +599,9 @@ describe('<KeysList /> English locale', () => {
             },
         ];
         expect(en(<TierSelect tiers={tiers} value={null} onChange={() => {}} />)).toContain('Choose a tier');
-        expect(en(<TierSelect tiers={tiers} value="pool-gpt" onChange={() => {}} />)).toContain('0.25x custom rate');
+        expect(en(<TierSelect tiers={tiers} value="pool-gpt" onChange={() => {}} />)).toContain(
+            'Exclusive multiplier: 0.25x',
+        );
         expect(en(<TierSelect tiers={tiers} value="official" onChange={() => {}} />)).toContain('3.5x rate');
     });
 

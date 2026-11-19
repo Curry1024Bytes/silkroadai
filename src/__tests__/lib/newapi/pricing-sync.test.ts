@@ -4,6 +4,8 @@ const mockGetChannel = vi.fn();
 const mockUpdateChannel = vi.fn();
 const mockGetOption = vi.fn();
 const mockPutOption = vi.fn();
+const mockPricingBindingFindMany = vi.fn();
+const mockBillingGroupFindFirst = vi.fn();
 
 vi.mock('@/lib/newapi/client', () => ({
     getChannel: (...a: unknown[]) => mockGetChannel(...a),
@@ -14,7 +16,11 @@ vi.mock('@/lib/newapi/client', () => ({
 // GR 原生语义:sync 内部经 getTierGroupRatio 查 channel_groups(tier → newapi_group)。
 const mockChannelGroupFindFirst = vi.fn();
 vi.mock('@/lib/db', () => ({
-    prisma: { channelGroup: { findFirst: (...a: unknown[]) => mockChannelGroupFindFirst(...a) } },
+    prisma: {
+        channelGroup: { findFirst: (...a: unknown[]) => mockChannelGroupFindFirst(...a) },
+        customerPricingBinding: { findMany: (...a: unknown[]) => mockPricingBindingFindMany(...a) },
+        customerModelBillingGroup: { findFirst: (...a: unknown[]) => mockBillingGroupFindFirst(...a) },
+    },
 }));
 
 import {
@@ -37,6 +43,8 @@ const syncModelPriceToNewApi = (
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockPricingBindingFindMany.mockResolvedValue([]);
+    mockBillingGroupFindFirst.mockResolvedValue(null);
     // tier key → newapi_group:'pool' 档挂 default 组,其余同名(default→default、official→official)。
     mockChannelGroupFindFirst.mockImplementation((args: unknown) => {
         const key = (args as { where: { key: string } }).where.key;

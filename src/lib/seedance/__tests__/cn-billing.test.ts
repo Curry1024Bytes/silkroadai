@@ -3,7 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, applyLedgerEntry, syncNewapiGate, getUser, addQuota, getOption } = vi.hoisted(() => ({
+const { db, applyLedgerEntry, syncNewapiGate, getUser, addQuota, getOption, loadOfficialContext } = vi.hoisted(() => ({
     db: {
         $transaction: vi.fn(),
         $executeRaw: vi.fn(),
@@ -14,12 +14,15 @@ const { db, applyLedgerEntry, syncNewapiGate, getUser, addQuota, getOption } = v
         channelGroup: { findMany: vi.fn() },
         catalogPrice: { findFirst: vi.fn() },
         userTierMultiplier: { findMany: vi.fn() },
+        customerOfficialPriceRule: { findMany: vi.fn() },
+        customerPricingBinding: { findUnique: vi.fn() },
     },
     applyLedgerEntry: vi.fn(),
     syncNewapiGate: vi.fn(),
     getUser: vi.fn(),
     addQuota: vi.fn(),
     getOption: vi.fn(),
+    loadOfficialContext: vi.fn(),
 }));
 db.$transaction.mockImplementation(async (callback: (tx: typeof db) => unknown) => callback(db));
 db.$executeRaw.mockResolvedValue(0);
@@ -29,6 +32,7 @@ vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry }));
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate }));
 vi.mock('@/lib/newapi/client', () => ({ getUser, addQuota, getOption }));
+vi.mock('@/lib/customer-pricing/context', () => ({ loadOfficialContext }));
 // prod-ish:1e6 quota = ¥7 → cnyToQuota(¥) = ¥ × 1e6/7
 vi.mock('@/lib/newapi/quota-units', () => ({
     USD_TO_CNY_RATE: 1,
@@ -43,6 +47,7 @@ import {
     chargeSeedanceVideoTask,
     getSeedancePricingSnapshot,
     snapshotCostCny,
+    estimateCostCnyFromSnapshot,
 } from '../cn-billing';
 import { VIDEO_TOKEN_COMBOS, VIDEO_TOKEN_MINI_COMBOS } from '@/lib/admin/pricing-video-token-expression';
 import { variantForModel } from '../cn-adapter';
@@ -124,6 +129,7 @@ describe('Seedance live pricing snapshot', () => {
     };
 
     beforeEach(() => {
+        vi.clearAllMocks();
         db.catalogModel.findMany.mockResolvedValue([
             {
                 id: 'model-1',
@@ -149,8 +155,67 @@ describe('Seedance live pricing snapshot', () => {
             billing_details: catalogDetails,
         });
         db.userTierMultiplier.findMany.mockResolvedValue([]);
+        db.customerOfficialPriceRule.findMany.mockResolvedValue([]);
+        db.customerPricingBinding.findUnique.mockResolvedValue(null);
         getOption.mockResolvedValue(JSON.stringify({ enterprise: 1 }));
     });
+
+    function customerOfficialPricing(
+        rules = [{ id: 'rule-tier', model_key: '*', official_multiplier: 0.2, revision: 1 }],
+    ) {
+        const storedRules = rules.map((rule) => ({
+            ...rule,
+            tenant_id: null,
+            user_id: 'customer-1',
+            tier_key: 'seedance-cn-enterprise',
+        }));
+        const context = {
+            user: { id: 'customer-1', tenant_id: null },
+            rules: storedRules.map((rule) => ({
+                id: rule.id,
+                tier_key: rule.tier_key,
+                model_id: rule.model_key === '*' ? null : rule.model_key,
+                official_multiplier: rule.official_multiplier,
+                revision: rule.revision,
+            })),
+            tiers: [
+                {
+                    key: 'seedance-cn-enterprise',
+                    binding_status: 'active',
+                    models: [
+                        {
+                            model_id: 'model-1',
+                            model_name: 'seedance-upstream',
+                            source_channel_ids: [7],
+                            reference_available: true,
+                            reference_revision: 'reference:official-1:2',
+                            reference_source: '核对后的官方价格表',
+                            shape: 'official-video-matrix',
+                            current_ratio:
+                                rules.find((rule) => rule.model_key === 'model-1')?.official_multiplier ??
+                                rules.find((rule) => rule.model_key === '*')?.official_multiplier ??
+                                1,
+                            cells: VIDEO_TOKEN_COMBOS.map((combo) => ({
+                                key: `${combo.resolution}·${combo.video_input}`,
+                                unit: 'million_tokens',
+                                official_cny: combo.resolution === '720p' && combo.video_input === 'none' ? 100 : 80,
+                                base_cny: combo.resolution === '720p' && combo.video_input === 'none' ? 100 : 80,
+                            })),
+                        },
+                    ],
+                },
+            ],
+        };
+        db.customerOfficialPriceRule.findMany.mockResolvedValue(storedRules);
+        db.customerPricingBinding.findUnique.mockResolvedValue({
+            id: 'binding-1',
+            status: 'active',
+            public_group: 'enterprise',
+            revision: 3,
+        });
+        loadOfficialContext.mockResolvedValue(context);
+        return context;
+    }
 
     it('freezes the live rounded actual quote and avoids applying the discount twice', async () => {
         const readOrder: string[] = [];
@@ -353,7 +418,60 @@ describe('Seedance live pricing snapshot', () => {
         ).rejects.toThrow(/invalid channel-group topology/i);
     });
 
-    it('applies the signed-in customer multiplier once relative to public GroupRatio', async () => {
+    it('uses the public CatalogPrice when this model has no official customer rule', async () => {
+        customerOfficialPricing([
+            { id: 'other-model-rule', model_key: 'other-model', official_multiplier: 0.1, revision: 1 },
+        ]);
+        getOption.mockResolvedValue(JSON.stringify({ enterprise: 0.3 }));
+
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(75);
+        expect(snapshot.rule).toMatchObject({ public_rate: 75, customer_pricing: null });
+        expect(loadOfficialContext).not.toHaveBeenCalled();
+        expect(db.userTierMultiplier.findMany).toHaveBeenCalledWith({
+            where: { user_id: 'customer-1', tier_key: 'seedance-cn-enterprise', enabled: true },
+            select: { newapi_billing_group: true, multiplier: true },
+        });
+        expect(getOption).not.toHaveBeenCalled();
+    });
+
+    it('preserves the existing legacy customer price when no new official rule matches', async () => {
+        db.userTierMultiplier.findMany.mockResolvedValue([{ newapi_billing_group: 'enterprise', multiplier: 0.2 }]);
+        getOption.mockResolvedValue(JSON.stringify({ enterprise: 0.3 }));
+
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(50);
+        expect(snapshot.discount).toBe(1);
+        expect(snapshot.rule).toMatchObject({
+            public_rate: 75,
+            customer_pricing: null,
+            customer_multiplier: 0.2,
+            public_group_ratio: 0.3,
+            customer_scale: 0.2 / 0.3,
+        });
+        expect(loadOfficialContext).not.toHaveBeenCalled();
+    });
+
+    it('preserves legacy customer pricing for a model outside an active official model override', async () => {
+        customerOfficialPricing([
+            { id: 'other-model-rule', model_key: 'other-model', official_multiplier: 0.1, revision: 1 },
+        ]);
         db.userTierMultiplier.findMany.mockResolvedValue([{ newapi_billing_group: 'enterprise', multiplier: 0.75 }]);
         getOption.mockResolvedValue(JSON.stringify({ enterprise: 1 }));
 
@@ -367,16 +485,137 @@ describe('Seedance live pricing snapshot', () => {
         );
 
         expect(snapshot.rate).toBe(56.25);
+        expect(loadOfficialContext).not.toHaveBeenCalled();
+    });
+
+    it('applies the tier official multiplier directly to the verified official rate', async () => {
+        customerOfficialPricing();
+        db.userTierMultiplier.findMany.mockResolvedValue([{ newapi_billing_group: 'enterprise', multiplier: 0.75 }]);
+        getOption.mockResolvedValue(JSON.stringify({ enterprise: 0.3 }));
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(20);
+        expect(snapshot.discount).toBe(1);
         expect(snapshot.rule).toMatchObject({
             public_rate: 75,
-            customer_multiplier: 0.75,
-            public_group_ratio: 1,
-            customer_scale: 0.75,
+            customer_pricing: {
+                basis: 'official',
+                scope: 'tier',
+                official_rate: 100,
+                official_multiplier: 0.2,
+                rule_id: 'rule-tier',
+                rule_revision: 1,
+                binding_id: 'binding-1',
+                binding_revision: 3,
+                official_reference_revision: 'reference:official-1:2',
+            },
         });
-        expect(db.userTierMultiplier.findMany).toHaveBeenCalledWith({
-            where: { user_id: 'customer-1', tier_key: 'seedance-cn-enterprise', enabled: true },
-            select: { newapi_billing_group: true, multiplier: true },
+        expect(snapshotCostCny(1_000_000, snapshot)).toBe(20);
+        expect(estimateCostCnyFromSnapshot(snapshot, '720p', 5, false)).toBe(2.1774);
+        expect(getOption).not.toHaveBeenCalled();
+        expect(db.userTierMultiplier.findMany).not.toHaveBeenCalled();
+        expect(loadOfficialContext).toHaveBeenCalledWith('customer-1', db);
+    });
+
+    it('uses the model official multiplier instead of stacking it with the tier multiplier', async () => {
+        customerOfficialPricing([
+            { id: 'rule-tier', model_key: '*', official_multiplier: 0.2, revision: 1 },
+            { id: 'rule-model', model_key: 'model-1', official_multiplier: 0.15, revision: 2 },
+        ]);
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            false,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(15);
+        expect(snapshot.rule).toMatchObject({
+            customer_pricing: { scope: 'model', official_multiplier: 0.15, rule_id: 'rule-model', rule_revision: 2 },
         });
+    });
+
+    it('freezes a verified saved video official-matrix reference and selects the reference-video cell', async () => {
+        const context = customerOfficialPricing();
+        context.tiers[0].models[0].reference_revision = 'video:5:verified-matrix-fingerprint';
+        context.tiers[0].models[0].reference_source = '已保存的视频官方价格矩阵（人民币／百万 token）';
+        const snapshot = await getSeedancePricingSnapshot(
+            'seedance2.5-720p',
+            'seedance-cn-enterprise',
+            '720p',
+            true,
+            null,
+            'customer-1',
+        );
+
+        expect(snapshot.rate).toBe(16);
+        expect(snapshot.rule).toMatchObject({
+            customer_pricing: {
+                official_rate: 80,
+                official_reference_revision: 'video:5:verified-matrix-fingerprint',
+            },
+        });
+        expect(estimateCostCnyFromSnapshot(snapshot, '720p', 5, true)).toBe(2.61288);
+    });
+
+    it.each(['applying', 'failed'])(
+        'rejects an unverified %s binding before using any public fallback',
+        async (status) => {
+            customerOfficialPricing();
+            db.customerPricingBinding.findUnique.mockResolvedValue({ status, public_group: 'enterprise' });
+            await expect(
+                getSeedancePricingSnapshot(
+                    'seedance2.5-720p',
+                    'seedance-cn-enterprise',
+                    '720p',
+                    false,
+                    null,
+                    'customer-1',
+                ),
+            ).rejects.toThrow(/binding is not verified/i);
+            expect(loadOfficialContext).not.toHaveBeenCalled();
+        },
+    );
+
+    it('rejects a missing binding for an existing official customer rule', async () => {
+        customerOfficialPricing();
+        db.customerPricingBinding.findUnique.mockResolvedValue(null);
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false, null, 'customer-1'),
+        ).rejects.toThrow(/binding is missing/i);
+    });
+
+    it('rejects a missing or changed official reference instead of falling back to the public price', async () => {
+        const context = customerOfficialPricing();
+        context.tiers[0].models[0].reference_available = false;
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false, null, 'customer-1'),
+        ).rejects.toThrow(/官方/);
+    });
+
+    it('rejects an incomplete official matrix even if the requested cell remains present', async () => {
+        const context = customerOfficialPricing();
+        context.tiers[0].models[0].cells = context.tiers[0].models[0].cells.slice(1);
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false, null, 'customer-1'),
+        ).rejects.toThrow(/official price matrix does not match/i);
+    });
+
+    it('rejects drift between the published native rate and the selected official rule', async () => {
+        const context = customerOfficialPricing();
+        context.tiers[0].models[0].current_ratio = 0.3;
+        await expect(
+            getSeedancePricingSnapshot('seedance2.5-720p', 'seedance-cn-enterprise', '720p', false, null, 'customer-1'),
+        ).rejects.toThrow(/native pricing no longer matches/i);
     });
 });
 
@@ -461,6 +700,36 @@ describe('chargeSeedanceVideoTask 幂等 + 双账本', () => {
         expect(r.outcome).toBe('charged');
         expect(r.costCny).toBeCloseTo((108872 / 1_000_000) * 75.024, 6);
         expect(applyLedgerEntry.mock.calls[0][1]).toMatchObject({ amount_cny: -r.costCny! });
+        expect(db.customerOfficialPriceRule.findMany).not.toHaveBeenCalled();
+        expect(loadOfficialContext).not.toHaveBeenCalled();
+    });
+
+    it('settles the frozen official customer rate after public and personal prices have changed', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...frozenTask,
+            pricing_rule: {
+                ...frozenTask.pricing_rule,
+                basis: { ...frozenTask.pricing_rule.basis, rate: 20 },
+                customer_pricing: {
+                    basis: 'official',
+                    scope: 'tier',
+                    official_rate: 100,
+                    official_multiplier: 0.2,
+                    official_reference_revision: 'reference:official-1:2',
+                },
+            },
+        });
+        db.user.findUnique.mockResolvedValue({ id: 'u1', tenant_id: 't1', billing_mode: 'portal', newapi_user_id: 42 });
+        db.customerOfficialPriceRule.findMany.mockResolvedValue([{ official_multiplier: 0.5 }]);
+        db.catalogPrice.findFirst.mockResolvedValue({ billing_details: { cells: [{ price: 150 }] } });
+
+        const result = await chargeSeedanceVideoTask('cgt-1');
+
+        expect(result).toEqual({ outcome: 'charged', costCny: 2.17744 });
+        expect(applyLedgerEntry.mock.calls[0][1]).toMatchObject({ amount_cny: -2.17744 });
+        expect(db.customerOfficialPriceRule.findMany).not.toHaveBeenCalled();
+        expect(db.catalogPrice.findFirst).not.toHaveBeenCalled();
+        expect(loadOfficialContext).not.toHaveBeenCalled();
     });
 
     it('portal 档:applyLedgerEntry charge 负额 + ref=taskId 幂等 + syncNewapiGate', async () => {

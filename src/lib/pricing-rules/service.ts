@@ -14,6 +14,7 @@ import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/p
 import { roleAtLeast } from '@/lib/admin/roles';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { saleRuleSchedulerEnabled } from '@/lib/scheduler/sale-rules';
+import { assertNoOfficialBindingsForTier } from '@/lib/customer-pricing/guards';
 import { DISCOUNT_MAX, DISCOUNT_MIN, ruleProblems, SALE_RULE_KINDS, type SaleRuleKind } from './compile';
 import { ceilToScale, compare, divide, equal, floorToScale, multiply, parseDecimal, toDecimalString } from './decimal';
 import { SaleRulePublishError } from './errors';
@@ -503,6 +504,11 @@ export async function adoptBillingGroup(
     confirmation: Confirmation,
 ): Promise<AdoptResult> {
     assertSuperadmin(context.admin);
+    try {
+        await assertNoOfficialBindingsForTier(input.tier_key);
+    } catch (error) {
+        invalid(error instanceof Error ? error.message : '该分组已启用官方基准客户定价。');
+    }
     const tenantId = tenantOf(context.admin.tenant_id);
     const result: Omit<AdoptResult, 'publish'> = await staged(confirmation.dry_run, async (db) => {
         const now = new Date();

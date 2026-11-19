@@ -14,6 +14,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
+// These protocol fixtures have no customer pricing binding. Binding verification
+// and unfinished-publication blocking are covered by the request-guard suite.
+vi.mock('@/lib/customer-pricing/request-guard', () => ({
+    rejectUnsupportedCustomerPricingRequest: async () => null,
+}));
+
 // Phase 2:mock R2 client(真实现读 R2_* env + 打 S3 API)
 const mockUploadImage = vi.fn(
     async (key: string, _body?: Buffer, _contentType?: string) => `https://images.llmroute.club/${key}`,
@@ -67,6 +73,7 @@ vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
 }));
 vi.mock('@/lib/db', () => ({
     prisma: {
+        customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
         pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockCatalogRevision(...a) },

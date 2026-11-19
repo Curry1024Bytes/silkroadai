@@ -16,6 +16,7 @@ vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
 }));
 vi.mock('@/lib/db', () => ({
     prisma: {
+        customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
         catalogModel: { findMany: (...a: unknown[]) => mockFindManyCatalog(...a) },
         newApiToken: { findUnique: (...a: unknown[]) => mockFindUniqueToken(...a) },
         pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockFindRevision(...a) },

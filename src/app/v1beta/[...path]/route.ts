@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { forwardHeaders, passthroughResponse } from '@/lib/proxy/forward';
 import { guardSseResponse } from '@/lib/sse/stream-guard';
+import { rejectUnsupportedCustomerPricingRequest } from '@/lib/customer-pricing/request-guard';
 import {
     beginCapture,
     captureResponse,
@@ -45,6 +46,8 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
     const pm = parseGeminiPath(path);
+    const pricingError = await rejectUnsupportedCustomerPricingRequest(req, undefined, `/v1beta${path}`);
+    if (pricingError) return pricingError;
 
     // 请求日志捕获,与 /v1/* 同一开关/同一 best-effort 语义(见 capture.ts);
     // cap.path 带 /v1beta 前缀,日志里与 OpenAI 面区分。

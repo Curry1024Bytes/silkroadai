@@ -9,7 +9,9 @@ const { db, charge, getCustomerBalance, getPricingSnapshot, estimateFromSnapshot
     charge: vi.fn(),
     getCustomerBalance: vi.fn(async () => ({ balanceCny: 100 })),
     getPricingSnapshot: vi.fn(),
-    estimateFromSnapshot: vi.fn(() => 1),
+    estimateFromSnapshot: vi.fn<(snapshot: unknown, resolution: string, duration: number, hasVideo: boolean) => number>(
+        () => 1,
+    ),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/billing/customer-balance', () => ({ getCustomerBalance }));
@@ -83,6 +85,51 @@ it('uses and persists the same live pricing snapshot for the balance gate and ta
         pricing_timezone: 'Asia/Shanghai',
         pricing_rule: { basis: { rate: 75 } },
     });
+});
+
+it('keeps the official customer multiplier metadata and exact snapshot through estimation and persistence', async () => {
+    const snapshot = {
+        rate: 20,
+        discount: 1,
+        source: 'model',
+        timezone: 'Asia/Shanghai',
+        rule: {
+            basis: { rate: 20 },
+            customer_pricing: {
+                basis: 'official',
+                official_rate: 100,
+                official_multiplier: 0.2,
+                scope: 'model',
+                rule_id: 'model-rule',
+                official_reference_revision: 'video:5:verified-matrix-fingerprint',
+            },
+        },
+    };
+    getPricingSnapshot.mockResolvedValueOnce(snapshot);
+    db.seedanceVideoTask.create.mockResolvedValueOnce({});
+    const send = vi.fn(async () => new Response(JSON.stringify({ id: 'cgt-customer-priced', status: 'queued' })));
+    vi.stubGlobal('fetch', send);
+
+    const response = await handleSeedanceVideoSubmit(
+        new NextRequest('http://portal.test/v1/videos', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-fixture' },
+        }),
+        { model: 'seedance2.5-720p', prompt: 'fixture', duration: 5 },
+    );
+
+    expect(response.status).toBe(200);
+    expect(getPricingSnapshot).toHaveBeenCalledWith(
+        'seedance2.5-720p',
+        process.env.SEEDANCE_CN_TIER || 'seedance-cn-enterprise',
+        '720p',
+        false,
+        null,
+        'u1',
+    );
+    expect(estimateFromSnapshot.mock.calls[0][0]).toBe(snapshot);
+    expect(db.seedanceVideoTask.create.mock.calls[0][0].data.pricing_rule).toBe(snapshot.rule);
+    expect(send).toHaveBeenCalledTimes(1);
 });
 
 it('does not instruct the customer or SDK to resubmit an accepted task after its ownership row fails', async () => {

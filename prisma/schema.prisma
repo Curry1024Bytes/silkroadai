@@ -1230,6 +1230,115 @@ model PricingRulePublication {
   @@map("pricing_rule_publications")
 }
 
+// Explicitly confirmed official references. Numbers in cells are CNY, with original currency/FX retained.
+model CustomerOfficialReference {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String?  @db.Uuid
+  model_id        String   @db.Uuid
+  tier_key        String
+  shape           String
+  cells           Json
+  source_currency String
+  source_fx       Decimal  @db.Decimal(24, 12)
+  source_note     String
+  revision        Int      @default(1)
+  confirmed_by    String?  @db.Uuid
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([model_id, tier_key])
+  @@map("customer_official_references")
+}
+
+// model_key="*" is a customer/tier default. A model UUID overrides that default; factors never stack.
+model CustomerOfficialPriceRule {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenant_id           String?  @db.Uuid
+  user_id             String   @db.Uuid
+  tier_key            String
+  model_key           String
+  official_multiplier Decimal  @db.Decimal(24, 12)
+  revision            Int      @default(1)
+  created_by          String?  @db.Uuid
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([user_id, tier_key, model_key])
+  @@index([tier_key, model_key])
+  @@map("customer_official_price_rules")
+}
+
+// Native new-api model groups are not public Portal ChannelGroups.
+model CustomerModelBillingGroup {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenant_id           String?  @db.Uuid
+  tier_key            String
+  model_id            String   @db.Uuid
+  model_name          String
+  public_group        String
+  internal_group      String   @unique
+  source_channel_ids  Int[]
+  replica_channel_ids Int[]
+  source_fingerprint  String
+  status              String   @default("preparing")
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([tier_key, model_id])
+  @@map("customer_model_billing_groups")
+}
+
+// Before-images contain token settings only, never API keys. Restore the original logical tier exactly.
+model CustomerPricingBinding {
+  id                  String   @id @default(uuid()) @db.Uuid
+  user_id             String   @db.Uuid
+  tier_key            String
+  public_group        String
+  model_groups        Json
+  token_snapshots     Json
+  original_user_group String
+  original_auto_permissions Json @default("{}")
+  status              String   @default("applying")
+  revision            Int      @default(1)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([user_id, tier_key])
+  @@index([status])
+  @@map("customer_pricing_bindings")
+}
+
+// Committed before remote writes, so failures remain recoverable if a publication transaction aborts.
+model CustomerPricingChange {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  tier_key   String
+  actor_id   String?  @db.Uuid
+  status     String
+  before     Json
+  after      Json
+  progress   Json
+  error      String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status, created_at])
+  @@map("customer_pricing_changes")
+}
+
+// Hash-only ownership index for hidden system keys, usable across Portal processes.
+model CustomerPricingTokenIdentity {
+  token_id   Int      @id
+  key_hash   String   @unique
+  user_id    String   @db.Uuid
+  tier_key   String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_id, tier_key])
+  @@map("customer_pricing_token_identities")
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 影子计量(P4a — 计费接管第一段:纯观察,不扣费)
 // ─────────────────────────────────────────────────────────────────────────

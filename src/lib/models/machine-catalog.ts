@@ -23,6 +23,8 @@ import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
 import type { PriceProvenance } from './price-provenance';
+import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
+import type { CustomerPriceDisplay } from '@/lib/customer-pricing/types';
 import {
     parseCatalogBillingDetails,
     primaryTokenRates,
@@ -41,12 +43,16 @@ export interface TierPricing {
     billing_details?: CatalogBillingDetails;
     /** Present only when the displayed Seedance quote matches the active operator-maintained pricing rule. */
     price_provenance?: PriceProvenance;
+    /** Customer-specific price explanation; contains no purchasing costs or internal groups. */
+    customer_pricing?: CustomerPriceDisplay;
 }
 
 export interface CatalogPricingContext {
     tier: string;
     /** Dedicated GroupGroupRatio / public GroupRatio; never multiply the two ratios together. */
     multiplierScale: number;
+    /** Individually verified native quotes for customer/model official-price rules. */
+    modelPrices?: Map<string, TierPricing>;
 }
 
 export interface CatalogMetaEntry {
@@ -152,18 +158,29 @@ export async function resolveCatalogPricingContextFromAuthHeader(
         select: { tier: true, user_id: true, status: true },
     });
     if (!token || token.status !== 'active') throw new Error('bearer token is not an active Portal customer token');
-    const [group, overrides] = await Promise.all([
+    const [group, overrides, officialQuotes] = await Promise.all([
         prisma.channelGroup.findFirst({
             where: { tenant_id: PLATFORM_TENANT_ID, key: token.tier, enabled: true },
             select: { newapi_group: true },
         }),
         listUserTierMultipliers(token.user_id),
+        loadCustomerOfficialQuotes(token.user_id),
     ]);
     if (!group) throw new Error('catalog tier is unavailable');
     const matches = overrides.filter(
         (rule) => rule.tier_key === token.tier && rule.newapi_billing_group === group.newapi_group,
     );
-    if (matches.length === 0) return { tier: token.tier, multiplierScale: 1 };
+    const modelPrices = new Map(
+        [...officialQuotes]
+            .filter(([key]) => key.endsWith(`\u0000${token.tier}`))
+            .map(([key, price]) => [key.split('\u0000')[0], price]),
+    );
+    const context = (multiplierScale: number): CatalogPricingContext => {
+        const value: CatalogPricingContext = { tier: token.tier, multiplierScale };
+        if (modelPrices.size > 0) value.modelPrices = modelPrices;
+        return value;
+    };
+    if (matches.length === 0) return context(1);
     if (matches.length !== 1) throw new Error('ambiguous customer pricing multiplier');
     const publicRatios: unknown = JSON.parse((await getOption('GroupRatio')) ?? '{}');
     const publicRatio =
@@ -179,7 +196,7 @@ export async function resolveCatalogPricingContextFromAuthHeader(
         effectiveRatio < 0
     )
         throw new Error('cannot verify customer pricing multiplier');
-    return { tier: token.tier, multiplierScale: effectiveRatio / publicRatio };
+    return context(effectiveRatio / publicRatio);
 }
 
 /**
@@ -222,25 +239,32 @@ export function enrichModelList(
         const cat = meta.get(id);
         const type = categorizeByType(id);
         const publicPrice = cat?.pricesByTier.get(tier);
-        const pricing = publicPrice
-            ? {
-                  input_cny_per_1m:
-                      publicPrice.input_cny_per_1m == null
-                          ? null
-                          : scalePricingAmount(publicPrice.input_cny_per_1m, multiplierScale),
-                  output_cny_per_1m:
-                      publicPrice.output_cny_per_1m == null
-                          ? null
-                          : scalePricingAmount(publicPrice.output_cny_per_1m, multiplierScale),
-                  per_image_cny:
-                      publicPrice.per_image_cny == null
-                          ? null
-                          : scalePricingAmount(publicPrice.per_image_cny, multiplierScale),
-                  ...(publicPrice.billing_details
-                      ? { billing_details: scaleCatalogBillingDetails(publicPrice.billing_details, multiplierScale) }
-                      : {}),
-              }
-            : null;
+        const pricing =
+            (typeof context === 'string' ? undefined : context.modelPrices?.get(id)) ??
+            (publicPrice
+                ? {
+                      input_cny_per_1m:
+                          publicPrice.input_cny_per_1m == null
+                              ? null
+                              : scalePricingAmount(publicPrice.input_cny_per_1m, multiplierScale),
+                      output_cny_per_1m:
+                          publicPrice.output_cny_per_1m == null
+                              ? null
+                              : scalePricingAmount(publicPrice.output_cny_per_1m, multiplierScale),
+                      per_image_cny:
+                          publicPrice.per_image_cny == null
+                              ? null
+                              : scalePricingAmount(publicPrice.per_image_cny, multiplierScale),
+                      ...(publicPrice.billing_details
+                          ? {
+                                billing_details: scaleCatalogBillingDetails(
+                                    publicPrice.billing_details,
+                                    multiplierScale,
+                                ),
+                            }
+                          : {}),
+                  }
+                : null);
         const extra: SilkroadaiModelExtra = {
             ...(cat ? { display_name: cat.display_name } : {}),
             vendor: categorizeByVendor(id),

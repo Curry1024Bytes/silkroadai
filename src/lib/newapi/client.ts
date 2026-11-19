@@ -33,6 +33,7 @@
 
 import { z } from 'zod';
 import { customerKeyMutationTimeout } from './customer-key-mutation';
+import type { NativeTokenBinding } from '@/lib/customer-pricing/types';
 
 // ============================================
 // Server-only module guard (hotfix 2026-05-05)
@@ -604,8 +605,28 @@ export async function createTokenForCustomer(
         model_limits?: string; // CSV "gpt-4,deepseek-v4-flash"
         allow_ips?: string | null; // newline-separated
         group: string; // 所属分组(决定计费倍率);必须由 ChannelGroup 显式解析
+        auto_groups?: string[] | null;
+        cross_group_retry?: boolean;
     },
 ): Promise<void> {
+    if (args.group === 'auto') {
+        if (
+            !Array.isArray(args.auto_groups) ||
+            args.auto_groups.length === 0 ||
+            args.auto_groups.some(
+                (group) =>
+                    typeof group !== 'string' ||
+                    !group.trim() ||
+                    group !== group.trim() ||
+                    group === 'auto' ||
+                    group.includes(','),
+            ) ||
+            new Set(args.auto_groups).size !== args.auto_groups.length
+        )
+            throw new Error('Scoped auto tokens require a non-empty, unique group list');
+    } else if (args.auto_groups?.length || args.cross_group_retry) {
+        throw new Error('Concrete-group tokens cannot include auto group settings');
+    }
     await call<null>(
         'POST',
         '/api/token/',
@@ -618,6 +639,9 @@ export async function createTokenForCustomer(
             model_limits: args.model_limits ?? '',
             allow_ips: args.allow_ips ?? null,
             group: args.group,
+            ...(args.group === 'auto'
+                ? { auto_groups: args.auto_groups, cross_group_retry: args.cross_group_retry ?? false }
+                : {}),
         },
         undefined,
         { asUser: customerAuth },
@@ -1108,6 +1132,40 @@ export async function getChannelStrict(id: number): Promise<NewApiChannel> {
     return channel;
 }
 
+const PluginCredentialMetadataSchema = z.object({
+    index: z.number().int().nonnegative().safe(),
+    label: z.string(),
+    account_id: z.string(),
+    expires_at: z.number().int().nonnegative().safe(),
+    needs_login: z.boolean(),
+});
+export type NewApiPluginCredentialMetadata = z.infer<typeof PluginCredentialMetadataSchema>;
+
+/** Official non-secret summaries distinguish safely copied static keys from dropped login credentials. */
+export async function getChannelPluginCredentialMetadataStrict(id: number): Promise<NewApiPluginCredentialMetadata[]> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid channel id');
+    const endpoint = `/api/channel/${id}/plugin_credentials`;
+    try {
+        const data = await call<unknown>('GET', endpoint, undefined, undefined, {
+            requireSuccess: true,
+            cache: 'no-store',
+            redirect: 'error',
+        });
+        const parsed = z.object({ items: z.array(PluginCredentialMetadataSchema) }).safeParse(data);
+        if (!parsed.success || new Set(parsed.data.items.map((item) => item.index)).size !== parsed.data.items.length)
+            throw new Error('Invalid metadata');
+        return parsed.data.items;
+    } catch (error) {
+        // Never attach supplier credential data or response bodies to errors/audit output.
+        throw new NewApiError(
+            error instanceof NewApiError ? error.status : 502,
+            endpoint,
+            null,
+            'Cannot verify plugin credential metadata',
+        );
+    }
+}
+
 /**
  * 列出所有渠道(P2.5 导入预览的「渠道菜单」用,让 operator 看到/挑选要导哪几个)。
  *
@@ -1224,6 +1282,7 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'billing_setting.billing_expr',
         'billing_setting.scheduled_discount',
         'group_ratio_setting.group_ratio',
+        'group_ratio_setting.group_group_ratio',
     ];
     // Preserve absence separately from an explicitly invalid null value. rc.23
     // predates two optional billing features; its complete option list omits
@@ -1458,6 +1517,64 @@ export async function updateChannelStrict(channel: NewApiChannel): Promise<void>
         cache: 'no-store',
         redirect: 'error',
     });
+}
+
+/** Native clone retains the channel key server-side; no credential needs to pass through Portal. */
+export async function copyChannelStrict(channelId: number, suffix: string): Promise<number> {
+    if (!Number.isSafeInteger(channelId) || channelId <= 0 || !suffix.trim() || suffix.length > 100)
+        throw new Error('Invalid channel copy selection');
+    const endpoint = `/api/channel/copy/${channelId}`;
+    const result = await call<unknown>(
+        'POST',
+        endpoint,
+        undefined,
+        { suffix, reset_balance: 'true' },
+        {
+            requireSuccess: true,
+            cache: 'no-store',
+            redirect: 'error',
+            timeoutMs: 15_000,
+        },
+    );
+    const parsed = z.object({ id: z.number().int().positive().safe() }).safeParse(result);
+    if (!parsed.success || parsed.data.id === channelId)
+        throw new NewApiError(502, endpoint, null, 'Cannot verify copied channel identity', undefined, true);
+    return parsed.data.id;
+}
+
+/** Delete only an explicitly owned replica selected by the caller. A rejected response is never success. */
+export async function deleteChannelStrict(channelId: number): Promise<void> {
+    if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new Error('Invalid channel');
+    await call<unknown>('DELETE', `/api/channel/${channelId}`, undefined, undefined, {
+        requireSuccess: true,
+        cache: 'no-store',
+        redirect: 'error',
+        timeoutMs: 15_000,
+    });
+}
+
+/** The official status endpoint changes only status and preserves all channel credentials/settings. */
+export async function setChannelStatusStrict(channelId: number, status: 1 | 2): Promise<void> {
+    if (!Number.isSafeInteger(channelId) || channelId <= 0 || ![1, 2].includes(status))
+        throw new Error('Invalid channel status selection');
+    const before = await getChannelStrict(channelId);
+    if (before.status === status) return;
+    const endpoint = `/api/channel/${channelId}/status`;
+    let writeError: unknown;
+    try {
+        await call<unknown>('POST', endpoint, { status }, undefined, {
+            requireSuccess: true,
+            cache: 'no-store',
+            redirect: 'error',
+            timeoutMs: 15_000,
+        });
+    } catch (error) {
+        writeError = error;
+    }
+    const after = await getChannelStrict(channelId);
+    if (after.status === status) return;
+    if (writeError) throw writeError;
+    throw new NewApiError(502, endpoint, null, 'Channel status readback mismatch');
 }
 
 // ============================================
@@ -1952,7 +2069,7 @@ async function listCustomerTokensByName(
 function assertProvisioningTokenConfiguration(
     token: NewApiToken,
     customerAuth: { userId: number },
-    newapiGroup: string,
+    binding: NativeTokenBinding,
 ): void {
     if (
         token.user_id !== customerAuth.userId ||
@@ -1961,7 +2078,12 @@ function assertProvisioningTokenConfiguration(
         token.expired_time !== -1 ||
         token.model_limits_enabled ||
         token.model_limits !== '' ||
-        token.group !== newapiGroup
+        token.group !== binding.group ||
+        (token.cross_group_retry ?? false) !== binding.cross_group_retry ||
+        (binding.group === 'auto' &&
+            (!Array.isArray(token.auto_groups) ||
+                token.auto_groups.length !== binding.auto_groups!.length ||
+                token.auto_groups.some((group, index) => group !== binding.auto_groups![index])))
     ) {
         throw new NewApiError(409, 'GET /api/token/', null, 'Provisioning token configuration mismatch');
     }
@@ -1979,7 +2101,7 @@ function provisioningTokenOrder(a: NewApiToken, b: NewApiToken): number {
 async function reconcileProvisioningToken(
     customerAuth: { accessToken: string; userId: number },
     tokenName: string,
-    newapiGroup: string,
+    binding: NativeTokenBinding,
     initialMatches: NewApiToken[],
 ): Promise<NewApiToken> {
     let matches = initialMatches;
@@ -1987,7 +2109,7 @@ async function reconcileProvisioningToken(
         if (matches.length === 0) {
             throw new NewApiError(502, 'GET /api/token/', null, 'Unable to confirm provisioning token');
         }
-        for (const candidate of matches) assertProvisioningTokenConfiguration(candidate, customerAuth, newapiGroup);
+        for (const candidate of matches) assertProvisioningTokenConfiguration(candidate, customerAuth, binding);
         const ordered = [...matches].sort(provisioningTokenOrder);
         const canonical = ordered[0];
         if (ordered.length === 1) return canonical;
@@ -2004,7 +2126,7 @@ async function reconcileProvisioningToken(
         }
         matches = await listCustomerTokensByName(customerAuth, tokenName);
         if (matches.length === 1) {
-            assertProvisioningTokenConfiguration(matches[0], customerAuth, newapiGroup);
+            assertProvisioningTokenConfiguration(matches[0], customerAuth, binding);
             return matches[0];
         }
     }
@@ -2037,6 +2159,7 @@ export async function provisionNewCustomerResumable(args: {
     portal_user_id: string;
     email: string;
     newapi_group: string;
+    token_binding?: NativeTokenBinding;
     initial_quota?: number;
     password: string;
     onPatCreationStarted?: () => Promise<void>;
@@ -2122,6 +2245,11 @@ export async function provisionNewCustomerResumable(args: {
     });
     const customerAuth = { accessToken, userId };
     const tokenName = `default-${args.portal_user_id.slice(0, 8)}`;
+    const tokenBinding = args.token_binding ?? {
+        group: args.newapi_group,
+        auto_groups: null,
+        cross_group_retry: false,
+    };
 
     let matches = await listCustomerTokensByName(customerAuth, tokenName);
     if (matches.length === 0) {
@@ -2130,12 +2258,12 @@ export async function provisionNewCustomerResumable(args: {
             unlimited_quota: true,
             remain_quota: args.initial_quota ?? 0,
             expired_time: -1,
-            group: args.newapi_group,
+            ...tokenBinding,
         });
         matches = await listCustomerTokensByName(customerAuth, tokenName);
     }
 
-    const token = await reconcileProvisioningToken(customerAuth, tokenName, args.newapi_group, matches);
+    const token = await reconcileProvisioningToken(customerAuth, tokenName, tokenBinding, matches);
 
     const realKey = await getTokenKey(customerAuth, token.id);
     return {
@@ -2168,6 +2296,7 @@ export async function provisionNewCustomer(args: {
     portal_user_id: string;
     email: string;
     newapi_group: string;
+    token_binding?: NativeTokenBinding;
     initial_quota?: number; // 默认 0
 }): Promise<ProvisionedCustomer> {
     const username = `c-${args.portal_user_id.slice(0, 8)}`; // c-25a69821
@@ -2200,12 +2329,17 @@ export async function provisionNewCustomer(args: {
     // future feature when customers want sub-budgets.
     const customerAuth = { accessToken, userId };
     const tokenName = `default-${args.portal_user_id.slice(0, 8)}`;
+    const tokenBinding = args.token_binding ?? {
+        group: args.newapi_group,
+        auto_groups: null,
+        cross_group_retry: false,
+    };
     await createTokenForCustomer(customerAuth, {
         name: tokenName,
         unlimited_quota: true,
         remain_quota: args.initial_quota ?? 0,
         expired_time: -1,
-        group: args.newapi_group,
+        ...tokenBinding,
     });
 
     // Step 5: look up token.id (create doesn't return it).
@@ -2214,6 +2348,7 @@ export async function provisionNewCustomer(args: {
     if (!token) {
         throw new Error(`Failed to find newly created token ${tokenName} after createTokenForCustomer.`);
     }
+    if (tokenBinding.group === 'auto') assertProvisioningTokenConfiguration(token, customerAuth, tokenBinding);
 
     // Step 6: fetch the real sk-xxx (the list endpoint masks it).
     const realKey = await getTokenKey(customerAuth, token.id);

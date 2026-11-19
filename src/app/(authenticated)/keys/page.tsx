@@ -21,6 +21,7 @@ import { getVerifiedEffectiveGroupRatios } from '@/lib/newapi/effective-group-ra
 import { getTokenMetaForCustomer, expiredTimeToIso } from '@/lib/newapi/token-meta';
 import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
 import { getCustomerProvisioningStatus } from '@/lib/auth/customer-provisioning-queue';
+import { summarizeCustomerOfficialTiers } from '@/lib/customer-pricing/presentation';
 import { getLocale } from '@/lib/i18n/server';
 import { pickMessages } from '@/lib/i18n';
 import { keysMessages } from '@/lib/i18n/messages/keys';
@@ -86,7 +87,7 @@ export default async function KeysPage() {
         user.newapi_user_id != null && user.newapi_access_token
             ? { accessToken: user.newapi_access_token, userId: user.newapi_user_id }
             : null;
-    const [usageSnaps, tierGroupsRaw, effective, meta] = await Promise.all([
+    const [usageSnaps, tierGroupsRaw, effective, meta, officialPricing] = await Promise.all([
         Promise.all(
             tokens.map(async (t) => {
                 if (user.newapi_user_id == null) return null;
@@ -108,10 +109,14 @@ export default async function KeysPage() {
             return [];
         }),
         getVerifiedEffectiveGroupRatios(user).catch(() => {
-            console.warn('[keys] customer ratios unavailable; hiding price badges');
+            console.warn('[keys] customer ratios unavailable; hiding native multiplier badges');
             return null;
         }),
         customerAuth ? getTokenMetaForCustomer(customerAuth) : Promise.resolve(null),
+        summarizeCustomerOfficialTiers(user.id).catch(() => {
+            console.warn('[keys] official customer prices unavailable; showing verification warning');
+            return null;
+        }),
     ]);
 
     const newApiGroupByTier = new Map(tierGroupsRaw.map((group) => [group.key, group.newapi_group]));
@@ -138,7 +143,11 @@ export default async function KeysPage() {
             usedCny: snap ? quotaToCny(Number(snap.used_quota)) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
             tier: t.tier,
-            effective_ratio: effective?.ratios[newApiGroupByTier.get(t.tier) ?? ''] ?? null,
+            effective_ratio:
+                officialPricing === null || officialPricing.has(t.tier)
+                    ? null
+                    : (effective?.ratios[newApiGroupByTier.get(t.tier) ?? ''] ?? null),
+            official_pricing: officialPricing?.get(t.tier),
             meta_available: !!tokenMeta,
             upstream_status: tokenMeta?.status ?? null,
             requires_reactivation: tokenMeta != null && tokenMeta.status !== 1,
@@ -161,9 +170,11 @@ export default async function KeysPage() {
         description: g.description,
         is_default: g.is_default,
         newapi_group: g.newapi_group,
-        ratio: effective?.ratios[g.newapi_group] ?? null,
+        ratio:
+            officialPricing === null || officialPricing.has(g.key) ? null : (effective?.ratios[g.newapi_group] ?? null),
         listRatio: effective?.listRatios[g.newapi_group] ?? null,
         special: effective?.special.has(g.newapi_group) ?? false,
+        official_pricing: officialPricing?.get(g.key),
     }));
 
     const provisioning = {
@@ -187,6 +198,7 @@ export default async function KeysPage() {
                 tiers={tiers}
                 quotaLimitsEnabled={keyQuotaLimitsEnabled()}
                 provisioning={provisioning}
+                officialPricingUnavailable={officialPricing === null}
             />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G

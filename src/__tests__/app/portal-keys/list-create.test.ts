@@ -15,12 +15,14 @@ vi.mock('@/lib/auth/session', () => ({
 const mockTokenFindMany = vi.fn();
 const mockTokenCount = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockPricingBinding = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         $transaction: async (work: (tx: unknown) => Promise<unknown>) => work((await import('@/lib/db')).prisma),
         pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
         channelGroupRetirementJob: { findFirst: async () => null },
         channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
+        customerPricingBinding: { findUnique: (...args: unknown[]) => mockPricingBinding(...args) },
         newApiToken: {
             findMany: (...args: unknown[]) => mockTokenFindMany(...args),
             count: (...args: unknown[]) => mockTokenCount(...args),
@@ -33,11 +35,13 @@ const mockCreateTokenForCustomer = vi.fn();
 const mockListTokensForCustomer = vi.fn();
 const mockGetTokenKey = vi.fn();
 const mockNewapiDeleteToken = vi.fn();
+const mockGetTokenForCustomer = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     createTokenForCustomer: (...args: unknown[]) => mockCreateTokenForCustomer(...args),
     listTokensForCustomer: (...args: unknown[]) => mockListTokensForCustomer(...args),
     getTokenKey: (...args: unknown[]) => mockGetTokenKey(...args),
     deleteToken: (...args: unknown[]) => mockNewapiDeleteToken(...args),
+    getTokenForCustomer: (...args: unknown[]) => mockGetTokenForCustomer(...args),
 }));
 
 // P3: POST resolves 档次 → new-api group via listEnabledChannelGroups.
@@ -79,6 +83,7 @@ afterEach(() => vi.unstubAllEnvs());
 beforeEach(() => {
     vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'false');
     vi.clearAllMocks();
+    mockPricingBinding.mockResolvedValue(null);
     // P3 default: tenant has pool (default) + official tiers.
     mockListEnabledChannelGroups.mockResolvedValue([
         { key: 'pool', newapi_group: 'default', is_default: true },

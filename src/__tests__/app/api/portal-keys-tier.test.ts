@@ -6,12 +6,14 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: (...a: unknown[]) => mock
 
 const mockTokenCount = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockPricingBinding = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         $transaction: async (work: (tx: unknown) => Promise<unknown>) => work((await import('@/lib/db')).prisma),
         pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
         channelGroupRetirementJob: { findFirst: async () => null },
         channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
+        customerPricingBinding: { findUnique: (...args: unknown[]) => mockPricingBinding(...args) },
         newApiToken: {
             count: (...a: unknown[]) => mockTokenCount(...a),
             create: (...a: unknown[]) => mockTokenCreate(...a),
@@ -23,11 +25,13 @@ const mockCreateTokenForCustomer = vi.fn();
 const mockListTokensForCustomer = vi.fn();
 const mockGetTokenKey = vi.fn();
 const mockNewapiDeleteToken = vi.fn();
+const mockGetTokenForCustomer = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     createTokenForCustomer: (...a: unknown[]) => mockCreateTokenForCustomer(...a),
     listTokensForCustomer: (...a: unknown[]) => mockListTokensForCustomer(...a),
     getTokenKey: (...a: unknown[]) => mockGetTokenKey(...a),
     deleteToken: (...a: unknown[]) => mockNewapiDeleteToken(...a),
+    getTokenForCustomer: (...a: unknown[]) => mockGetTokenForCustomer(...a),
 }));
 
 const mockListEnabledChannelGroups = vi.fn();
@@ -65,10 +69,12 @@ function req(body: object) {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockPricingBinding.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue(SESSION_USER);
     mockTokenCount.mockResolvedValue(0);
     mockListEnabledChannelGroups.mockResolvedValue(GROUPS);
     mockCreateTokenForCustomer.mockResolvedValue(undefined);
+    mockNewapiDeleteToken.mockResolvedValue(undefined);
     mockListTokensForCustomer.mockResolvedValue({ items: [{ id: 99, name: 'k' }], total: 1 });
     mockGetTokenKey.mockResolvedValue('rawkey');
     mockTokenCreate.mockImplementation(({ data }: { data: { key_alias: string; tier: string } }) =>
@@ -82,6 +88,58 @@ beforeEach(() => {
 });
 
 describe('POST /api/portal/keys — P3 档次 → new-api group (decoupled)', () => {
+    it('keeps the public tier while issuing its customer-scoped auto token and verifying the full group list', async () => {
+        mockPricingBinding.mockResolvedValue({
+            public_group: 'official',
+            model_groups: ['model-a', 'model-b'],
+            status: 'active',
+        });
+        mockGetTokenForCustomer.mockResolvedValue({
+            id: 99,
+            user_id: 7,
+            group: 'auto',
+            auto_groups: ['model-a', 'model-b'],
+            cross_group_retry: false,
+        });
+        const res = await POST(req({ alias: 'k', tier: 'official', auto_groups: ['attacker-group'] }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                group: 'auto',
+                auto_groups: ['model-a', 'model-b'],
+                cross_group_retry: false,
+            }),
+        );
+        expect((await res.json()).tier).toBe('official');
+        expect(mockTokenCreate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ tier: 'official' }) }),
+        );
+    });
+
+    it('does not issue a fallback public key while the binding is incomplete', async () => {
+        mockPricingBinding.mockResolvedValue({ public_group: 'official', model_groups: ['model-a'], status: 'failed' });
+        const res = await POST(req({ alias: 'k', tier: 'official' }));
+        expect(res.status).toBe(503);
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+        expect(mockTokenCreate).not.toHaveBeenCalled();
+    });
+
+    it('does not reveal or persist a key whose native auto list differs from its authorized binding', async () => {
+        mockPricingBinding.mockResolvedValue({ public_group: 'official', model_groups: ['model-a'], status: 'active' });
+        mockGetTokenForCustomer.mockResolvedValue({
+            id: 99,
+            user_id: 7,
+            group: 'auto',
+            auto_groups: ['model-a', 'another-tier'],
+            cross_group_retry: false,
+        });
+        const res = await POST(req({ alias: 'k', tier: 'official' }));
+        expect(res.status).toBe(503);
+        expect(mockGetTokenKey).not.toHaveBeenCalled();
+        expect(mockTokenCreate).not.toHaveBeenCalled();
+        expect(mockNewapiDeleteToken).toHaveBeenCalledWith(expect.anything(), 99);
+    });
     it('tier=official → new-api group="official", stores tier="official", response carries tier', async () => {
         const res = await POST(req({ alias: 'k', tier: 'official' }));
         expect(res.status).toBe(200);

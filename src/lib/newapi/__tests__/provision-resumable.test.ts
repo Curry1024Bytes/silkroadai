@@ -28,6 +28,36 @@ function token(id: number, overrides: Record<string, unknown> = {}) {
     };
 }
 
+describe('resumable provisioning with a customer pricing binding', () => {
+    const binding = { group: 'auto', auto_groups: ['model-a', 'model-b'], cross_group_retry: false };
+    const input = {
+        portal_user_id: PORTAL_USER_ID,
+        email: 'customer@example.com',
+        newapi_group: GROUP,
+        password: 'stable-password',
+        token_binding: binding,
+    };
+
+    it('creates and confirms the native auto configuration while retaining the logical default group', async () => {
+        installFetch([token(91, binding)]);
+        await expect(provisionNewCustomerResumable(input)).resolves.toMatchObject({ newapi_token_id: 91 });
+        const createCall = vi
+            .mocked(fetch)
+            .mock.calls.find(
+                ([url, init]) => new URL(String(url)).pathname === '/api/token/' && init?.method === 'POST',
+            );
+        expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject(binding);
+    });
+
+    it('rejects a partially saved or broadened auto list before revealing the credential', async () => {
+        installFetch([token(91, { ...binding, auto_groups: ['model-a'] })]);
+        await expect(provisionNewCustomerResumable(input)).rejects.toMatchObject({ status: 409 });
+        expect(vi.mocked(fetch).mock.calls.some(([url]) => new URL(String(url)).pathname === '/api/token/91/key')).toBe(
+            false,
+        );
+    });
+});
+
 function installFetch(
     tokensAfterCreate: unknown[],
     existingUsers: Array<{ id: number; username: string; email: string }> = [

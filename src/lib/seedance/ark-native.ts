@@ -26,6 +26,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { forwardHeaders, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { rejectUnsupportedCustomerPricingRequest } from '@/lib/customer-pricing/request-guard';
 import {
     beginCapture,
     captureJsonResponse,
@@ -227,6 +228,9 @@ export async function handleArkNativeVideo(req: NextRequest, route: ArkNativeVid
             return NextResponse.json(errBody, { status: 400 });
         }
     }
+
+    const pricingError = await rejectUnsupportedCustomerPricingRequest(req, body, `/api/v3${clientPath}`);
+    if (pricingError) return pricingError;
 
     let upstream: Response;
     try {

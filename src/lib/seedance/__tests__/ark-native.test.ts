@@ -6,6 +6,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
+// Ordinary-customer relay fixtures; dedicated-price verification has its own tests.
+vi.mock('@/lib/customer-pricing/request-guard', () => ({
+    rejectUnsupportedCustomerPricingRequest: vi.fn(async () => null),
+}));
+
 // reqlog capture mock:默认关(与 prod 开关 off 一致);捕获接线用例里单独开。
 const mockBeginCapture = vi.fn<(...args: unknown[]) => unknown>(() => null);
 const mockRecordRequestBody = vi.fn<(...args: unknown[]) => void>();

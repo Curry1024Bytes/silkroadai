@@ -26,6 +26,8 @@ import type { Prisma } from '@prisma/client';
 import { lockPricingPublisherReadOnly } from '@/lib/admin/pricing-publish-lock';
 import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
+import { loadOfficialContext } from '@/lib/customer-pricing/context';
+import { compileOfficialRatio, selectOfficialRule } from '@/lib/customer-pricing/math';
 import {
     VIDEO_TOKEN_COMBOS,
     videoTokenCombosForModel,
@@ -141,42 +143,118 @@ export async function getSeedancePricingSnapshot(
             if (!cell || !(cell.price > 0) || !Number.isFinite(cell.price))
                 throw new Error('Seedance video-token catalog price cell is invalid');
 
-            let customerScale = 1;
-            let customerMultiplier: number | null = null;
-            let publicGroupRatio: number | null = null;
+            let actualRate = cell.price;
+            let customerPricing: Prisma.InputJsonObject | null = null;
+            let legacyPricing: Prisma.InputJsonObject | null = null;
             if (userId) {
-                const overrides = await tx.userTierMultiplier.findMany({
-                    where: { user_id: userId, tier_key: tier, enabled: true },
-                    select: { newapi_billing_group: true, multiplier: true },
-                });
-                if (overrides.length > 1) throw new Error(`Seedance customer pricing is ambiguous: ${model}/${tier}`);
-                if (overrides.length === 1) {
-                    const override = overrides[0];
-                    if (override.newapi_billing_group !== group.newapi_group)
-                        throw new Error('Seedance customer pricing group no longer matches the active tier');
-                    const rawRatios = await getOption('GroupRatio', true);
-                    const ratios = parseGroupRatios(rawRatios);
-                    publicGroupRatio = ratios[group.newapi_group] ?? null;
-                    customerMultiplier = Number(override.multiplier);
+                const [storedRules, binding] = await Promise.all([
+                    tx.customerOfficialPriceRule.findMany({ where: { user_id: userId, tier_key: tier } }),
+                    tx.customerPricingBinding.findUnique({
+                        where: { user_id_tier_key: { user_id: userId, tier_key: tier } },
+                    }),
+                ]);
+                if (binding && (binding.status !== 'active' || binding.public_group !== group.newapi_group))
+                    throw new Error('Seedance customer pricing binding is not verified');
+                if (storedRules.some((rule) => (rule.tenant_id ?? PLATFORM_TENANT_ID) !== resolvedTenant))
+                    throw new Error('Seedance customer pricing tenant does not match');
+                const rule = selectOfficialRule(
+                    storedRules.map((entry) => ({
+                        id: entry.id,
+                        tier_key: entry.tier_key,
+                        model_id: entry.model_key === '*' ? null : entry.model_key,
+                        official_multiplier: Number(entry.official_multiplier),
+                        revision: entry.revision,
+                    })),
+                    tier,
+                    modelRow.id,
+                );
+                if (rule) {
+                    if (!binding) throw new Error('Seedance customer pricing binding is missing');
+                    // Use the same verified official reference and native-price checks as the
+                    // customer UI/publisher, including saved video official matrices. Never infer
+                    // an official rate by dividing the current public selling price.
+                    const context = await loadOfficialContext(userId, tx);
+                    const officialTier = context.tiers.find((entry) => entry.key === tier);
+                    const officialModel = officialTier?.models.find((entry) => entry.model_id === modelRow.id);
+                    const confirmedRule = selectOfficialRule(context.rules, tier, modelRow.id);
                     if (
-                        publicGroupRatio === null ||
-                        !(publicGroupRatio > 0) ||
-                        !Number.isFinite(customerMultiplier) ||
-                        customerMultiplier < 0
+                        (context.user.tenant_id ?? PLATFORM_TENANT_ID) !== resolvedTenant ||
+                        officialTier?.binding_status !== 'active' ||
+                        !officialModel ||
+                        officialModel.model_name !== upstreamModel ||
+                        !officialModel.source_channel_ids.includes(channelId) ||
+                        !officialModel.reference_revision ||
+                        !confirmedRule ||
+                        confirmedRule.id !== rule.id ||
+                        confirmedRule.revision !== rule.revision ||
+                        confirmedRule.official_multiplier !== rule.official_multiplier
                     )
-                        throw new Error('Seedance customer pricing multiplier is invalid');
-                    customerScale = customerMultiplier / publicGroupRatio;
-                    scalePricingAmount(0, customerScale);
+                        throw new Error('Seedance customer official pricing could not be verified');
+                    const expectedRatio = compileOfficialRatio(officialModel, rule.official_multiplier);
+                    if (
+                        !Number.isFinite(officialModel.current_ratio) ||
+                        Math.abs(expectedRatio - officialModel.current_ratio) > 1e-12 + Math.abs(expectedRatio) * 1e-12
+                    )
+                        throw new Error('Seedance customer native pricing no longer matches its official rule');
+                    const officialKeys = officialModel.cells.map((entry) => entry.key);
+                    if (
+                        officialKeys.length !== supportedCombos.length ||
+                        new Set(officialKeys).size !== supportedCombos.length ||
+                        supportedCombos.some((entry) => !officialKeys.includes(videoTokenKey(entry))) ||
+                        officialModel.cells.some((entry) => entry.unit !== 'million_tokens')
+                    )
+                        throw new Error('Seedance customer official price matrix does not match this model');
+                    const officialCell = officialModel.cells.find((entry) => entry.key === videoTokenKey(cell));
+                    if (!officialCell || !(officialCell.official_cny > 0))
+                        throw new Error('Seedance customer official price cell is unavailable');
+                    actualRate = scalePricingAmount(officialCell.official_cny, rule.official_multiplier);
+                    customerPricing = {
+                        basis: 'official',
+                        scope: rule.model_id ? 'model' : 'tier',
+                        official_rate: officialCell.official_cny,
+                        official_multiplier: rule.official_multiplier,
+                        official_reference_revision: officialModel.reference_revision,
+                        official_reference_source: officialModel.reference_source,
+                        official_reference_shape: officialModel.shape,
+                        rule_id: rule.id,
+                        rule_revision: rule.revision,
+                        binding_id: binding.id,
+                        binding_revision: binding.revision,
+                    };
+                } else {
+                    // Preserve an existing legacy contract until the operator explicitly
+                    // replaces it with an official-price rule. It never compounds with one.
+                    const overrides = await tx.userTierMultiplier.findMany({
+                        where: { user_id: userId, tier_key: tier, enabled: true },
+                        select: { newapi_billing_group: true, multiplier: true },
+                    });
+                    if (overrides.length > 1)
+                        throw new Error(`Seedance customer pricing is ambiguous: ${model}/${tier}`);
+                    if (overrides.length === 1) {
+                        const override = overrides[0];
+                        if (override.newapi_billing_group !== group.newapi_group)
+                            throw new Error('Seedance customer pricing group no longer matches the active tier');
+                        const ratios = parseGroupRatios(await getOption('GroupRatio', true));
+                        const publicGroupRatio = ratios[group.newapi_group];
+                        const customerMultiplier = Number(override.multiplier);
+                        if (!(publicGroupRatio > 0) || !Number.isFinite(customerMultiplier) || customerMultiplier <= 0)
+                            throw new Error('Seedance customer pricing multiplier is invalid');
+                        const customerScale = customerMultiplier / publicGroupRatio;
+                        actualRate = scalePricingAmount(cell.price, customerScale);
+                        legacyPricing = {
+                            customer_multiplier: customerMultiplier,
+                            public_group_ratio: publicGroupRatio,
+                            customer_scale: customerScale,
+                        };
+                    }
                 }
             }
-            const actualRate = scalePricingAmount(cell.price, customerScale);
             if (!(actualRate > 0) || !Number.isFinite(actualRate)) throw new Error('Seedance catalog price is invalid');
             const timezone = 'Asia/Shanghai';
             const evaluatedAt = new Date().toISOString();
             return {
-                // CatalogPrice is already the public customer quote. Apply a dedicated customer
-                // multiplier only as a ratio against the public GroupRatio, exactly as the model
-                // browser does; settlement must never apply a second discount.
+                // Freeze the final rate, so both the balance estimate and eventual settlement
+                // keep this quote even when public prices or customer rules subsequently change.
                 rate: actualRate,
                 discount: 1,
                 source: 'model',
@@ -190,9 +268,8 @@ export async function getSeedancePricingSnapshot(
                     catalog_price_id: price.id,
                     catalog_price_effective_from: price.effective_from.toISOString(),
                     public_rate: cell.price,
-                    customer_multiplier: customerMultiplier,
-                    public_group_ratio: publicGroupRatio,
-                    customer_scale: customerScale,
+                    customer_pricing: customerPricing,
+                    ...(legacyPricing ?? {}),
                     evaluatedAt,
                 },
             };

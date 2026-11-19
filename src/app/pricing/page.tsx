@@ -54,6 +54,8 @@ import { LocaleSwitcher } from '@/components/LocaleSwitcher';
 import { pickMessages, type Locale } from '@/lib/i18n';
 import { getLocale } from '@/lib/i18n/server';
 import { pricingMessages, type PricingMessages } from '@/lib/i18n/messages/pricing';
+import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
+import type { CustomerPriceDisplay } from '@/lib/customer-pricing/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -80,6 +82,7 @@ interface PriceCell {
     effectiveMultiplier: number | null;
     billingDetails: CatalogBillingDetails | null;
     special: boolean;
+    customerPricing?: CustomerPriceDisplay;
 }
 
 interface ModelBlock {
@@ -108,6 +111,7 @@ async function getGroupRatioSafe(): Promise<string | null> {
 }
 
 async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
+    const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map();
     const [models, groups, groupRatioRaw, overrides] = await Promise.all([
         prisma.catalogModel.findMany({
             // 锁平台主体 —— slug 仅在 tenant 内唯一,与 machine-catalog / billing meter 同标准。
@@ -188,6 +192,7 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
             const scaledDetails = publicDetails ? scaleCatalogBillingDetails(publicDetails, multiplierScale) : null;
             const billingDetails = sanitizeCatalogDisplayDetails(m.slug, scaledDetails);
             const tokenRates = primaryTokenRates(billingDetails);
+            const personal = officialQuotes.get(`${m.slug}\u0000${p.tier}`);
             rows.push({
                 tierKey: p.tier,
                 tierLabel: tierLabel.get(p.tier)!,
@@ -206,7 +211,16 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
                 publicMultiplier,
                 effectiveMultiplier: dedicatedMultiplier ?? publicMultiplier,
                 billingDetails,
-                special: dedicatedMultiplier !== undefined && dedicatedMultiplier !== publicMultiplier,
+                special: !!personal || (dedicatedMultiplier !== undefined && dedicatedMultiplier !== publicMultiplier),
+                ...(personal
+                    ? {
+                          inputCny: personal.input_cny_per_1m,
+                          outputCny: personal.output_cny_per_1m,
+                          perImageCny: personal.per_image_cny,
+                          billingDetails: personal.billing_details ?? null,
+                          customerPricing: personal.customer_pricing,
+                      }
+                    : {}),
             });
         }
         if (rows.length === 0) continue; // 无任何可展示价 → 不上表
@@ -342,8 +356,15 @@ function VendorPriceSection({ block, m, locale }: { block: VendorBlock; m: Prici
                                         )}
                                         <td className="py-2.5 pr-4 text-muted-ink">
                                             {row.tierLabel}
-                                            {row.special && (
+                                            {row.special && !row.customerPricing && (
                                                 <span className="ml-2 text-xs">{m.table.specialBadge}</span>
+                                            )}
+                                            {row.customerPricing && (
+                                                <span className="mt-1 block rounded bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">
+                                                    {en
+                                                        ? `Exclusive multiplier: ${formatTieredPrice(row.customerPricing.multiplier)}x`
+                                                        : `专属倍率:${formatTieredPrice(row.customerPricing.multiplier)}x`}
+                                                </span>
                                             )}
                                             {row.billingDetails && (
                                                 <span className="block mt-1 text-xs">
@@ -365,7 +386,11 @@ function VendorPriceSection({ block, m, locale }: { block: VendorBlock; m: Prici
                                             {row.perImageCny != null ? `¥${fmtCny(row.perImageCny)}` : '—'}
                                         </td>
                                         <td className="py-2.5 pl-4 text-right text-navy tabular-nums">
-                                            {row.effectiveMultiplier != null ? `${row.effectiveMultiplier}x` : '—'}
+                                            {row.customerPricing
+                                                ? `${formatTieredPrice(row.customerPricing.multiplier)}x`
+                                                : row.effectiveMultiplier != null
+                                                  ? `${row.effectiveMultiplier}x`
+                                                  : '—'}
                                         </td>
                                     </tr>
                                     {row.billingDetails && (

@@ -7,6 +7,7 @@ import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import { RateOverridesPanel } from './rate-overrides-panel';
 import { SaleRulesPanel } from './sale-rules-panel';
+import { OfficialPricingPanel } from './official-pricing-panel';
 
 // ── Types (mirror /api/admin/customers/[id]) ──
 interface CustomerDetail {
@@ -370,6 +371,7 @@ function DetailContent() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [notFound, setNotFound] = useState(false);
+    const [pricingVersion, setPricingVersion] = useState(0);
 
     const fetchData = useCallback(async (cid: string) => {
         setLoading(true);
@@ -636,9 +638,33 @@ function DetailContent() {
                         </div>
                     </div>
 
-                    <RateOverridesPanel customerId={data.customer.id} isDark={isDark} locale={locale} />
+                    <OfficialPricingPanel
+                        key={data.customer.id}
+                        customerId={data.customer.id}
+                        isDark={isDark}
+                        locale={locale}
+                        onChanged={() => setPricingVersion((previous) => previous + 1)}
+                    />
 
-                    <SaleRulesPanel customerId={data.customer.id} isDark={isDark} />
+                    <details key={`legacy-pricing-${pricingVersion}`} className={`rounded-xl border p-4 ${card}`}>
+                        <summary className="cursor-pointer text-sm font-semibold">
+                            {locale === 'en' ? 'Legacy group multipliers and sale discounts' : '旧版分组倍率与相对折扣'}
+                        </summary>
+                        <p className={`mt-3 text-xs leading-relaxed ${muted}`}>
+                            {locale === 'en'
+                                ? 'Existing settings keep their original billing meaning. They are not official-price multipliers. Use Customer exclusive prices above for new official-price rules.'
+                                : '已有设置保留原计费含义，不会变成官方价倍率。新的官方价专属规则请在上方「客户专属价」设置。'}
+                        </p>
+                        <div className="mt-4 space-y-6">
+                            <RateOverridesPanel
+                                customerId={data.customer.id}
+                                isDark={isDark}
+                                locale={locale}
+                                readOnly
+                            />
+                            <SaleRulesPanel customerId={data.customer.id} isDark={isDark} />
+                        </div>
+                    </details>
 
                     {/* P4c-1 Ledger balance + adjust */}
                     <div>

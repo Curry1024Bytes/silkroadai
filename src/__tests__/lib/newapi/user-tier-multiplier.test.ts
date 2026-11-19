@@ -38,6 +38,7 @@ vi.mock('@/lib/db', () => ({
     prisma: {
         channelGroup: { findFirst: (...args: unknown[]) => mockChannelGroupFindFirst(...args) },
         pricingBillingGroup: { findMany: () => mockManagedGroups() },
+        customerPricingBinding: { findFirst: async () => null },
         userTierMultiplier: {
             findUnique: (...args: unknown[]) => mockOverrideFindUnique(...args),
             findFirst: (...args: unknown[]) => mockOverrideFindFirst(...args),

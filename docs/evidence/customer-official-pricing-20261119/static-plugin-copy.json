@@ -1,0 +1,45 @@
+{
+    "version": "v1.0.0-rc.51",
+    "network_internal": true,
+    "real_provider_requests": 0,
+    "mock_provider_requests": 0,
+    "generation_tasks_submitted": 0,
+    "source_plugin": "doubao",
+    "source_type": 61,
+    "fixture_channels_cleaned": true,
+    "checks": [
+        {
+            "name": "source_is_type61_doubao_static_key",
+            "passed": true
+        },
+        {
+            "name": "native_copy_returned_new_id",
+            "passed": true
+        },
+        {
+            "name": "new_replica_paused",
+            "passed": true
+        },
+        {
+            "name": "static_credential_metadata_preserved",
+            "passed": true
+        },
+        {
+            "name": "configured_replica_retains_plugin_binding_and_summary",
+            "passed": true
+        },
+        {
+            "name": "fixture_static_key_preserved_server_side",
+            "passed": true
+        },
+        {
+            "name": "public_source_unchanged",
+            "passed": true
+        },
+        {
+            "name": "no_provider_requests_created",
+            "passed": true
+        }
+    ],
+    "all_passed": true
+}

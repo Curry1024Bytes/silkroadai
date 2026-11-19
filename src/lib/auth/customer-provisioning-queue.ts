@@ -9,6 +9,7 @@ import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { loadChannelGroupTopology } from '@/lib/channel-group-topology';
 import { NewApiError, provisionNewCustomerResumable, type ProvisionedCustomer } from '@/lib/newapi/client';
+import { resolveCustomerTokenBinding } from '@/lib/customer-pricing/token-binding';
 
 import {
     decryptCustomerProvisioningPassword,
@@ -545,10 +546,12 @@ export async function processNextCustomerProvisioningJob(
             // or any other remote side effect.
             await renewAndFenceProvisioningLease(job, leaseMs);
             await assertProvisioningTopology(job);
+            const tokenBinding = await resolveCustomerTokenBinding(job.userId, job.tierKey, job.newapiGroup);
             const result = await provisionNewCustomerResumable({
                 portal_user_id: job.userId,
                 email: job.email,
                 newapi_group: job.newapiGroup,
+                token_binding: tokenBinding,
                 initial_quota: job.initialQuota,
                 password,
                 onPatCreationStarted: async () => {

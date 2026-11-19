@@ -45,9 +45,11 @@ export const keysMessages = defineMessages(
             exhausted: '已用尽',
             expired: '已过期',
         },
+        officialPricingUnavailable:
+            '专属倍率信息暂时无法核实。请刷新页面重试；核实前，本页会隐藏倍率信息以免显示错误价格。',
         tier: {
             ratio: (ratio: number) => `${ratio}x 倍率`,
-            specialRatio: (ratio: number) => `${ratio}x 专属倍率`,
+            specialRatio: (ratio: number) => `专属倍率:${ratio}x`,
             pick: '选择一个档次',
             searchPlaceholder: '搜索…',
             noMatch: '无匹配档次',
@@ -172,9 +174,11 @@ export const keysMessages = defineMessages(
             exhausted: 'Used up',
             expired: 'Expired',
         },
+        officialPricingUnavailable:
+            'Your exclusive multiplier could not be verified. Refresh the page to retry; multiplier details are hidden until they can be verified.',
         tier: {
             ratio: (ratio: number) => `${ratio}x rate`,
-            specialRatio: (ratio: number) => `${ratio}x custom rate`,
+            specialRatio: (ratio: number) => `Exclusive multiplier: ${ratio}x`,
             pick: 'Choose a tier',
             searchPlaceholder: 'Search…',
             noMatch: 'No matching tier',

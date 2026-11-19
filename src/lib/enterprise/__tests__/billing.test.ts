@@ -17,7 +17,10 @@ vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry }));
 // cn-billing 的传递依赖(本文件不触发,mock 掉防 env 读取)
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: vi.fn() }));
 vi.mock('@/lib/newapi/client', () => ({ getUser: vi.fn(), addQuota: vi.fn() }));
-vi.mock('@/lib/newapi/quota-units', () => ({ cnyToQuota: (c: number) => Math.round((c * 1e6) / 7) }));
+vi.mock('@/lib/newapi/quota-units', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/newapi/quota-units')>()),
+    cnyToQuota: (c: number) => Math.round((c * 1e6) / 7),
+}));
 
 import {
     computeEnterpriseCostCny,

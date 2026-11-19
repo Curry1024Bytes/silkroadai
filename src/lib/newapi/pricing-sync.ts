@@ -3,6 +3,7 @@ import { getOption, putOption } from './client';
 import { tierOrder } from '@/lib/admin/pricing-tiers';
 import { USD_TO_CNY_RATE, quotaToCny } from './quota-units';
 import { prisma } from '@/lib/db';
+import { assertLegacyPriceWriteAllowed } from '@/lib/customer-pricing/rebase';
 
 /**
  * 定价 sync 的换算 FX —— 把零售 ¥/1M 折算成 new-api ratio,必须与真实计费口径一致。
@@ -213,6 +214,7 @@ async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): 
     }
     const ratios = computeRatios(price.input_cny_per_1m as number, price.output_cny_per_1m as number, groupRatio);
     try {
+        await assertLegacyPriceWriteAllowed(entry.upstream_model);
         const mrDict = parseRatioDict(await getOption('ModelRatio'));
         const crDict = parseRatioDict(await getOption('CompletionRatio'));
         mrDict[entry.upstream_model] = ratios.model_ratio;
@@ -282,6 +284,7 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
         // parseRatioDict:把 JSON 字符串/对象解析成 Record<string, number>(对 ModelPrice dict 同形)。
         const dict = parseRatioDict(await getOption('ModelPrice'));
         dict[entry.upstream_model] = modelPrice_usd;
+        await assertLegacyPriceWriteAllowed(entry.upstream_model);
         await putOption('ModelPrice', JSON.stringify(dict));
         return {
             ok: true,

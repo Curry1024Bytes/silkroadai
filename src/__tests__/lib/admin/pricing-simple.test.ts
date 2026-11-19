@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
+// Native customer repricing has its own failure/recovery suite; this suite preserves the legacy writer contract.
+vi.mock('@/lib/customer-pricing/rebase', () => ({
+    withCustomerPricingRebase: async (_tx: unknown, writes: unknown[], write: (w: unknown[]) => Promise<unknown>) =>
+        write(writes),
+}));
 vi.mock('@/lib/newapi/quota-units', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/lib/newapi/quota-units')>()),
     QUOTA_PER_USD: 500_000,
@@ -22,6 +27,8 @@ const state = vi.hoisted(() => ({
     costRules: [] as Array<Record<string, unknown>>,
     costWrites: [] as unknown[],
     costRevisions: [] as unknown[],
+    hasOfficialRule: false,
+    officialRuleReads: [] as unknown[],
 }));
 
 vi.mock('@/lib/newapi/client', () => ({
@@ -84,6 +91,12 @@ vi.mock('@/lib/db', () => {
                 return args.data;
             }),
         },
+        customerOfficialPriceRule: {
+            findFirst: vi.fn(async (args: unknown) => {
+                state.officialRuleReads.push(args);
+                return state.hasOfficialRule ? { id: 'customer-official-rule' } : null;
+            }),
+        },
         catalogPrice: {
             create: vi.fn(async (args: { data: unknown }) => {
                 state.created.push(args.data);
@@ -117,6 +130,7 @@ import {
     type SimplePricingContext,
 } from '@/lib/admin/pricing-simple';
 import type { AdminPrincipal } from '@/lib/admin/auth';
+import { videoQuoteCostConfig } from '@/lib/admin/pricing-video-quote';
 
 const EXPR = 'billing_setting.billing_expr';
 const MODE = 'billing_setting.billing_mode';
@@ -163,6 +177,8 @@ beforeEach(() => {
     state.costRules = [];
     state.costWrites = [];
     state.costRevisions = [];
+    state.hasOfficialRule = false;
+    state.officialRuleReads = [];
     state.groups = [
         {
             id: 'g-official',
@@ -571,6 +587,74 @@ describe('video-token quotes', () => {
         });
         expect(state.puts).toEqual([]);
         expect(state.costWrites).toEqual([]);
+    });
+
+    function existingStableQuote() {
+        state.options[EXPR] = JSON.stringify({ [SEEDANCE]: supportedFormula([11.5, 7, 11.5, 7]) });
+        state.costRules = [
+            {
+                id: 'cost-1',
+                model_id: '11111111-1111-4111-8111-111111111111',
+                tier: 'pool',
+                revision: 3,
+                channel_id: 13,
+                upstream_model: SEEDANCE,
+                updated_at: new Date(0),
+                config: videoQuoteCostConfig(quote(0.2, 0.6), SEEDANCE),
+            },
+        ];
+    }
+
+    it('allows an official reference change with unchanged coefficients when no customer rule depends on it', async () => {
+        existingStableQuote();
+        const input = {
+            ...quote(0.1, 0.3),
+            official: quote(0.1, 0.3).official.map((cell) => ({ ...cell, price: cell.price * 2 })),
+        };
+        const model = (await loadSimplePricing(admin)).upstream_models.find((row) => row.name === SEEDANCE)!;
+        const result = await saveVideoQuote(context, SEEDANCE, input, model.state, 3);
+        expect(result).toMatchObject({ unchanged: false, written_keys: [] });
+        expect(state.puts).toEqual([]);
+        expect(state.costWrites).toHaveLength(1);
+        expect(state.officialRuleReads).toEqual([
+            {
+                where: {
+                    tenant_id: TENANT,
+                    tier_key: 'pool',
+                    model_key: { in: ['*', '11111111-1111-4111-8111-111111111111'] },
+                },
+                select: { id: true },
+            },
+        ]);
+    });
+
+    it('blocks a dependent official reference change before any cost or remote write when coefficients stay unchanged', async () => {
+        existingStableQuote();
+        state.hasOfficialRule = true;
+        const input = {
+            ...quote(0.1, 0.3),
+            official: quote(0.1, 0.3).official.map((cell) => ({ ...cell, price: cell.price * 2 })),
+        };
+        const model = (await loadSimplePricing(admin)).upstream_models.find((row) => row.name === SEEDANCE)!;
+        await expect(saveVideoQuote(context, SEEDANCE, input, model.state, 3)).rejects.toMatchObject({
+            code: 'pricing_official_reference_in_use',
+        });
+        expect(state.costWrites).toEqual([]);
+        expect(state.costRevisions).toEqual([]);
+        expect(state.puts).toEqual([]);
+        expect(state.created).toEqual([]);
+        expect(state.audits).toEqual([]);
+    });
+
+    it('allows only the purchase discount to change with customer rules because the official reference is unchanged', async () => {
+        existingStableQuote();
+        state.hasOfficialRule = true;
+        const model = (await loadSimplePricing(admin)).upstream_models.find((row) => row.name === SEEDANCE)!;
+        const result = await saveVideoQuote(context, SEEDANCE, quote(0.1, 0.6), model.state, 3);
+        expect(result).toMatchObject({ unchanged: false, written_keys: [] });
+        expect(state.costWrites[0]).toMatchObject({ config: expect.objectContaining({ upstream_multiplier: 0.1 }) });
+        expect(state.officialRuleReads).toEqual([]);
+        expect(state.puts).toEqual([]);
     });
 
     it('refuses to reprice a tier managed by sale rules', async () => {

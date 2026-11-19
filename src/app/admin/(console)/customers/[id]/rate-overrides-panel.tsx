@@ -24,13 +24,48 @@ interface RateOverridePanelProps {
     customerId: string;
     isDark: boolean;
     locale: 'zh' | 'en';
+    readOnly?: boolean;
 }
 
 const formatMultiplier = (value: number | null) => (value == null ? '—' : `${value}x`);
 const formatDate = (value: string | null) =>
     value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 
-export function RateOverridesPanel({ customerId, isDark, locale }: RateOverridePanelProps) {
+export function LegacyRateSnapshot({
+    tier,
+    override,
+    isDark,
+    locale,
+}: {
+    tier: RateTier | undefined;
+    override: RateOverride | undefined;
+    isDark: boolean;
+    locale: 'zh' | 'en';
+}) {
+    const zh = locale !== 'en';
+    const muted = isDark ? 'text-slate-400' : 'text-slate-500';
+    const value = isDark ? 'text-slate-100' : 'text-slate-900';
+    return (
+        <dl className={`m-0 grid gap-3 text-sm sm:grid-cols-3 ${muted}`}>
+            <div>
+                <dt className="text-xs">{zh ? '公共计费倍率' : 'Public billing multiplier'}</dt>
+                <dd className={`m-0 mt-1 font-medium ${value}`}>{formatMultiplier(tier?.public_multiplier ?? null)}</dd>
+            </div>
+            <div>
+                <dt className="text-xs">{zh ? '保留的旧版倍率' : 'Retained legacy multiplier'}</dt>
+                <dd className={`m-0 mt-1 font-medium ${value}`}>
+                    {override ? formatMultiplier(override.multiplier) : zh ? '未设置' : 'Not set'}
+                </dd>
+            </div>
+            <div>
+                <dt className="text-xs">{zh ? '最后同步' : 'Last sync'}</dt>
+                <dd className={`m-0 mt-1 font-medium ${value}`}>{formatDate(override?.synced_at ?? null)}</dd>
+            </div>
+        </dl>
+    );
+}
+
+export function RateOverridesPanel({ customerId, isDark, locale, readOnly = false }: RateOverridePanelProps) {
     const zh = locale !== 'en';
     const [tiers, setTiers] = useState<RateTier[]>([]);
     const [overrides, setOverrides] = useState<RateOverride[]>([]);
@@ -99,6 +134,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     }, [activeOverride, selected]);
 
     const save = async () => {
+        if (readOnly) return;
         const value = Number(multiplier);
         if (!selectedTier || !Number.isFinite(value) || value <= 0 || value > 100) {
             setError(
@@ -147,6 +183,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     };
 
     const remove = async () => {
+        if (readOnly) return;
         if (!activeOverride || !window.confirm(zh ? '取消该客户的专属倍率？' : 'Remove this dedicated multiplier?'))
             return;
         setSaving(true);
@@ -169,6 +206,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     };
 
     const migrateKeys = async () => {
+        if (readOnly) return;
         if (!activeOverride || !selectedTier || activeKeyCount === 0) return;
         const confirmation = zh
             ? `确认将该客户现有的 ${activeKeyCount} 把活跃 API Key 迁移到“${selected?.display_name ?? selectedTier}”吗？\n\nKey 值不会变化，但请求路由和实际计费将立即按该档次生效。`
@@ -214,11 +252,23 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
 
     return (
         <div>
-            <div className={`mb-2 text-sm font-semibold ${value}`}>{zh ? '专属计费设置' : 'Dedicated billing'}</div>
+            <div className={`mb-2 text-sm font-semibold ${value}`}>
+                {readOnly
+                    ? zh
+                        ? '旧版倍率记录'
+                        : 'Legacy multiplier records'
+                    : zh
+                      ? '专属计费设置'
+                      : 'Dedicated billing'}
+            </div>
             <div className={`mb-2 text-xs ${muted}`}>
-                {zh
-                    ? '保存倍率只影响该客户；公共档次保持不变。历史 Key 需在下方单独迁移计费分组。'
-                    : 'Saving affects this customer only and keeps public tiers unchanged. Migrate existing keys separately below.'}
+                {readOnly
+                    ? zh
+                        ? '旧设置按原计费含义保留，此处只读，不会迁移任何 Key。请在上方「客户专属价」按官方基准设置，并逐模型核对毛利。'
+                        : 'Legacy settings keep their original billing meaning and are read-only here. No keys are moved. Use Customer exclusive prices above to set official-price multipliers and review each model’s margin.'
+                    : zh
+                      ? '保存倍率只影响该客户；公共档次保持不变。历史 Key 需在下方单独迁移计费分组。'
+                      : 'Saving affects this customer only and keeps public tiers unchanged. Migrate existing keys separately below.'}
             </div>
             <div className={`rounded-xl border p-4 ${card}`}>
                 {loading ? (
@@ -226,6 +276,24 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                 ) : tiers.length === 0 ? (
                     <div className={`text-sm ${muted}`}>
                         {zh ? '暂无可用 Portal 档次。' : 'No enabled Portal tiers.'}
+                    </div>
+                ) : readOnly ? (
+                    <div className="space-y-4">
+                        <label className="block">
+                            <span className={`mb-1 block text-xs ${muted}`}>{zh ? '查看分组' : 'View group'}</span>
+                            <select
+                                value={selectedTier}
+                                onChange={(event) => setSelectedTier(event.target.value)}
+                                className={`h-10 w-full rounded-lg border px-3 text-sm ${input}`}
+                            >
+                                {tiers.map((tier) => (
+                                    <option key={tier.key} value={tier.key}>
+                                        {tier.display_name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <LegacyRateSnapshot tier={selected} override={activeOverride} isDark={isDark} locale={locale} />
                     </div>
                 ) : (
                     <div className="space-y-4">

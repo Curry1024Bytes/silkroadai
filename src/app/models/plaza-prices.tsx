@@ -42,6 +42,7 @@ export function PlazaPriceSummary({
         >
             {summary ? (
                 <>
+                    {quote?.price?.customer_pricing && <PriceProvenanceNote price={quote.price} />}
                     <dl
                         className={`m-0 grid gap-x-4 gap-y-1 ${summary.rates.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}
                     >
@@ -65,7 +66,7 @@ export function PlazaPriceSummary({
                             {translateSummaryLabel(m, summary.note)}
                         </p>
                     )}
-                    <PriceProvenanceNote price={quote?.price ?? null} />
+                    {!quote?.price?.customer_pricing && <PriceProvenanceNote price={quote?.price ?? null} />}
                 </>
             ) : (
                 <p className="text-muted-foreground m-0 text-sm">{m.prices.unpriced}</p>

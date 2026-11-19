@@ -30,8 +30,18 @@
  */
 import 'server-only';
 import { prisma } from '@/lib/db';
-import { createTokenForCustomer, deleteToken, getTokenKey, listTokensForCustomer } from './client';
+import {
+    createTokenForCustomer,
+    deleteToken,
+    getTokenForCustomer,
+    getTokenKey,
+    listTokensForCustomer,
+    type NewApiToken,
+} from './client';
 import { formatTokenForDisplay } from './token-format';
+import { nativeTokenBindingMatches, resolveCustomerTokenBindingForGroup } from '@/lib/customer-pricing/token-binding';
+import type { NativeTokenBinding } from '@/lib/customer-pricing/types';
+import { registerCustomerPricingSystemToken } from '@/lib/customer-pricing/identity';
 
 /** Reserved token name on new-api side. Must match the filter applied
  *  in /api/portal/keys list/reveal/delete to avoid customer interaction
@@ -50,7 +60,8 @@ export class PortalSystemTokenError extends Error {
             | 'newapi_create_failed'
             | 'newapi_lookup_failed'
             | 'persistence_failed'
-            | 'routing_group_required',
+            | 'routing_group_required'
+            | 'pricing_binding_mismatch',
     ) {
         super(message);
         this.name = 'PortalSystemTokenError';
@@ -81,8 +92,9 @@ export async function getOrCreateSystemToken(userId: string, group?: string): Pr
             'routing_group_required',
         );
     }
-    if (g === 'default') return getPrimarySystemToken(userId);
-    return getGroupSystemToken(userId, g);
+    const binding = await resolveCustomerTokenBindingForGroup(userId, g);
+    if (g === 'default') return getPrimarySystemToken(userId, binding);
+    return getGroupSystemToken(userId, g, binding);
 }
 
 /** Process-local cache of group-pinned tokens: `${userId}:${group}` → wire
@@ -91,8 +103,22 @@ export async function getOrCreateSystemToken(userId: string, group?: string): Pr
  *  cache instead. */
 const groupTokenCache = new Map<string, string>();
 
-async function getGroupSystemToken(userId: string, group: string): Promise<string> {
-    const cacheKey = `${userId}:${group}`;
+function verifySystemBinding(token: NewApiToken, binding: NativeTokenBinding, userId: number) {
+    if (
+        token.user_id !== userId ||
+        token.status !== 1 ||
+        !token.unlimited_quota ||
+        token.expired_time !== -1 ||
+        !nativeTokenBindingMatches(token, binding)
+    )
+        throw new PortalSystemTokenError(
+            'System token pricing configuration is not verified',
+            'pricing_binding_mismatch',
+        );
+}
+
+async function getGroupSystemToken(userId: string, group: string, binding: NativeTokenBinding): Promise<string> {
+    const cacheKey = `${userId}:${group}:${JSON.stringify(binding)}`;
     const hit = groupTokenCache.get(cacheKey);
     if (hit) return hit;
 
@@ -113,23 +139,31 @@ async function getGroupSystemToken(userId: string, group: string): Promise<strin
     let realKey: string;
     try {
         // find-or-create: list → match by name; create (group-pinned) if absent.
-        const find = async (): Promise<number | null> => {
+        const find = async (): Promise<NewApiToken | null> => {
             const { items } = await listTokensForCustomer(customerAuth, 1, 50);
             const m = items.filter((t) => t.name === tokenName).sort((a, b) => b.id - a.id)[0];
-            return m ? m.id : null;
+            return m ?? null;
         };
-        let id = await find();
-        if (id == null) {
+        let token = await find();
+        if (token == null) {
             await createTokenForCustomer(customerAuth, {
                 name: tokenName,
-                group, // ← pins routing + billing to this group
+                ...binding,
                 unlimited_quota: true, // gotcha #12 — budget gate is user.quota
                 expired_time: -1,
             });
-            id = await find();
-            if (id == null) throw new Error(`token ${tokenName} not found after create`);
+            token = await find();
+            if (token == null) throw new Error(`token ${tokenName} not found after create`);
         }
-        realKey = await getTokenKey(customerAuth, id);
+        if (binding.group === 'auto') verifySystemBinding(token, binding, user.newapi_user_id);
+        realKey = await getTokenKey(customerAuth, token.id);
+        if (binding.group === 'auto')
+            await registerCustomerPricingSystemToken({
+                tokenId: token.id,
+                tokenValue: realKey,
+                userId,
+                publicGroup: group,
+            });
     } catch (err) {
         throw new PortalSystemTokenError(
             `new-api ${group} token provision failed for user ${userId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -147,6 +181,11 @@ export function _resetGroupTokenCacheForTest(): void {
     groupTokenCache.clear();
 }
 
+/** Called after a managed binding changes; keys themselves remain stable. */
+export function invalidateSystemTokenCache(userId: string): void {
+    for (const key of groupTokenCache.keys()) if (key.startsWith(`${userId}:`)) groupTokenCache.delete(key);
+}
+
 /**
  * Returns the user's primary (group=default) portal system token in **wire
  * format** (with `sk-` prefix), creating one on the first call.
@@ -161,7 +200,7 @@ export function _resetGroupTokenCacheForTest(): void {
  * 500). Call sites that can degrade gracefully (e.g. eager-provision at
  * register) should `.catch()` and fall back to lazy.
  */
-async function getPrimarySystemToken(userId: string): Promise<string> {
+async function getPrimarySystemToken(userId: string, binding: NativeTokenBinding): Promise<string> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
         select: {
@@ -180,6 +219,24 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
 
     // Fast path: token already provisioned.
     if (user.newapi_system_token_value) {
+        if (binding.group === 'auto') {
+            if (!user.newapi_user_id || !user.newapi_access_token || !user.newapi_system_token_id)
+                throw new PortalSystemTokenError(
+                    'System token pricing identity is incomplete',
+                    'pricing_binding_mismatch',
+                );
+            const token = await getTokenForCustomer(
+                { accessToken: user.newapi_access_token, userId: user.newapi_user_id },
+                Number(user.newapi_system_token_id),
+            );
+            verifySystemBinding(token, binding, user.newapi_user_id);
+            await registerCustomerPricingSystemToken({
+                tokenId: token.id,
+                tokenValue: user.newapi_system_token_value,
+                userId,
+                publicGroup: 'default',
+            });
+        }
         return formatTokenForDisplay(user.newapi_system_token_value);
     }
 
@@ -205,7 +262,7 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
     try {
         await createTokenForCustomer(customerAuth, {
             name: PORTAL_INTERNAL_TOKEN_NAME,
-            group: 'default',
+            ...binding,
             unlimited_quota: true, // gotcha #12 — quota lives on user, not token
             expired_time: -1,
         });
@@ -230,6 +287,7 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
         // remain on new-api side; not worth a cleanup here (rare; would
         // need extra delete calls + risk timeouts).
         newapiTokenId = matches[0].id;
+        if (binding.group === 'auto') verifySystemBinding(matches[0], binding, user.newapi_user_id);
         realKey = await getTokenKey(customerAuth, newapiTokenId);
     } catch (err) {
         throw new PortalSystemTokenError(
@@ -261,9 +319,16 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
 
         const winner = await prisma.user.findUnique({
             where: { id: userId },
-            select: { newapi_system_token_value: true },
+            select: { newapi_system_token_value: true, newapi_system_token_id: true },
         });
         if (winner?.newapi_system_token_value) {
+            if (binding.group === 'auto')
+                await registerCustomerPricingSystemToken({
+                    tokenId: Number(winner.newapi_system_token_id),
+                    tokenValue: winner.newapi_system_token_value,
+                    userId,
+                    publicGroup: 'default',
+                });
             return formatTokenForDisplay(winner.newapi_system_token_value);
         }
         // Defensive: race-lost claim but null on re-read shouldn't happen
@@ -274,5 +339,12 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
         );
     }
 
+    if (binding.group === 'auto')
+        await registerCustomerPricingSystemToken({
+            tokenId: newapiTokenId,
+            tokenValue: realKey,
+            userId,
+            publicGroup: 'default',
+        });
     return formatTokenForDisplay(realKey);
 }

@@ -15,6 +15,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
+// These fixtures exercise ordinary forwarding; dedicated pricing-guard tests cover
+// binding verification and fail-closed behavior independently of stream/capture mocks.
+vi.mock('@/lib/customer-pricing/request-guard', () => ({
+    rejectUnsupportedCustomerPricingRequest: vi.fn(async () => null),
+}));
+
 // after() 同步跑回调(单测无请求上下文);保留真 NextRequest/NextResponse
 vi.mock('next/server', async (importOriginal) => {
     const actual = await importOriginal<typeof import('next/server')>();

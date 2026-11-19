@@ -3,11 +3,17 @@ import type { ChannelGroup, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { assertPricingCatalogWritable } from '@/lib/admin/pricing-publish-lock';
-import { getCatalogSyncOptions, listChannelsForCatalogSync } from '@/lib/newapi/client';
+import {
+    getCatalogSyncOptions,
+    getChannelStrict,
+    listChannelsForCatalogSync,
+    setChannelStatusStrict,
+} from '@/lib/newapi/client';
 import { generateChannelGroupKey } from '@/lib/channel-group-key';
 
 export interface MirrorSource {
     groups: { name: string; label: string; selectable: boolean; channels: number[] }[];
+    staleInternalSources?: { id: string; internalGroup: string; replicaIds: number[] }[];
 }
 type MirrorRow = Pick<
     ChannelGroup,
@@ -26,7 +32,47 @@ type MirrorValues = Pick<MirrorRow, 'display_name' | 'enabled' | 'newapi_channel
 
 /** A complete validated snapshot is required before treating absence as deletion. */
 export async function readGroupMirrorSource(): Promise<MirrorSource> {
-    const [options, channels] = await Promise.all([getCatalogSyncOptions(), listChannelsForCatalogSync()]);
+    const [options, channels, internal] = await Promise.all([
+        getCatalogSyncOptions(),
+        listChannelsForCatalogSync(),
+        prisma.customerModelBillingGroup.findMany({
+            select: {
+                id: true,
+                internal_group: true,
+                replica_channel_ids: true,
+                source_channel_ids: true,
+                public_group: true,
+                model_name: true,
+                status: true,
+            },
+        }),
+    ]);
+    const internalGroups = new Set(internal.map((row) => row.internal_group));
+    const internalChannels = new Set(internal.flatMap((row) => row.replica_channel_ids));
+    const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
+    const parts = (value: unknown): string[] =>
+        typeof value === 'string'
+            ? value
+                  .split(',')
+                  .map((v) => v.trim())
+                  .filter(Boolean)
+            : [];
+    const staleInternalSources = internal
+        .filter(
+            (row) =>
+                ['active', 'stale'].includes(row.status) &&
+                (row.source_channel_ids.length === 0 ||
+                    row.source_channel_ids.some((id) => {
+                        const source = channelsById.get(id);
+                        return (
+                            !source ||
+                            source.status !== 1 ||
+                            !parts(source.group).includes(row.public_group) ||
+                            !parts(source.models).includes(row.model_name)
+                        );
+                    })),
+        )
+        .map((row) => ({ id: row.id, internalGroup: row.internal_group, replicaIds: row.replica_channel_ids }));
     function dictionary(raw: unknown, ratios: boolean): Record<string, string | number> {
         const data: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Incomplete group options');
@@ -42,15 +88,17 @@ export async function readGroupMirrorSource(): Promise<MirrorSource> {
     }
     const labels = dictionary(options.UserUsableGroups, false);
     const ratios = dictionary(options.GroupRatio, true);
-    const names = new Set([...Object.keys(ratios), ...Object.keys(labels)]);
+    const names = new Set([...Object.keys(ratios), ...Object.keys(labels)].filter((name) => !internalGroups.has(name)));
     const members = new Map<string, Set<number>>();
     for (const channel of channels) {
         if (!Number.isSafeInteger(channel.id) || channel.id <= 0 || typeof channel.group !== 'string')
             throw new Error('Incomplete channel membership');
+        if (internalChannels.has(channel.id)) continue;
         for (const name of channel.group
             .split(',')
             .map((part) => part.trim())
             .filter(Boolean)) {
+            if (internalGroups.has(name)) continue;
             names.add(name);
             const ids = members.get(name) ?? new Set<number>();
             ids.add(channel.id);
@@ -58,6 +106,7 @@ export async function readGroupMirrorSource(): Promise<MirrorSource> {
         }
     }
     return {
+        ...(staleInternalSources.length ? { staleInternalSources } : {}),
         groups: [...names].map((name) => ({
             name,
             label: typeof labels[name] === 'string' && labels[name].trim() ? (labels[name] as string) : name,
@@ -65,6 +114,31 @@ export async function readGroupMirrorSource(): Promise<MirrorSource> {
             channels: [...(members.get(name) ?? [])].sort((a, b) => a - b),
         })),
     };
+}
+
+/** External new-api edits are detected on synchronization, not intercepted at their source. */
+async function pauseStaleInternalSources(source: MirrorSource): Promise<void> {
+    const stale = source.staleInternalSources ?? [];
+    if (!stale.length) return;
+    const failures: unknown[] = [];
+    for (const row of stale) {
+        for (const id of row.replicaIds) {
+            try {
+                const channel = await getChannelStrict(id);
+                if (channel.group !== row.internalGroup) throw new Error('Registered replica ownership changed');
+                if (channel.status === 1) await setChannelStatusStrict(id, 2);
+            } catch (error) {
+                failures.push(error);
+            }
+        }
+    }
+    // This mark survives a later mirror transaction failure and prevents an
+    // incomplete pause from being represented as a healthy source registry.
+    await prisma.customerModelBillingGroup.updateMany({
+        where: { id: { in: stale.map((row) => row.id) }, status: 'active' },
+        data: { status: 'stale' },
+    });
+    if (failures.length) throw new Error('Source channel changed; private replica shutdown needs reconciliation');
 }
 
 /** Keys and financial history are stable; a removed group becomes an archived registry entry. */
@@ -145,12 +219,17 @@ async function runMirror() {
     const source = await readGroupMirrorSource();
     const before = await prisma.channelGroup.findMany({ where: { tenant_id: PLATFORM_TENANT_ID } });
     const initial = planGroupMirror(before, source);
-    if (!initial.updates.length && !initial.creates.length) return;
+    if (!initial.updates.length && !initial.creates.length && !source.staleInternalSources?.length) return;
     await prisma.$transaction(
         async (tx) => {
             await assertPricingCatalogWritable(tx);
+            // A customer-pricing publication may have created channel replicas
+            // while this mirror waited for the shared lock. Do not persist its
+            // pre-lock, partially prepared membership snapshot.
+            const confirmedSource = await readGroupMirrorSource();
+            await pauseStaleInternalSources(confirmedSource);
             const rows = await tx.channelGroup.findMany({ where: { tenant_id: PLATFORM_TENANT_ID } });
-            const plan = planGroupMirror(rows, source);
+            const plan = planGroupMirror(rows, confirmedSource);
             const now = new Date();
             // Disable obsolete rows first, so replacing duplicate historical registries cannot violate uniqueness.
             for (const { row, data } of [...plan.updates].sort(

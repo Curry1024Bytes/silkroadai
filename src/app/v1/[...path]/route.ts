@@ -62,6 +62,7 @@ import {
 import { newGenerationId } from '@/lib/image/generation-id';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
+import { rejectUnsupportedCustomerPricingRequest } from '@/lib/customer-pricing/request-guard';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
 import { REAL_USD_TO_CNY, quotaToCny } from '@/lib/newapi/quota-units';
 import { listEnabledChannelGroups } from '@/lib/channel-group';
@@ -455,6 +456,8 @@ async function forwardToNewApi(
 ): Promise<NextResponse> {
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const pricingError = await rejectUnsupportedCustomerPricingRequest(req, bodyOverride ?? rawOverride, `/v1${path}`);
+    if (pricingError) return pricingError;
 
     // 出口体决定:
     // - bodyOverride 在手(A:chat clamp/透传、D 的 JSON 透传)→ 序列化它;
@@ -3763,6 +3766,9 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // 端点(sk-ent- key + 每客户独立上游 key + ¥账本自扣),其余路径 404。主站实例不受影响。
     if (isEnterpriseFlavor()) return handleEnterpriseV1(req, path);
 
+    const pinnedPricingError = await rejectUnsupportedCustomerPricingRequest(req, undefined, `/v1${path}`);
+    if (pinnedPricingError) return pinnedPricingError;
+
     // 临时诊断(env HDR_CAPTURE=1,默认关):记 /messages + /chat/completions POST 的请求头
     // 名+值(脱敏 auth),带账户 id + token 尾 4 位精确定位。用于抓客户端注入的异常头
     // (如 kiro profileArn)。查完把 HDR_CAPTURE 撤掉。
@@ -3960,6 +3966,8 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
                 { status: 400 },
             );
         }
+        const videoPricingError = await rejectUnsupportedCustomerPricingRequest(req, vbody, `/v1${path}`);
+        if (videoPricingError) return videoPricingError;
         if (isSeedanceCnModel(String(vbody.model ?? ''))) {
             return handleSeedanceVideoSubmit(req, vbody);
         }

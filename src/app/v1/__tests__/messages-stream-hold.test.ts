@@ -9,6 +9,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
+// These fixtures exercise ordinary forwarding; dedicated pricing-guard tests cover
+// binding verification and fail-closed behavior independently of stream/capture mocks.
+vi.mock('@/lib/customer-pricing/request-guard', () => ({
+    rejectUnsupportedCustomerPricingRequest: vi.fn(async () => null),
+}));
+
 // route.ts 的重依赖 mock(与 proxy.test.ts 同套,精简到本文件触发的路径)
 vi.mock('@/lib/r2/client', () => ({ uploadImage: vi.fn() }));
 vi.mock('@/lib/oss/store', () => ({

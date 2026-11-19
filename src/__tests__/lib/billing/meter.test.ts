@@ -10,6 +10,7 @@ const mockUserFindMany = vi.fn();
 const mockUserCount = vi.fn();
 const mockTokenFindUnique = vi.fn();
 const mockChannelGroupFindMany = vi.fn();
+const mockInternalGroupFindMany = vi.fn();
 const mockModelFindFirst = vi.fn();
 const mockUsageCreateMany = vi.fn();
 const mockUsageFindMany = vi.fn();
@@ -33,6 +34,7 @@ vi.mock('@/lib/db', () => ({
         },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         channelGroup: { findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a) },
+        customerModelBillingGroup: { findMany: (...a: unknown[]) => mockInternalGroupFindMany(...a) },
         catalogModel: { findFirst: (...a: unknown[]) => mockModelFindFirst(...a) },
         usageRecord: {
             createMany: (...a: unknown[]) => mockUsageCreateMany(...a),
@@ -48,6 +50,7 @@ vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...a: unknown[]) 
 
 import { runShadowMeter, reconcileAllPortalGates, countOrphanedPortalCustomers } from '@/lib/billing/meter';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 const LOG_TS = Math.floor(Date.parse('2026-06-06T00:00:00Z') / 1000); // unix seconds
 
@@ -83,6 +86,7 @@ const officialPrice = {
 };
 
 beforeEach(() => {
+    mockInternalGroupFindMany.mockResolvedValue([]);
     vi.clearAllMocks();
     mockCursorUpsert.mockResolvedValue({ id: 1, last_log_id: 0 });
     mockCursorUpdate.mockResolvedValue({});
@@ -90,6 +94,8 @@ beforeEach(() => {
     mockTokenFindUnique.mockResolvedValue({ id: 't1', tier: 'pool' });
     mockChannelGroupFindMany.mockResolvedValue([{ key: 'pool' }]);
     mockModelFindFirst.mockResolvedValue({
+        id: 'model-gpt',
+        modality: 'chat',
         upstream_map: {
             pool: { channel_id: 6, upstream_model: 'gpt-5.4' },
             official: { channel_id: 8, upstream_model: 'gpt-5.4' },
@@ -152,6 +158,30 @@ describe('runShadowMeter — happy path (matched cost, read-only, cursor advance
 });
 
 describe('runShadowMeter — tier resolution', () => {
+    it('resolves a native internal system-token group through its exact registered replica ownership', async () => {
+        mockTokenFindUnique.mockResolvedValue(null);
+        mockChannelGroupFindMany.mockResolvedValue([]);
+        mockInternalGroupFindMany.mockResolvedValue([
+            { tier_key: 'pool', model_id: 'model-gpt', model_name: 'gpt-5.4' },
+        ]);
+        mockQueryLogs.mockResolvedValue({ items: [consumeLog({ group: 'private-model', channel: 91 })], total: 1 });
+        await runShadowMeter();
+        expect(mockInternalGroupFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    internal_group: 'private-model',
+                    replica_channel_ids: { has: 91 },
+                }),
+            }),
+        );
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            tier: 'pool',
+            token_id: null,
+            matched: true,
+            cost_cny: quotaToCny(900_000),
+            price_id: null,
+        });
+    });
     it('token tier=official → official price', async () => {
         mockTokenFindUnique.mockResolvedValue({ id: 't9', tier: 'official' });
         await runShadowMeter();
@@ -178,6 +208,210 @@ describe('runShadowMeter — tier resolution', () => {
             token_id: null,
             matched: false,
         });
+    });
+});
+
+describe('runShadowMeter — settled official customer prices', () => {
+    const registry = { tier_key: 'pool', model_id: 'model-gpt', model_name: 'gpt-5.4' };
+    const settledQuota = 500_000;
+    const settledCny = Number(quotaToCny(settledQuota).toFixed(8));
+
+    beforeEach(() => {
+        mockChannelGroupFindMany.mockResolvedValue([]);
+        mockInternalGroupFindMany.mockResolvedValue([registry]);
+        mockQueryLogs.mockResolvedValue({
+            items: [consumeLog({ group: 'private-model', channel: 91, quota: settledQuota })],
+            total: 1,
+        });
+    });
+
+    it('uses the actual native customer charge even when a Portal token still has its public logical tier', async () => {
+        const result = await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            tier: 'pool',
+            token_id: 't1',
+            cost_cny: settledCny,
+            matched: true,
+            price_id: null,
+        });
+        expect(result).toMatchObject({ recorded: 1, matched: 1, unmatched: 0 });
+    });
+
+    it('retains historical settled amounts after current rules are changed or revoked', async () => {
+        // The persisted registry remains after rule removal. Neither the current official
+        // reference nor mutable customer multipliers may reprice this delayed historical log.
+        mockModelFindFirst.mockResolvedValue({
+            id: 'model-gpt',
+            modality: 'chat',
+            upstream_map: {},
+            prices: [{ ...poolPrice, input_cny_per_1m: 100, output_cny_per_1m: 200 }],
+        });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            cost_cny: settledCny,
+            matched: true,
+            price_id: null,
+        });
+        expect(mockInternalGroupFindMany.mock.calls[0][0].where).not.toHaveProperty('status');
+    });
+
+    it('uses settled cache charges instead of estimating them as plain input/output tokens', async () => {
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                consumeLog({
+                    group: 'private-model',
+                    channel: 91,
+                    quota: settledQuota,
+                    other: JSON.stringify({ cache_tokens: 100_000, cache_creation_tokens: 100_000 }),
+                }),
+            ],
+            total: 1,
+        });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            cost_cny: settledCny,
+            matched: true,
+            price_id: null,
+        });
+    });
+
+    it('keeps media tasks unmatched because consume rows may be prepayments or settlement deltas', async () => {
+        mockInternalGroupFindMany.mockResolvedValue([
+            { ...registry, model_id: 'model-video', model_name: 'doubao-seedance-2-0' },
+        ]);
+        mockModelFindFirst.mockResolvedValue({ id: 'model-video', modality: 'video', upstream_map: {}, prices: [] });
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                consumeLog({
+                    group: 'private-model',
+                    channel: 91,
+                    model_name: 'doubao-seedance-2-0',
+                    quota: 250_000,
+                    prompt_tokens: 0,
+                    completion_tokens: 980_100,
+                    other: JSON.stringify({ billing_mode: 'tiered_expr', cache_tokens: 100_000 }),
+                }),
+            ],
+            total: 1,
+        });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            model_slug: 'doubao-seedance-2-0',
+            cost_cny: 0,
+            matched: false,
+            price_id: null,
+        });
+    });
+
+    it.each([
+        { is_task: true, task_id: 'prepaid-task' },
+        { task_id: 'prepaid-task', pre_consumed_quota: 480_375, actual_quota: 1_000_000 },
+    ])('does not debit task logs even when the catalog modality is still chat (%j)', async (other) => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockQueryLogs.mockResolvedValue({
+            items: [consumeLog({ group: 'private-model', channel: 91, other: JSON.stringify(other) })],
+            total: 1,
+        });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({ cost_cny: 0, matched: false });
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['model name', { ...registry, model_name: 'another-model' }],
+        ['catalog identity', { ...registry, model_id: 'different-model-id' }],
+        ['logical tier', { ...registry, tier_key: 'official' }],
+    ])('does not charge when the registered %s disagrees with the log/token', async (_name, row) => {
+        mockInternalGroupFindMany.mockResolvedValue([row]);
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            cost_cny: 0,
+            matched: false,
+            price_id: null,
+        });
+    });
+
+    it('does not fall back to a public price for an unregistered group or replica channel', async () => {
+        mockInternalGroupFindMany.mockResolvedValue([]);
+        await runShadowMeter();
+        expect(mockInternalGroupFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    internal_group: 'private-model',
+                    replica_channel_ids: { has: 91 },
+                    OR: [{ tenant_id: PLATFORM_TENANT_ID }, { tenant_id: null }],
+                }),
+            }),
+        );
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({ cost_cny: 0, matched: false });
+    });
+
+    it('does not guess between ambiguous replica ownership records', async () => {
+        mockInternalGroupFindMany.mockResolvedValue([registry, registry]);
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({ cost_cny: 0, matched: false });
+    });
+
+    it.each([-1, NaN, Infinity, 1.2, undefined])('rejects an invalid settled quota (%s)', async (quota) => {
+        mockQueryLogs.mockResolvedValue({
+            items: [consumeLog({ group: 'private-model', channel: 91, quota })],
+            total: 1,
+        });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({ cost_cny: 0, matched: false });
+    });
+
+    it('continues to use versioned public prices for public-group logs', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([{ key: 'pool' }]);
+        mockQueryLogs.mockResolvedValue({ items: [consumeLog()], total: 1 });
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            cost_cny: 12.5,
+            matched: true,
+            price_id: 'pr-pool',
+        });
+        expect(mockInternalGroupFindMany).not.toHaveBeenCalled();
+    });
+
+    it('keeps the persisted amount and stable ledger ref when a log is replayed after pricing changes', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        const records = new Map<number, Record<string, unknown>>();
+        const debits = new Map<string, string>();
+        mockUsageCreateMany.mockImplementation(({ data }: { data: Array<Record<string, unknown>> }) => {
+            let count = 0;
+            for (const row of data) {
+                const logId = row.newapi_log_id as number;
+                if (records.has(logId)) continue;
+                records.set(logId, { ...row, id: 'ur-stable', cost_cny: new Prisma.Decimal(row.cost_cny as number) });
+                count++;
+            }
+            return Promise.resolve({ count });
+        });
+        mockUsageFindMany.mockImplementation(() =>
+            Promise.resolve([...records.values()].filter((record) => record.matched)),
+        );
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        mockApplyLedgerEntry.mockImplementation(
+            (_userId: string, entry: { ref: string; amount_cny: Prisma.Decimal }) => {
+                const deduped = debits.has(entry.ref);
+                if (!deduped) debits.set(entry.ref, entry.amount_cny.toString());
+                return Promise.resolve({ deduped });
+            },
+        );
+
+        const first = await runShadowMeter();
+        expect(first.recorded).toBe(1);
+        expect(records.get(10)?.cost_cny?.toString()).toBe(String(settledCny));
+
+        // Even a different recalculated candidate must never replace a stored historical bill.
+        mockInternalGroupFindMany.mockResolvedValue([]);
+        const replay = await runShadowMeter();
+        expect(replay.recorded).toBe(0);
+        expect(records.get(10)?.cost_cny?.toString()).toBe(String(settledCny));
+        expect(mockApplyLedgerEntry).toHaveBeenCalledTimes(2);
+        expect(mockApplyLedgerEntry.mock.calls[1][1].ref).toBe('ur-stable');
+        expect(mockApplyLedgerEntry.mock.calls[1][1].amount_cny.toString()).toBe(String(-settledCny));
+        expect([...debits.values()]).toEqual([String(-settledCny)]);
     });
 });
 

@@ -13,6 +13,7 @@ import { advancedSyncPrice } from '@/lib/newapi/catalog-sync-advanced';
 import { syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
 import { assertPricingCatalogWritable, PricingPublishError } from './pricing-publish-lock';
 import { assertGroupsUnmanaged } from '@/lib/pricing-rules/guards';
+import { withCustomerPricingRebase } from '@/lib/customer-pricing/rebase';
 import { tenantForInsert } from './tenant-scope';
 import { tierOrder } from './pricing-tiers';
 import type { AdminPrincipal } from './auth';
@@ -664,7 +665,7 @@ function toPricingError(error: unknown): never {
 }
 
 /** Write options in order, then read back. A partial failure leaves new-api billable (see plan ordering). */
-async function writeAndVerify(writes: OptionWrite[]): Promise<Record<string, unknown>> {
+async function writeAndVerifyRaw(writes: OptionWrite[]): Promise<Record<string, unknown>> {
     const deadline = Date.now() + WRITE_DEADLINE_MS;
     const done: string[] = [];
     for (const write of writes) {
@@ -791,7 +792,12 @@ export async function saveTier(
         } catch (error) {
             toPricingError(error);
         }
-        const readback = writes.length ? await writeAndVerify(writes) : options;
+        const readback = writes.length
+            ? await withCustomerPricingRebase(tx, writes, writeAndVerifyRaw, {
+                  beforeOptions: options,
+                  actorId: context.admin.user?.id ?? null,
+              })
+            : options;
         const shared = new Set(
             catalog.groups.filter((row) => row.newapi_group === group.newapi_group).map((row) => row.key),
         );
@@ -833,7 +839,12 @@ export async function saveModel(
         } catch (error) {
             toPricingError(error);
         }
-        const readback = writes.length ? await writeAndVerify(writes) : options;
+        const readback = writes.length
+            ? await withCustomerPricingRebase(tx, writes, writeAndVerifyRaw, {
+                  beforeOptions: options,
+                  actorId: context.admin.user?.id ?? null,
+              })
+            : options;
         const rows = await snapshotCatalog(
             tx,
             tenantId,
@@ -928,6 +939,22 @@ export async function saveVideoQuote(
         const config = videoQuoteCostConfig(input, name);
         const before = storedQuote(existing ?? undefined, name)?.quote ?? null;
         const ruleChanged = !before || JSON.stringify(videoQuoteCostConfig(before, name)) !== JSON.stringify(config);
+        const officialCells = new Map(input.official.map((cell) => [videoTokenKey(cell), cell.price]));
+        const officialChanged =
+            !before ||
+            before.official.length !== input.official.length ||
+            before.official.some((cell) => officialCells.get(videoTokenKey(cell)) !== cell.price);
+        if (officialChanged && !plan.writes.length) {
+            const dependent = await tx.customerOfficialPriceRule.findFirst({
+                where: { tenant_id: tenantId, tier_key: plan.tier, model_key: { in: ['*', plan.model.id] } },
+                select: { id: true },
+            });
+            if (dependent)
+                throw new PricingPublishError(
+                    'pricing_official_reference_in_use',
+                    '该官方基准已用于客户专属价，不能在计费系数不变时直接替换。请先撤销受影响的专属规则，再重新确认官方基准并发布客户价格。',
+                );
+        }
         if (ruleChanged)
             await saveCostRulesInTransaction(
                 tx,
@@ -935,7 +962,12 @@ export async function saveVideoQuote(
                 context.admin,
                 { videoTokenQuote: true },
             );
-        const readback = plan.writes.length ? await writeAndVerify(plan.writes) : options;
+        const readback = plan.writes.length
+            ? await withCustomerPricingRebase(tx, plan.writes, writeAndVerifyRaw, {
+                  beforeOptions: options,
+                  actorId: context.admin.user?.id ?? null,
+              })
+            : options;
         const rows = await snapshotCatalog(
             tx,
             tenantId,

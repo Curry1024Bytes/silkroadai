@@ -136,6 +136,7 @@ vi.mock('@/lib/db', () => {
         pricingRulePublication: table(() => fake.db.publications, 'pub'),
         user: table(() => fake.db.portalUsers, 'user'),
         channelGroup: table(() => fake.db.channelGroups, 'cg'),
+        customerPricingBinding: table(() => [], 'cpb'),
         adminAuditLog: table(() => fake.db.audits, 'audit'),
     };
     return { prisma: { ...db, $transaction: vi.fn(async (fn: (tx: typeof db) => unknown) => fn(db)) } };

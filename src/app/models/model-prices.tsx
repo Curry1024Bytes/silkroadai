@@ -17,11 +17,56 @@ import { useLocale } from '@/lib/i18n/client';
 export function PriceProvenanceNote({ price }: { price: TierPricing | null }) {
     const locale = useLocale();
     const provenance = price?.price_provenance;
+    const customer = price?.customer_pricing;
+    const zh = locale === 'zh';
+    if (customer && Number.isFinite(customer.multiplier) && customer.multiplier > 0) {
+        const ratio = formatTieredPrice(customer.multiplier);
+        const official = customer.official_multiplier;
+        const publicOfficial = customer.public_official_multiplier;
+        const scope =
+            customer.scope === 'model' ? (zh ? '此模型专属' : 'Model-specific') : zh ? '分组专属' : 'Group-specific';
+        return (
+            <div
+                role="note"
+                aria-label={zh ? '您的专属定价' : 'Your exclusive pricing'}
+                className="mt-2 rounded-lg border-2 border-brand-accent/60 bg-paper-muted px-3 py-2 text-navy"
+            >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="rounded bg-brand-accent px-2 py-0.5 text-xs font-bold text-white">
+                        {zh ? `专属倍率:${ratio}x` : `Exclusive multiplier: ${ratio}x`}
+                    </span>
+                </div>
+                <p className="m-0 mt-1 text-xs leading-relaxed">
+                    {scope}
+                    {customer.basis === 'public' ? (zh ? `，标准价 × ${ratio}` : `; ${ratio} × standard price`) : null}
+                    {customer.basis === 'official' && customer.multiplier <= 1
+                        ? zh
+                            ? `，按官方价 ${formatTieredPrice(customer.multiplier * 10)} 折计费`
+                            : `; ${formatTieredPrice(customer.multiplier * 100)}% of official price`
+                        : null}
+                    {customer.basis === 'public' && official != null && Number.isFinite(official) && official > 0
+                        ? zh
+                            ? `，最终为官方价 × ${formatTieredPrice(official)}`
+                            : `; final price is ${formatTieredPrice(official)} × official price`
+                        : null}
+                </p>
+                {publicOfficial != null && Number.isFinite(publicOfficial) && publicOfficial > 0 && (
+                    <p className="m-0 mt-1 text-xs leading-relaxed text-muted-ink">
+                        {zh
+                            ? `标准售价：官方价 × ${formatTieredPrice(publicOfficial)}`
+                            : `Standard price: ${formatTieredPrice(publicOfficial)} × official price`}
+                    </p>
+                )}
+            </div>
+        );
+    }
     if (!provenance?.verifiable || provenance.official == null || provenance.discount == null) return null;
     const discount = formatTieredPrice(provenance.discount * 10);
     return (
         <p className="m-0 mt-2 text-xs leading-relaxed text-emerald-700" role="note">
-            {locale === 'zh' ? `当前标准售价为 ${discount} 折` : `Current standard sale price: ${discount}x`}
+            {zh
+                ? `当前标准售价为 ${discount} 折`
+                : `Current standard sale price: ${formatTieredPrice(provenance.discount)} × official price`}
         </p>
     );
 }
@@ -97,16 +142,19 @@ export function ModelPriceDialog({
 export function ModelTierPrices({ price, type }: { price: TierPricing | null; type: TypeName }) {
     if (!price) return <p className="m-0 text-sm text-muted-ink">未定价</p>;
     const details = price.billing_details;
+    const customerNote = price.customer_pricing ? <PriceProvenanceNote price={price} /> : null;
     if (details && details.mode !== 'tiered_token')
         return (
             <>
+                {customerNote}
                 <CatalogMediaPriceDetails details={details} />
-                <PriceProvenanceNote price={price} />
+                {!price.customer_pricing && <PriceProvenanceNote price={price} />}
             </>
         );
     if (details && !isUniformPricingDetails(details)) {
         return (
             <>
+                {customerNote}
                 <p className="m-0 mb-3 text-xs leading-relaxed text-muted-ink">
                     单位：元 / 百万 token。按完整输入长度选档，整次请求使用该档价格。
                 </p>
@@ -125,7 +173,7 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
                         </section>
                     ))}
                 </div>
-                <PriceProvenanceNote price={price} />
+                {!price.customer_pricing && <PriceProvenanceNote price={price} />}
             </>
         );
     }
@@ -141,6 +189,7 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
     if (price.per_image_cny === null && !hasTokenRates) return <p className="m-0 text-sm text-muted-ink">未定价</p>;
     return (
         <>
+            {customerNote}
             {details?.mode === 'tiered_token' &&
                 catalogRequestMultiplierLines(details).map((line) => (
                     <p key={line} className="m-0 mb-2 text-xs text-amber-700">
@@ -159,7 +208,7 @@ export function ModelTierPrices({ price, type }: { price: TierPricing | null; ty
                     <TokenPriceRows rates={rates} />
                 </>
             )}
-            <PriceProvenanceNote price={price} />
+            {!price.customer_pricing && <PriceProvenanceNote price={price} />}
         </>
     );
 }

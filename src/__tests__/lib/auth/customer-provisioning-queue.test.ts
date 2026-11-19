@@ -21,6 +21,7 @@ const { mockDb, mockProvisionNewCustomerResumable, mockPool, mockPoolClients, mo
                 update: vi.fn(),
             },
             channelGroupRetirementJob: { findFirst: vi.fn() },
+            customerPricingBinding: { findUnique: vi.fn() },
         },
         mockPool: { connect: vi.fn() },
         mockPoolClients: [
@@ -93,6 +94,7 @@ beforeEach(() => {
     }
     mockDb.$transaction.mockImplementation(async (callback: (tx: typeof mockDb) => unknown) => callback(mockDb));
     mockDb.channelGroupRetirementJob.findFirst.mockResolvedValue(null);
+    mockDb.customerPricingBinding.findUnique.mockResolvedValue(null);
     mockLoadChannelGroupTopology.mockResolvedValue({
         defaultGroup: { key: 'standard', newapi_group: 'standard-group' },
     });

@@ -7,6 +7,7 @@ import { computeUsageCost, pickEffectivePrice } from './cost';
 import { applyLedgerEntry } from './ledger';
 import { billingSourceIsPortal } from './billing-source';
 import { syncNewapiGate } from './newapi-gate';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 /**
  * P4a 影子计量 job:轮询 new-api consume 日志,按客户 token 档次取生效 CatalogPrice 算 ¥,
@@ -40,11 +41,29 @@ export interface ShadowMeterResult {
 
 type ResolvedUser = { id: string; tenant_id: string | null } | null;
 type ResolvedToken = { id: string; tier: string } | null;
-type ResolvedLogGroup = { key: string } | null;
+type ResolvedLogGroup = {
+    key: string;
+    native: { model_id: string; model_name: string } | null;
+} | null;
 type ModelWithPrices = {
+    id: string;
+    modality: string;
     upstream_map: unknown;
     prices: { id: string; tier: string; effective_from: Date; input_cny_per_1m: unknown; output_cny_per_1m: unknown }[];
 } | null;
+
+/** Async task consume rows are prepayments/deltas; this job does not ingest their type=6 refunds. */
+function hasAsyncTaskBilling(log: NewApiUsageLog): boolean {
+    if (!log.other) return false;
+    try {
+        const other: unknown = JSON.parse(log.other);
+        if (!other || typeof other !== 'object' || Array.isArray(other)) return true;
+        const meta = other as Record<string, unknown>;
+        return meta.is_task === true || Object.hasOwn(meta, 'task_id') || Object.hasOwn(meta, 'pre_consumed_quota');
+    } catch {
+        return true; // Cannot prove this is a settled synchronous charge.
+    }
+}
 
 export async function runShadowMeter(): Promise<ShadowMeterResult> {
     // 1) 读游标(单行表,懒建)。
@@ -110,9 +129,8 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
             continue;
         }
 
-        // token → 档次。系统 token 不在 Portal NewApiToken 表时,使用日志自身的
-        // new-api group 反查当前 tenant 的 ChannelGroup;仍无法唯一解析则写显式
-        // unresolved 标记且 matched=false,绝不虚构历史 `pool` 档。
+        // token → 逻辑档次。实际日志分组也必须单独解析：专属客户的 token 仍保存
+        // 公开逻辑档次,而 native 实际请求会进入逐模型内部组。
         let token: ResolvedToken = null;
         if (log.token_id) {
             let cached = tokenCache.get(log.token_id);
@@ -125,28 +143,44 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
             }
             token = cached;
         }
-        let tier = token?.tier;
-        if (!tier) {
-            const newapiGroup = typeof log.group === 'string' ? log.group.trim() : '';
-            const modelTenant = user.tenant_id ?? PLATFORM_TENANT_ID;
-            const cacheKey = `${modelTenant}\u0000${newapiGroup}`;
-            let resolved = logGroupCache.get(cacheKey);
-            if (resolved === undefined) {
-                const matches = newapiGroup
-                    ? await prisma.channelGroup.findMany({
-                          where: { tenant_id: modelTenant, enabled: true, newapi_group: newapiGroup },
-                          select: { key: true },
-                          take: 2,
-                      })
-                    : [];
-                resolved = matches.length === 1 ? matches[0] : null;
-                logGroupCache.set(cacheKey, resolved);
+        const newapiGroup = typeof log.group === 'string' ? log.group.trim() : '';
+        const modelTenant = user.tenant_id ?? PLATFORM_TENANT_ID;
+        const cacheKey = `${modelTenant}\u0000${newapiGroup}\u0000${log.channel ?? ''}`;
+        let resolved = logGroupCache.get(cacheKey);
+        if (resolved === undefined) {
+            const matches = newapiGroup
+                ? await prisma.channelGroup.findMany({
+                      where: { tenant_id: modelTenant, enabled: true, newapi_group: newapiGroup },
+                      select: { key: true },
+                      take: 2,
+                  })
+                : [];
+            resolved = matches.length === 1 ? { key: matches[0].key, native: null } : null;
+            if (matches.length === 0 && newapiGroup && Number.isSafeInteger(log.channel) && log.channel > 0) {
+                // Use persisted ownership, never a group-name prefix or today's customer rule.
+                // Keep historical registered replicas resolvable after rules are changed/revoked.
+                const internal = await prisma.customerModelBillingGroup.findMany({
+                    where: {
+                        ...(modelTenant === PLATFORM_TENANT_ID
+                            ? { OR: [{ tenant_id: modelTenant }, { tenant_id: null }] }
+                            : { tenant_id: modelTenant }),
+                        internal_group: newapiGroup,
+                        replica_channel_ids: { has: log.channel },
+                    },
+                    select: { tier_key: true, model_id: true, model_name: true },
+                    take: 2,
+                });
+                if (internal.length === 1)
+                    resolved = {
+                        key: internal[0].tier_key,
+                        native: { model_id: internal[0].model_id, model_name: internal[0].model_name },
+                    };
             }
-            tier = resolved?.key ?? `unresolved:${newapiGroup || 'unknown'}`;
+            logGroupCache.set(cacheKey, resolved);
         }
+        const tier = token?.tier ?? resolved?.key ?? `unresolved:${newapiGroup || 'unknown'}`;
 
         // CatalogModel(按 user 的 tenant + slug)+ 其版本化价。
-        const modelTenant = user.tenant_id ?? PLATFORM_TENANT_ID;
         const slug = log.model_name || '';
         const mkey = `${modelTenant} ${slug}`;
         let model = modelCache.get(mkey);
@@ -155,6 +189,8 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
                 ? await prisma.catalogModel.findFirst({
                       where: { tenant_id: modelTenant, slug },
                       select: {
+                          id: true,
+                          modality: true,
                           upstream_map: true,
                           prices: {
                               select: {
@@ -177,7 +213,7 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
                 ? (model.upstream_map as Record<string, unknown>)
                 : {};
         const price =
-            model && Object.hasOwn(upstreamMap, tier)
+            model && resolved && !resolved.native && Object.hasOwn(upstreamMap, tier)
                 ? pickEffectivePrice(
                       model.prices.map((p) => ({
                           id: p.id,
@@ -190,7 +226,30 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
                       logTime,
                   )
                 : null;
-        const { costCny, matched } = computeUsageCost(price, log.prompt_tokens ?? 0, log.completion_tokens ?? 0);
+        // Native new-api has already applied the winning official-price multiplier to the
+        // actual billed components (including cache). The settled log quota is the
+        // historical amount; using today's rule/reference would reprice delayed old logs.
+        // Only trust it after the exact group, replica channel, model and logical tier agree.
+        // Async/media tasks remain unmatched: consume rows may only be prepayments/deltas,
+        // and their type=6 refunds are outside this meter's cursor/ledger contract.
+        const nativeCost = resolved?.native ? quotaToCny(log.quota) : NaN;
+        const nativeMatched = Boolean(
+            resolved?.native &&
+            model &&
+            resolved.key === tier &&
+            resolved.native.model_id === model.id &&
+            resolved.native.model_name === slug &&
+            model.modality !== 'video' &&
+            model.modality !== 'image' &&
+            !hasAsyncTaskBilling(log) &&
+            Number.isSafeInteger(log.quota) &&
+            log.quota >= 0 &&
+            Number.isFinite(nativeCost) &&
+            nativeCost >= 0,
+        );
+        const { costCny, matched } = resolved?.native
+            ? { costCny: nativeMatched ? Number(nativeCost.toFixed(8)) : 0, matched: nativeMatched }
+            : computeUsageCost(price, log.prompt_tokens ?? 0, log.completion_tokens ?? 0);
         if (matched) result.matched++;
         else result.unmatched++;
 

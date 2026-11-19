@@ -15,12 +15,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockUserFindUnique = vi.fn();
 const mockUserUpdateMany = vi.fn();
+const mockPricingBindings = vi.fn();
+const mockIdentityFindUnique = vi.fn();
+const mockIdentityUpsert = vi.fn();
 
 vi.mock('@/lib/db', () => ({
     prisma: {
         user: {
             findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
             updateMany: (...args: unknown[]) => mockUserUpdateMany(...args),
+        },
+        customerPricingBinding: { findMany: (...args: unknown[]) => mockPricingBindings(...args) },
+        customerPricingTokenIdentity: {
+            findUnique: (...args: unknown[]) => mockIdentityFindUnique(...args),
+            upsert: (...args: unknown[]) => mockIdentityUpsert(...args),
         },
     },
 }));
@@ -29,12 +37,14 @@ const mockCreateToken = vi.fn();
 const mockListTokens = vi.fn();
 const mockGetTokenKey = vi.fn();
 const mockDeleteToken = vi.fn();
+const mockGetToken = vi.fn();
 
 vi.mock('@/lib/newapi/client', () => ({
     createTokenForCustomer: (...args: unknown[]) => mockCreateToken(...args),
     listTokensForCustomer: (...args: unknown[]) => mockListTokens(...args),
     getTokenKey: (...args: unknown[]) => mockGetTokenKey(...args),
     deleteToken: (...args: unknown[]) => mockDeleteToken(...args),
+    getTokenForCustomer: (...args: unknown[]) => mockGetToken(...args),
 }));
 
 import {
@@ -67,7 +77,79 @@ function userBase(
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockPricingBindings.mockResolvedValue([]);
+    mockIdentityFindUnique.mockResolvedValue(null);
+    mockIdentityUpsert.mockResolvedValue({});
     _resetGroupTokenCacheForTest();
+});
+
+describe('system tokens with official customer pricing', () => {
+    const binding = {
+        tier_key: 'tier-sd',
+        public_group: 'SD官转',
+        model_groups: ['private-a', 'private-b'],
+        status: 'active',
+    };
+    const token = {
+        id: 81,
+        user_id: 99,
+        name: 'portal-internal-SD官转',
+        status: 1,
+        group: 'auto',
+        auto_groups: ['private-a', 'private-b'],
+        cross_group_retry: false,
+        unlimited_quota: true,
+        expired_time: -1,
+    };
+
+    it('creates a scoped auto token for the existing public logical group', async () => {
+        mockPricingBindings.mockResolvedValue([binding]);
+        mockUserFindUnique.mockResolvedValue(userBase());
+        mockListTokens
+            .mockResolvedValueOnce({ items: [], total: 0 })
+            .mockResolvedValueOnce({ items: [token], total: 1 });
+        mockGetTokenKey.mockResolvedValue('p'.repeat(48));
+        await expect(getOrCreateSystemToken(USER_ID, 'SD官转')).resolves.toBe('sk-' + 'p'.repeat(48));
+        expect(mockCreateToken).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                name: 'portal-internal-SD官转',
+                group: 'auto',
+                auto_groups: ['private-a', 'private-b'],
+                cross_group_retry: false,
+            }),
+        );
+    });
+
+    it('does not reuse a cached public token when the pricing binding becomes active', async () => {
+        mockUserFindUnique.mockResolvedValue(userBase());
+        mockListTokens.mockResolvedValue({ items: [{ ...token, group: 'SD官转', auto_groups: null }], total: 1 });
+        mockGetTokenKey.mockResolvedValue('q'.repeat(48));
+        await getOrCreateSystemToken(USER_ID, 'SD官转');
+        mockPricingBindings.mockResolvedValue([binding]);
+        await expect(getOrCreateSystemToken(USER_ID, 'SD官转')).rejects.toThrow('System token pricing configuration');
+        expect(mockGetTokenKey).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks cached service tokens while publication is applying or failed', async () => {
+        mockPricingBindings.mockResolvedValue([{ ...binding, status: 'applying' }]);
+        await expect(getOrCreateSystemToken(USER_ID, 'SD官转')).rejects.toMatchObject({ status: 503 });
+        expect(mockUserFindUnique).not.toHaveBeenCalled();
+        expect(mockCreateToken).not.toHaveBeenCalled();
+    });
+
+    it('verifies an already persisted primary system token against the scoped binding', async () => {
+        mockPricingBindings.mockResolvedValue([{ ...binding, public_group: 'default' }]);
+        mockUserFindUnique.mockResolvedValue(
+            userBase({ newapi_system_token_id: '81', newapi_system_token_value: 'r'.repeat(48) }),
+        );
+        mockGetToken.mockResolvedValue(token);
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).resolves.toBe('sk-' + 'r'.repeat(48));
+        mockGetToken.mockResolvedValue({ ...token, auto_groups: ['private-a'] });
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
+            code: 'pricing_binding_mismatch',
+        });
+    });
 });
 
 it('requires an explicit routing group instead of inventing default', async () => {

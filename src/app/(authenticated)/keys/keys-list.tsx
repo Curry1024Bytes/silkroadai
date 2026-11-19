@@ -26,6 +26,13 @@ import { useRouter } from 'next/navigation';
 // ready-to-render ¥ (KeyRow.usedCny) instead.
 import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
+import { formatTieredPrice } from '@/lib/models/tiered-pricing-details';
+
+export interface OfficialKeyPricing {
+    /** null means only individual models have a dedicated official-price rule. */
+    multiplier: number | null;
+    model_overrides: number;
+}
 
 export interface KeyRow {
     id: string;
@@ -47,6 +54,7 @@ export interface KeyRow {
     tier: string;
     /** Effective GroupGroupRatio for the signed-in customer, if configured. */
     effective_ratio?: number | null;
+    official_pricing?: OfficialKeyPricing;
     meta_available?: boolean;
     upstream_status?: 1 | 2 | 3 | 4 | null;
     requires_reactivation?: boolean;
@@ -67,6 +75,7 @@ export interface TierOption {
     ratio: number | null;
     listRatio?: number | null;
     special?: boolean;
+    official_pricing?: OfficialKeyPricing;
 }
 
 export interface KeyProvisioningState {
@@ -290,6 +299,49 @@ function ratioBadgeText(ratio: number | null, special: boolean, t: KeysMessages[
     return special ? t.specialRatio(ratio) : t.ratio(ratio);
 }
 
+/** Customer-facing meaning takes precedence over the native transport multiplier. */
+export function KeyPricingBadge({
+    ratio,
+    special = false,
+    official,
+}: {
+    ratio: number | null;
+    special?: boolean;
+    official?: OfficialKeyPricing;
+}) {
+    const locale = useLocale();
+    const t = useMessages(keysMessages).tier;
+    const zh = locale === 'zh';
+    if (official) {
+        const multiplier = official.multiplier;
+        const known = multiplier !== null && Number.isFinite(multiplier) && multiplier > 0;
+        return (
+            <span className="inline-flex max-w-full flex-col items-start gap-0.5 rounded border border-status-success-border bg-status-success-bg px-2 py-1 text-left text-[11px] font-semibold break-words text-status-success-text">
+                <span>
+                    {known
+                        ? zh
+                            ? `专属倍率:${formatTieredPrice(multiplier)}x`
+                            : `Exclusive multiplier: ${formatTieredPrice(multiplier)}x`
+                        : zh
+                          ? '模型专属定价'
+                          : 'Model-specific prices'}
+                </span>
+                {official.model_overrides > 0 && (
+                    <span className="text-[10px] font-normal">
+                        {zh ? '部分模型单独定价' : 'Some models have separate prices'}
+                    </span>
+                )}
+            </span>
+        );
+    }
+    const text = ratioBadgeText(ratio, special, t);
+    return text ? (
+        <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
+            {text}
+        </span>
+    ) : null;
+}
+
 /** Searchable group selector. Multiple groups intentionally start unselected. */
 export function TierSelect({
     tiers,
@@ -349,13 +401,13 @@ export function TierSelect({
                 } bg-portal-panel hover:bg-portal-soft disabled:cursor-not-allowed disabled:opacity-60`}
             >
                 {selected ? (
-                    <span className="flex min-w-0 items-center gap-2">
+                    <span className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className="truncate text-portal-ink">{selected.display_name}</span>
-                        {ratioBadgeText(selected.ratio, !!selected.special, t) && (
-                            <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                {ratioBadgeText(selected.ratio, !!selected.special, t)}
-                            </span>
-                        )}
+                        <KeyPricingBadge
+                            ratio={selected.ratio}
+                            special={!!selected.special}
+                            official={selected.official_pricing}
+                        />
                     </span>
                 ) : (
                     <span className="text-portal-subtle">{t.pick}</span>
@@ -398,11 +450,11 @@ export function TierSelect({
                                             {[tier.newapi_group, tier.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </span>
-                                    {ratioBadgeText(tier.ratio, !!tier.special, t) && (
-                                        <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                            {ratioBadgeText(tier.ratio, !!tier.special, t)}
-                                        </span>
-                                    )}
+                                    <KeyPricingBadge
+                                        ratio={tier.ratio}
+                                        special={!!tier.special}
+                                        official={tier.official_pricing}
+                                    />
                                 </button>
                             </li>
                         ))}
@@ -548,11 +600,13 @@ export function KeysList({
     tiers = [],
     quotaLimitsEnabled = false,
     provisioning = { status: null, nextAttemptAt: null, ready: true },
+    officialPricingUnavailable = false,
 }: {
     initialRows: KeyRow[];
     tiers?: TierOption[];
     quotaLimitsEnabled?: boolean;
     provisioning?: KeyProvisioningState;
+    officialPricingUnavailable?: boolean;
 }) {
     // Multi-tier accounts must deliberately select a group. Missing topology
     // is an operator error; never invent a legacy `pool` tier in the browser.
@@ -920,6 +974,7 @@ export function KeysList({
                 remainCny: data.remainCny ?? budget.quotaCny,
                 expires_at: data.expires_at ?? budget.expiresAt,
                 effective_ratio: tiers.find((option) => option.key === (data.tier ?? tier))?.ratio ?? null,
+                official_pricing: tiers.find((option) => option.key === (data.tier ?? tier))?.official_pricing,
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -973,6 +1028,15 @@ export function KeysList({
                 >
                     <h2 className="m-0 text-sm font-semibold">{provisioningCopy.heading}</h2>
                     <p className="m-0 mt-1 leading-relaxed">{provisioningBody}</p>
+                </section>
+            )}
+            {officialPricingUnavailable && (
+                <section
+                    role="alert"
+                    aria-live="polite"
+                    className="rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-3 text-sm text-status-warning-text"
+                >
+                    {m.officialPricingUnavailable}
                 </section>
             )}
             {globalError ? (
@@ -1175,11 +1239,10 @@ export function KeysList({
                                                     <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                         {tierLabel(row.tier)}
                                                     </span>
-                                                    {ratioBadgeText(row.effective_ratio ?? null, false, m.tier) && (
-                                                        <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
-                                                            {ratioBadgeText(row.effective_ratio ?? null, false, m.tier)}
-                                                        </span>
-                                                    )}
+                                                    <KeyPricingBadge
+                                                        ratio={row.effective_ratio ?? null}
+                                                        official={row.official_pricing}
+                                                    />
                                                 </div>
                                                 <p className="m-0 mt-1 text-[11px] text-portal-subtle">
                                                     {t.createdAtPrefix}
@@ -1287,15 +1350,10 @@ export function KeysList({
                                                         <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                             {tierLabel(row.tier)}
                                                         </span>
-                                                        {ratioBadgeText(row.effective_ratio ?? null, false, m.tier) && (
-                                                            <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
-                                                                {ratioBadgeText(
-                                                                    row.effective_ratio ?? null,
-                                                                    false,
-                                                                    m.tier,
-                                                                )}
-                                                            </span>
-                                                        )}
+                                                        <KeyPricingBadge
+                                                            ratio={row.effective_ratio ?? null}
+                                                            official={row.official_pricing}
+                                                        />
                                                     </div>
                                                 </td>
                                                 <td className={`${cell} ${borderClass}`}>

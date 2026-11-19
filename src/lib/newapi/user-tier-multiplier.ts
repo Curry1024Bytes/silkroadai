@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { managedSaleGroups } from '@/lib/pricing-rules/guards';
+import { assertLegacyCustomerPricingWritable } from '@/lib/customer-pricing/guards';
 import {
     getOption,
     getTokenForCustomer,
@@ -345,6 +346,14 @@ async function saveUserTierMultiplierUnlocked(args: {
     multiplier: number;
     createdBy: string | null;
 }) {
+    try {
+        await assertLegacyCustomerPricingWritable(args.user.id);
+    } catch (error) {
+        throw new UserTierMultiplierError(
+            error instanceof Error ? error.message : '客户官方基准定价正在管理该账户。',
+            409,
+        );
+    }
     if (args.user.newapi_user_id == null) {
         throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
     }
@@ -499,6 +508,11 @@ async function disableUserTierMultiplierUnlocked(args: {
     user: { id: string; newapi_user_id: number | null };
     overrideId: string;
 }) {
+    try {
+        await assertLegacyCustomerPricingWritable(args.user.id);
+    } catch (error) {
+        throw new UserTierMultiplierError(error instanceof Error ? error.message : '请使用官方基准定价面板。', 409);
+    }
     if (args.user.newapi_user_id == null) {
         throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
     }
@@ -739,6 +753,11 @@ async function migrateUserKeysToTierUnlocked(
     args: { user: KeyMigrationUser; tierKey: string },
     observer: { remoteAttempted(): void; compensationVerified(): void },
 ) {
+    try {
+        await assertLegacyCustomerPricingWritable(args.user.id);
+    } catch (error) {
+        throw new UserTierMultiplierError(error instanceof Error ? error.message : '请使用官方基准定价面板。', 409);
+    }
     if (args.user.newapi_user_id == null || !args.user.newapi_access_token) {
         throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
     }

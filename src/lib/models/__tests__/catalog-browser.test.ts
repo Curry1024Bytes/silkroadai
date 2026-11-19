@@ -11,6 +11,7 @@ const mockMultipliers = vi.fn();
 const mockGetOption = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
+        customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
         catalogModel: { findMany: (...args: unknown[]) => mockModels(...args) },
         channelGroup: { findMany: (...args: unknown[]) => mockGroups(...args) },
         pricingCostRule: { findMany: (...args: unknown[]) => mockCostRules(...args) },

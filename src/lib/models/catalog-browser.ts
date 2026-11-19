@@ -15,6 +15,7 @@ import {
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { resolvePriceProvenance, type PriceProvenanceVerification } from './price-provenance';
+import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
 
 export type { BrowserCatalog, BrowserModelPricing, BrowserTier } from '@/lib/models/catalog-browser-types';
 
@@ -133,6 +134,7 @@ async function customerScales(
  * Failures propagate: callers must not substitute a different tier or a public customer quote.
  */
 export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalog> {
+    const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
     const [models, groups, overrides] = await Promise.all([
         prisma.catalogModel.findMany({
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
@@ -248,7 +250,7 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                     per_image_cny: valueToNumber(price.per_image_cny),
                     ...(publicDetails ? { billing_details: publicDetails } : {}),
                 };
-                const pricing: TierPricing = {
+                let pricing: TierPricing = {
                     input_cny_per_1m: tokenRates?.input ?? amount(price.input_cny_per_1m),
                     output_cny_per_1m: tokenRates?.output ?? amount(price.output_cny_per_1m),
                     per_image_cny: amount(price.per_image_cny),
@@ -276,6 +278,18 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                     };
                     const provenance = resolvePriceProvenance(model.slug, publicPricing, verification);
                     if (provenance.verifiable) pricing.price_provenance = provenance;
+                }
+                const officialQuote = officialQuotes.get(`${model.slug}\u0000${tier}`);
+                if (officialQuote) pricing = { ...officialQuote, price_provenance: pricing.price_provenance };
+                else if (scale !== 1) {
+                    const standard = pricing.price_provenance?.verifiable ? pricing.price_provenance.discount : null;
+                    pricing.customer_pricing = {
+                        basis: 'public',
+                        multiplier: scale,
+                        scope: 'tier',
+                        public_official_multiplier: standard ?? null,
+                        official_multiplier: standard == null ? null : scalePricingAmount(standard, scale),
+                    };
                 }
                 const displayDetails = sanitizeCatalogDisplayDetails(model.slug, pricing.billing_details ?? null);
                 return [tier, displayDetails ? { ...pricing, billing_details: displayDetails } : pricing];

@@ -7,11 +7,24 @@ const m = vi.hoisted(() => ({
     transaction: vi.fn(),
     groups: { findMany: vi.fn(), update: vi.fn(), create: vi.fn() },
     models: { findMany: vi.fn(), update: vi.fn() },
+    internal: { findMany: vi.fn(), updateMany: vi.fn() },
+    channel: vi.fn(),
+    channelStatus: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({
-    prisma: { channelGroup: m.groups, catalogModel: m.models, $transaction: m.transaction },
+    prisma: {
+        channelGroup: m.groups,
+        catalogModel: m.models,
+        customerModelBillingGroup: m.internal,
+        $transaction: m.transaction,
+    },
 }));
-vi.mock('@/lib/newapi/client', () => ({ getCatalogSyncOptions: m.options, listChannelsForCatalogSync: m.channels }));
+vi.mock('@/lib/newapi/client', () => ({
+    getCatalogSyncOptions: m.options,
+    listChannelsForCatalogSync: m.channels,
+    getChannelStrict: m.channel,
+    setChannelStatusStrict: m.channelStatus,
+}));
 vi.mock('@/lib/admin/pricing-publish-lock', () => ({ assertPricingCatalogWritable: m.guard }));
 import {
     readGroupMirrorSource,
@@ -48,12 +61,80 @@ beforeEach(() => {
     m.channels.mockResolvedValue([{ id: 2, group: 'GPT特惠反代', status: 1 }]);
     m.groups.findMany.mockResolvedValue([row()]);
     m.models.findMany.mockResolvedValue([]);
+    m.internal.findMany.mockResolvedValue([]);
+    m.internal.updateMany.mockResolvedValue({ count: 1 });
+    m.channelStatus.mockResolvedValue(undefined);
     m.guard.mockResolvedValue(undefined);
     m.transaction.mockImplementation(async (fn) => fn({ channelGroup: m.groups, catalogModel: m.models }));
 });
 afterEach(() => vi.unstubAllEnvs());
 
 describe('authoritative new-api group mirror', () => {
+    it.each([
+        { status: 2, models: 'model-a', group: 'GPT特惠反代' },
+        { status: 1, models: 'another-model', group: 'GPT特惠反代' },
+        { status: 1, models: 'model-a', group: 'other-group' },
+    ])('pauses registered replicas when their source changes: %j', async (changed) => {
+        m.groups.findMany.mockResolvedValue([row({ display_name: 'GPT特惠反代', upstream_synced_at: new Date() })]);
+        m.internal.findMany.mockResolvedValue([
+            {
+                id: 'binding',
+                status: 'active',
+                internal_group: 'internal',
+                public_group: 'GPT特惠反代',
+                model_name: 'model-a',
+                source_channel_ids: [2],
+                replica_channel_ids: [99],
+            },
+        ]);
+        m.channels.mockResolvedValue([
+            { id: 2, ...changed },
+            { id: 99, group: 'internal', models: 'model-a', status: 1 },
+        ]);
+        m.channel.mockResolvedValue({ id: 99, group: 'internal', status: 1 });
+        await mirrorChannelGroups();
+        expect(m.channelStatus).toHaveBeenCalledExactlyOnceWith(99, 2);
+        expect(m.internal.updateMany).toHaveBeenCalledWith({
+            where: { id: { in: ['binding'] }, status: 'active' },
+            data: { status: 'stale' },
+        });
+    });
+
+    it('never disables a public/source channel when a replica registration has drifted', async () => {
+        m.internal.findMany.mockResolvedValue([
+            {
+                id: 'binding',
+                status: 'active',
+                internal_group: 'internal',
+                public_group: 'GPT特惠反代',
+                model_name: 'model-a',
+                source_channel_ids: [2],
+                replica_channel_ids: [99],
+            },
+        ]);
+        m.channels.mockResolvedValue([{ id: 2, group: 'GPT特惠反代', models: 'model-a', status: 2 }]);
+        m.channel.mockResolvedValue({ id: 99, group: 'GPT特惠反代', status: 1 });
+        await expect(mirrorChannelGroups()).rejects.toThrow('shutdown needs reconciliation');
+        expect(m.channelStatus).not.toHaveBeenCalled();
+        expect(m.internal.updateMany).toHaveBeenCalled();
+    });
+    it('excludes only registered internal groups and channel replicas from the public registry', async () => {
+        m.internal.findMany.mockResolvedValue([{ internal_group: 'managed-model-a', replica_channel_ids: [12] }]);
+        m.options.mockResolvedValue({
+            GroupRatio: '{"sale":1,"managed-model-a":1,"portal-model-user-owned":1}',
+            UserUsableGroups:
+                '{"sale":"Public","managed-model-a":"Internal","portal-model-user-owned":"Another public group"}',
+        });
+        m.channels.mockResolvedValue([
+            { id: 2, group: 'sale', status: 1 },
+            { id: 12, group: 'managed-model-a,sale', status: 1 },
+            { id: 13, group: 'portal-model-user-owned', status: 1 },
+        ]);
+        expect((await readGroupMirrorSource()).groups).toEqual([
+            { name: 'sale', label: 'Public', selectable: true, channels: [2] },
+            { name: 'portal-model-user-owned', label: 'Another public group', selectable: true, channels: [13] },
+        ]);
+    });
     it('is opt-in and only applies to the platform tenant', () => {
         vi.stubEnv('NEWAPI_GROUP_SYNC_MODE', 'mirror');
         expect(mirrorsNewApiGroups()).toBe(true);
@@ -173,15 +254,36 @@ describe('authoritative new-api group mirror', () => {
     });
     it('caches success, suppresses failed retries for 60 seconds, and lets an admin refresh retry', async () => {
         await mirrorChannelGroups();
+        // A changed snapshot is read again after acquiring the publication lock.
+        expect(m.options).toHaveBeenCalledTimes(2);
         await mirrorChannelGroups();
-        expect(m.options).toHaveBeenCalledOnce();
+        expect(m.options).toHaveBeenCalledTimes(2);
         __resetGroupMirrorForTests();
         m.options.mockRejectedValue(new Error('offline'));
         await expect(mirrorChannelGroups()).rejects.toThrow();
         await expect(mirrorChannelGroups()).rejects.toThrow('Group mirror unavailable');
-        expect(m.options).toHaveBeenCalledTimes(2);
-        await expect(mirrorChannelGroups(true)).rejects.toThrow();
         expect(m.options).toHaveBeenCalledTimes(3);
+        await expect(mirrorChannelGroups(true)).rejects.toThrow();
+        expect(m.options).toHaveBeenCalledTimes(4);
+    });
+    it('rechecks managed registrations after waiting for the publication lock', async () => {
+        m.options.mockResolvedValue({
+            GroupRatio: '{"GPT特惠反代":1,"internal":1}',
+            UserUsableGroups: '{"GPT特惠反代":"GPT特惠反代"}',
+        });
+        m.channels.mockResolvedValue([
+            { id: 2, group: 'GPT特惠反代' },
+            { id: 99, group: 'internal' },
+        ]);
+        m.internal.findMany
+            .mockResolvedValueOnce([])
+            .mockResolvedValue([{ internal_group: 'internal', replica_channel_ids: [99] }]);
+        await mirrorChannelGroups();
+        expect(m.internal.findMany).toHaveBeenCalledTimes(2);
+        expect(m.groups.create).not.toHaveBeenCalled();
+        expect(m.groups.update).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ newapi_channel_ids: [2] }) }),
+        );
     });
     it('skips writes for unchanged metadata, including during a price publication', async () => {
         m.groups.findMany.mockResolvedValue([row({ display_name: 'GPT特惠反代', upstream_synced_at: new Date() })]);
