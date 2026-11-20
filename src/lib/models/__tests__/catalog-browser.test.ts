@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
-import { BASE_FX } from '@/lib/admin/pricing-simple-core';
+import { BASE_FX, readBasePrice } from '@/lib/admin/pricing-simple-core';
 import { computeVideoQuote, videoQuoteCostConfig } from '@/lib/admin/pricing-video-quote';
+import { flattenBase } from '@/lib/customer-pricing/math';
 import { VIDEO_TOKEN_COMBOS } from '@/lib/admin/pricing-video-token-expression';
 
 const mockModels = vi.fn();
@@ -10,8 +11,10 @@ const mockCostRules = vi.fn();
 const mockMultipliers = vi.fn();
 const mockGetOption = vi.fn();
 const mockGetPricingPublishOptions = vi.fn();
+const mockReferences = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
+        customerOfficialReference: { findMany: (...args: unknown[]) => mockReferences(...args) },
         customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
         catalogModel: { findMany: (...args: unknown[]) => mockModels(...args) },
         channelGroup: { findMany: (...args: unknown[]) => mockGroups(...args) },
@@ -51,6 +54,7 @@ const group = (key: string, channel: number, extra: Record<string, unknown> = {}
     ...extra,
 });
 const model = (slug: string, upstream_map: unknown, prices = [price('sale')]) => ({
+    id: slug,
     slug,
     upstream_map,
     prices,
@@ -130,6 +134,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockMultipliers.mockReset().mockResolvedValue([]);
     mockGetOption.mockReset().mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16, 'billing-premium': 0.5 }));
+    mockReferences.mockReset().mockResolvedValue([]);
     mockGetPricingPublishOptions.mockReset().mockResolvedValue(null);
     mockCostRules.mockReset().mockResolvedValue([]);
     catalogFixture([]);
@@ -174,11 +179,23 @@ describe('loadBrowserCatalog memberships and retail prices', () => {
         catalogFixture([model(name, { sale: route(1) }, [publicPrice])]);
         mockGetPricingPublishOptions.mockResolvedValue(options);
         const load = () => loadBrowserCatalog(undefined, { includePriceBreakdown: true });
+        const noReference = await load();
+        expect(noReference.models[0].breakdownByTier?.sale).toEqual({ dynamic: true });
+        const rawPrice = readBasePrice(options, 'internal-provider-name')!;
+        const flat = flattenBase(rawPrice, BASE_FX);
+        mockReferences.mockResolvedValue([
+            {
+                model_id: name,
+                tier_key: 'sale',
+                shape: flat.shape,
+                cells: flat.cells.map(({ key, amount }) => ({ key, official_cny: amount * 2 })),
+            },
+        ]);
         const matched = await load();
         expect(matched.models[0].breakdownByTier?.sale).toMatchObject({
             dynamic: true,
-            groupMultiplier: 0.1,
-            base: { input_cny_per_1m: 10 * BASE_FX, output_cny_per_1m: 50 * BASE_FX },
+            groupMultiplier: 0.05,
+            base: { input_cny_per_1m: 20 * BASE_FX, output_cny_per_1m: 100 * BASE_FX },
         });
         expect(JSON.stringify(matched)).not.toMatch(/internal-provider-name|billing-sale|billing_expr/);
 
@@ -458,6 +475,40 @@ describe('loadBrowserCatalog Seedance price provenance', () => {
         mockGetOption.mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16 }));
         return { ...fixture, slug: modelSlug };
     }
+
+    it('displays the full official matrix separately from the 0.72 public price and 0.576 customer price', async () => {
+        const slug = 'doubao-seedance-2-0-260128';
+        const official = VIDEO_TOKEN_COMBOS.map((combo, i) => ({
+            ...combo,
+            price: [46, 28, 46, 28, 51, 31, 26, 16][i],
+        }));
+        const config = videoQuoteCostConfig({ official, buy_discount: 0.5, sell_discount: 0.72 });
+        const liveGroup = 1 / BASE_FX;
+        const cells = official.map(({ price, ...combo }) => ({ ...combo, price: Math.round(price * 72) / 100 }));
+        const details = { version: 1, mode: 'video_token', unit: 'cny_per_million_tokens', cells };
+        catalogFixture([model(slug, { sale: route(1) }, [{ ...price('sale', null, null), billing_details: details }])]);
+        mockCostRules.mockResolvedValue([{ tier: 'sale', ...route(1), config, model: { slug } }]);
+        mockGetOption.mockResolvedValue(JSON.stringify({ 'billing-sale': liveGroup }));
+        mockGetPricingPublishOptions.mockResolvedValue({ GroupRatio: JSON.stringify({ 'billing-sale': liveGroup }) });
+        mockMultipliers.mockResolvedValue([
+            { tier_key: 'sale', newapi_billing_group: 'billing-sale', multiplier: liveGroup * 0.8 },
+        ]);
+        const catalog = await loadBrowserCatalog('customer-a', { includePriceBreakdown: true });
+        expect(catalog.models[0].breakdownByTier?.sale).toMatchObject({
+            dynamic: true,
+            groupMultiplier: 0.72,
+            base: { billing_details: { cells: official } },
+        });
+        expect(catalog.models[0].pricesByTier.sale).toMatchObject({
+            customer_pricing: { basis: 'public', multiplier: 0.8, official_multiplier: 0.576 },
+            billing_details: {
+                cells: expect.arrayContaining([
+                    { resolution: '720p', video_input: 'none', price: 26.496 },
+                    { resolution: '720p', video_input: 'video', price: 16.128 },
+                ]),
+            },
+        });
+    });
 
     it('shows the configured 75折 marker only when the full live quote matches', async () => {
         seedanceFixture();

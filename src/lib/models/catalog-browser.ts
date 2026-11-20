@@ -14,7 +14,7 @@ import {
 } from './catalog-pricing-details';
 import { getOption, getPricingPublishOptions } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
-import { resolvePriceProvenance, type PriceProvenanceVerification } from './price-provenance';
+import { resolveVideoPriceEvidence, type PriceProvenanceVerification } from './price-provenance';
 import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
 import { verifiedPlazaBreakdown } from './plaza-detail-pricing';
 import type { PlazaPriceBreakdown } from './plaza-types';
@@ -140,11 +140,12 @@ export async function loadBrowserCatalog(
     { includePriceBreakdown = false } = {},
 ): Promise<BrowserCatalog> {
     const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
-    const [models, groups, overrides, displayOptions] = await Promise.all([
+    const [models, groups, overrides, displayOptions, references] = await Promise.all([
         prisma.catalogModel.findMany({
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
             orderBy: [{ sort_order: 'asc' }, { slug: 'asc' }],
             select: {
+                id: true,
                 slug: true,
                 upstream_map: true,
                 prices: {
@@ -176,8 +177,17 @@ export async function loadBrowserCatalog(
         }),
         userId ? listUserTierMultipliers(userId) : Promise.resolve([]),
         includePriceBreakdown ? getPricingPublishOptions(2500).catch(() => null) : Promise.resolve(null),
+        includePriceBreakdown
+            ? prisma.customerOfficialReference
+                  .findMany({
+                      where: { tenant_id: PLATFORM_TENANT_ID },
+                      select: { model_id: true, tier_key: true, shape: true, cells: true },
+                  })
+                  .catch(() => [])
+            : Promise.resolve([]),
     ]);
 
+    const referenceByModelTier = new Map(references.map((row) => [`${row.model_id}\u0000${row.tier_key}`, row]));
     const topology = new ChannelGroupTopology(PLATFORM_TENANT_ID, groups);
     const scales = await customerScales(topology, overrides);
 
@@ -259,6 +269,7 @@ export async function loadBrowserCatalog(
                     per_image_cny: valueToNumber(price.per_image_cny),
                     ...(publicDetails ? { billing_details: publicDetails } : {}),
                 };
+                const reference = referenceByModelTier.get(`${model.id}\u0000${tier}`);
                 if (displayOptions) {
                     const group = topology.byTier.get(tier);
                     const mapping = currentMapping(model.upstream_map, tier, topology);
@@ -269,6 +280,7 @@ export async function loadBrowserCatalog(
                             group.newapi_group,
                             model.slug,
                             publicPricing,
+                            reference,
                         );
                         if (breakdown) breakdownByTier[tier] = breakdown;
                     }
@@ -299,8 +311,25 @@ export async function loadBrowserCatalog(
                             : null,
                         groupRatio: group ? (publicGroupRatios.get(group.newapi_group) ?? null) : null,
                     };
-                    const provenance = resolvePriceProvenance(model.slug, publicPricing, verification);
-                    if (provenance.verifiable) pricing.price_provenance = provenance;
+                    const evidence = resolveVideoPriceEvidence(model.slug, publicPricing, verification);
+                    if (evidence) {
+                        pricing.price_provenance = evidence.provenance;
+                        if (includePriceBreakdown && !reference) {
+                            const { version, mode, unit } = publicDetails;
+                            breakdownByTier[tier] = {
+                                base: {
+                                    input_cny_per_1m: null,
+                                    output_cny_per_1m: null,
+                                    per_image_cny: null,
+                                    billing_details: { version, mode, unit, cells: evidence.officialCells },
+                                },
+                                ...(evidence.publicOfficialMultiplier === null
+                                    ? {}
+                                    : { groupMultiplier: evidence.publicOfficialMultiplier }),
+                                dynamic: true,
+                            };
+                        }
+                    }
                 }
                 const officialQuote = officialQuotes.get(`${model.slug}\u0000${tier}`);
                 if (officialQuote) pricing = { ...officialQuote, price_provenance: pricing.price_provenance };

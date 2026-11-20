@@ -1,20 +1,22 @@
 import 'server-only';
 
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
-import { catalogMatches, groupRatioOf } from '@/lib/admin/pricing-simple-core';
+import { BASE_FX, catalogMatches, groupRatioOf, readBasePrice } from '@/lib/admin/pricing-simple-core';
 import { readSyncPrice, syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
 import { syncDictionary } from '@/lib/newapi/catalog-sync-advanced';
 import { sanitizeCatalogDisplayDetails } from './catalog-pricing-details';
+import { flattenBase, officialMultiplierOf } from '@/lib/customer-pricing/math';
 import type { PlazaPriceBreakdown } from './plaza-types';
 import type { TierPricing } from './machine-catalog';
 
-/** Show a new-api base and its public factor only when they reproduce the published Portal tariff. */
+/** Reconcile native rates with the catalog before using their shape for a confirmed official reference. */
 export function verifiedPlazaBreakdown(
     options: Record<string, unknown>,
     upstreamModel: string,
     publicGroup: string,
     slug: string,
     published: TierPricing,
+    reference?: { shape: string; cells: unknown },
 ): PlazaPriceBreakdown | null {
     try {
         const groupMultiplier = groupRatioOf(options, publicGroup);
@@ -40,15 +42,76 @@ export function verifiedPlazaBreakdown(
         } else if (Boolean(have.billing_details) !== Boolean(want.billing_details)) {
             return null;
         }
-        const base = readSyncPrice({ ...raw, groupRatio: { [publicGroup]: 1 } }, upstreamModel, publicGroup).price;
-        if (!base) return null;
-        const { billing_details, ...amounts } = comparable(base);
         const modes = syncDictionary(raw.billingMode, 'billing_mode');
-        return {
-            base: { ...amounts, ...(billing_details ? { billing_details } : {}) },
-            groupMultiplier,
-            dynamic: Object.hasOwn(modes, upstreamModel) && modes[upstreamModel] === 'tiered_expr',
-        };
+        const dynamic = Object.hasOwn(modes, upstreamModel) && modes[upstreamModel] === 'tiered_expr';
+        if (!reference) return dynamic ? { dynamic } : null;
+        try {
+            const native = readBasePrice(options, upstreamModel);
+            if (!native || !Array.isArray(reference.cells)) return { dynamic };
+            const flat = flattenBase(native, BASE_FX);
+            if (flat.shape !== reference.shape || flat.cells.length !== reference.cells.length) return { dynamic };
+            const rates = new Map<string, number>();
+            for (const cell of reference.cells) {
+                if (
+                    !cell ||
+                    typeof cell.key !== 'string' ||
+                    rates.has(cell.key) ||
+                    typeof cell.official_cny !== 'number' ||
+                    !Number.isFinite(cell.official_cny) ||
+                    cell.official_cny < 0
+                )
+                    return { dynamic };
+                rates.set(cell.key, cell.official_cny);
+            }
+            if (flat.cells.some((cell) => !rates.has(cell.key))) return { dynamic };
+            const cells = flat.cells.map((cell) => ({
+                ...cell,
+                base_cny: cell.amount,
+                official_cny: rates.get(cell.key)!,
+                public_cny: 0,
+                cost_cny: null,
+            }));
+            const details = have.billing_details;
+            const multiplier = officialMultiplierOf(cells, groupMultiplier);
+            const base: TierPricing = {
+                input_cny_per_1m: rates.get('0:input') ?? null,
+                output_cny_per_1m: rates.get('0:output') ?? null,
+                per_image_cny: rates.get('call') ?? null,
+            };
+            if (details?.mode === 'video_token') {
+                base.billing_details = {
+                    ...details,
+                    cells: details.cells.map((cell) => ({
+                        ...cell,
+                        price: rates.get(`${cell.resolution}·${cell.video_input}`)!,
+                    })),
+                };
+            } else if (details?.mode === 'tiered_token') {
+                base.billing_details = {
+                    ...details,
+                    tiers: details.tiers.map((tier, index) => ({
+                        ...tier,
+                        rates: {
+                            input: rates.get(`${index}:input`)!,
+                            output: rates.get(`${index}:output`)!,
+                            cache_read: rates.get(`${index}:cache_read`) ?? null,
+                            cache_write: rates.get(`${index}:cache_write`) ?? null,
+                            cache_write_1h: rates.get(`${index}:cache_write_1h`) ?? null,
+                            cache_write_12h: rates.get(`${index}:cache_write_12h`) ?? null,
+                        },
+                    })),
+                };
+            } else if (details) {
+                return { dynamic };
+            }
+            return {
+                dynamic,
+                base,
+                ...(multiplier !== null ? { groupMultiplier: multiplier } : {}),
+            };
+        } catch {
+            return { dynamic };
+        }
     } catch {
         // Optional detail. The existing customer price remains available independently.
         return null;

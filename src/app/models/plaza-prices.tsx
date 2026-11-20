@@ -227,12 +227,14 @@ export function PlazaPriceDetails({ model, selectedGroup }: { model: PricingMode
     const baseDetails = base?.billing_details;
     return (
         <div className="space-y-7 [&_.text-navy]:text-foreground [&_.text-muted-ink]:text-muted-foreground [&_.bg-paper-muted]:bg-muted">
-            {base && (
+            {tiers.length > 0 && (
                 <section className="flex flex-col gap-3" aria-label={m.prices.basePrice}>
                     <h3 className="text-muted-foreground m-0 text-xs font-semibold">{m.prices.basePrice}</h3>
-                    {baseDetails?.mode === 'media' ||
-                    baseDetails?.mode === 'video_token' ||
-                    baseDetails?.mode === 'component_token' ? (
+                    {!base ? (
+                        <p className="text-muted-foreground m-0 text-sm">{m.prices.officialPriceUnavailable}</p>
+                    ) : baseDetails?.mode === 'media' ||
+                      baseDetails?.mode === 'video_token' ||
+                      baseDetails?.mode === 'component_token' ? (
                         <div className="rounded-xl border bg-muted/35 p-3">
                             <CatalogMediaPriceDetails details={baseDetails} en={en} />
                         </div>
@@ -248,7 +250,7 @@ export function PlazaPriceDetails({ model, selectedGroup }: { model: PricingMode
                     )}
                 </section>
             )}
-            {breakdown?.dynamic && baseDetails && (
+            {breakdown?.dynamic && baseDetails?.mode === 'tiered_token' && (
                 <section className="flex flex-col gap-4" aria-label={m.prices.dynamicPricing}>
                     <div className="flex items-start gap-2">
                         <span className="bg-warning/15 text-warning inline-grid size-6 shrink-0 place-items-center rounded-full">
@@ -260,14 +262,8 @@ export function PlazaPriceDetails({ model, selectedGroup }: { model: PricingMode
                         </div>
                     </div>
                     <h4 className="m-0 text-sm font-semibold">{m.prices.tieredTable}</h4>
-                    {baseDetails.mode === 'tiered_token' ? (
-                        <>
-                            <TokenPriceTable details={baseDetails} m={m} en={en} />
-                            <p className="text-muted-foreground m-0 text-xs">{m.prices.perMillionTokens}</p>
-                        </>
-                    ) : (
-                        <CatalogMediaPriceDetails details={baseDetails} en={en} />
-                    )}
+                    <TokenPriceTable details={baseDetails} m={m} en={en} />
+                    <p className="text-muted-foreground m-0 text-xs">{m.prices.perMillionTokens}</p>
                 </section>
             )}
             <section className="flex flex-col gap-3" aria-label={m.prices.groupPricing}>

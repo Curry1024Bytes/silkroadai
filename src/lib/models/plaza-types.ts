@@ -3,8 +3,10 @@ import type { TypeName } from './categorize';
 import type { TierPricing } from './machine-catalog';
 
 export interface PlazaPriceBreakdown {
-    base: TierPricing;
-    groupMultiplier: number;
+    /** Confirmed provider list price in CNY. */
+    base?: TierPricing;
+    /** Public sale fraction of that official price, when verified across the rates. */
+    groupMultiplier?: number;
     dynamic: boolean;
 }
 

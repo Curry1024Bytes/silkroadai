@@ -74,7 +74,7 @@ function verifyLiveQuote(
     details: VideoTokenPricingDetails,
     verification: PriceProvenanceVerification,
     model?: string,
-): { official: number; discount: number } | null {
+): { official: number; discount: number; cells: VideoTokenPricingDetails['cells']; exactDiscount: boolean } | null {
     const { mapping, rule, groupRatio } = verification;
     if (!mapping || !rule || groupRatio === null || !Number.isFinite(groupRatio) || groupRatio <= 0) return null;
     if (
@@ -119,7 +119,12 @@ function verifyLiveQuote(
         const summary = videoTokenSummaryCell(effectiveDetails);
         const summaryRate = quote.official.find((cell) => videoTokenKey(cell) === videoTokenKey(summary));
         if (!summaryRate) return null;
-        return { official: summaryRate.price, discount: quote.sell_discount };
+        return {
+            official: summaryRate.price,
+            discount: quote.sell_discount,
+            exactDiscount: computed.every((cell) => closeEnough(cell.actual, cell.target)),
+            cells: computed.map(({ resolution, video_input, official: price }) => ({ resolution, video_input, price })),
+        };
     } catch {
         return null;
     }
@@ -129,23 +134,39 @@ function verifyLiveQuote(
  * Verify the public catalog price against the current saved cost rule, current route mapping,
  * and live GroupRatio. Static reference tables are intentionally not used as proof or a gate.
  */
+export function resolveVideoPriceEvidence(
+    slug: string,
+    publicPrice: TierPricing,
+    verification?: PriceProvenanceVerification,
+): {
+    provenance: PriceProvenance;
+    officialCells: VideoTokenPricingDetails['cells'];
+    publicOfficialMultiplier: number | null;
+} | null {
+    const alias = domesticArkModel(slug);
+    const details = publicPrice.billing_details;
+    if (!alias || details?.mode !== 'video_token' || !verification) return null;
+    if (!details.cells.some((cell) => cell.resolution === alias.resolution)) return null;
+
+    const verified = verifyLiveQuote(details, verification, slug);
+    if (!verified) return null;
+    return {
+        provenance: {
+            source: 'pricing_cost_rule',
+            official: verified.official,
+            discount: verified.discount,
+            discountBasis: 'configured_pricing_cost_rule',
+            verifiable: true,
+        },
+        officialCells: verified.cells,
+        publicOfficialMultiplier: verified.exactDiscount ? verified.discount : null,
+    };
+}
+
 export function resolvePriceProvenance(
     slug: string,
     publicPrice: TierPricing,
     verification?: PriceProvenanceVerification,
 ): PriceProvenance {
-    const alias = domesticArkModel(slug);
-    const details = publicPrice.billing_details;
-    if (!alias || details?.mode !== 'video_token' || !verification) return UNVERIFIED;
-    if (!details.cells.some((cell) => cell.resolution === alias.resolution)) return UNVERIFIED;
-
-    const verified = verifyLiveQuote(details, verification, slug);
-    if (!verified) return UNVERIFIED;
-    return {
-        source: 'pricing_cost_rule',
-        official: verified.official,
-        discount: verified.discount,
-        discountBasis: 'configured_pricing_cost_rule',
-        verifiable: true,
-    };
+    return resolveVideoPriceEvidence(slug, publicPrice, verification)?.provenance ?? UNVERIFIED;
 }
