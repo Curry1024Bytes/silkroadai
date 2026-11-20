@@ -137,7 +137,7 @@ async function customerScales(
  */
 export async function loadBrowserCatalog(
     userId?: string,
-    { includePriceBreakdown = false } = {},
+    { includePriceBreakdown = false, useNewApiGroupNames = false } = {},
 ): Promise<BrowserCatalog> {
     const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
     const [models, groups, overrides, displayOptions, references] = await Promise.all([
@@ -355,7 +355,11 @@ export async function loadBrowserCatalog(
     }
 
     return {
-        tiers: groups.map((group) => ({ key: group.key, label: group.display_name, isDefault: group.is_default })),
+        tiers: groups.map((group) => ({
+            key: group.key,
+            label: useNewApiGroupNames ? group.newapi_group : group.display_name,
+            isDefault: group.is_default,
+        })),
         models: visibleModels,
     };
 }

@@ -231,6 +231,24 @@ describe('loadBrowserCatalog memberships and retail prices', () => {
             billing_details: { unit: 'cny_per_second', resolution_prices: { '1080p': 1.5 } },
         });
     });
+    it('can show actual new-api group names with the same tier keys and prices', async () => {
+        catalogFixture(
+            [model('sd-2-vip-720', { sale: route(1), premium: route(2) }, [price('sale'), price('premium')])],
+            [
+                group('sale', 1, { newapi_group: 'SD特惠', display_name: '按秒计费' }),
+                group('premium', 2, { newapi_group: 'Claude-Kiro高智商99缓', display_name: '企业专用，先测后用' }),
+            ],
+        );
+        const defaultCatalog = await loadBrowserCatalog();
+        const plazaCatalog = await loadBrowserCatalog(undefined, { useNewApiGroupNames: true });
+        expect(defaultCatalog.tiers.map(({ label }) => label)).toEqual(['按秒计费', '企业专用，先测后用']);
+        expect(plazaCatalog.tiers).toEqual([
+            { key: 'sale', label: 'SD特惠', isDefault: true },
+            { key: 'premium', label: 'Claude-Kiro高智商99缓', isDefault: false },
+        ]);
+        expect(plazaCatalog.models).toEqual(defaultCatalog.models);
+    });
+
     it('keeps exact prices isolated for a shared slug and includes linked but unpriced tiers', async () => {
         catalogFixture([
             model('shared', { sale: route(1), premium: route(2) }, [price('sale', 1, 5), price('premium', 3, 15)]),

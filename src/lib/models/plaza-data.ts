@@ -172,7 +172,7 @@ export function adaptPlazaCatalog(catalog: BrowserCatalog, rawMetadata: unknown)
 }
 
 export async function loadPlazaData(viewer: PlazaViewer | null): Promise<PricingData> {
-    const catalog = await loadBrowserCatalog(viewer?.id, { includePriceBreakdown: true });
+    const catalog = await loadBrowserCatalog(viewer?.id, { includePriceBreakdown: true, useNewApiGroupNames: true });
     return {
         ...adaptPlazaCatalog(catalog, await readMetadata(viewer)),
         portal_viewer_key: viewer?.id ?? 'anonymous',
