@@ -28,17 +28,29 @@ import type { PricingModel } from '../types'
 interface ModelBillingModeBadgeProps {
   model: PricingModel
   appearance?: 'default' | 'caption'
+  showPortalBillingMode?: boolean
   className?: string
 }
 
 export function ModelBillingModeBadge(props: ModelBillingModeBadgeProps) {
   const { t } = useTranslation()
   const labelKey = getBillingModeLabelKey(props.model)
-  const label = props.model.portal ? '人民币报价' : t(labelKey)
+  const portal = props.model.portal
+  const dynamic =
+    props.showPortalBillingMode && portal && (
+      Object.values(portal.breakdownByTier ?? {}).some((quote) => quote.dynamic) ||
+      Object.values(portal.pricesByTier).some((price) => {
+        const details = price?.billing_details
+        return details?.mode === 'time_token' || details?.mode === 'video_token' ||
+          (details?.mode === 'tiered_token' && details.tiers.length > 1) ||
+          Boolean(details?.scheduled_discount)
+      })
+    )
+  const label = portal ? dynamic ? t('Dynamic Pricing') : '人民币报价' : t(labelKey)
   const isCaption = props.appearance === 'caption'
   let variant: StatusVariant = 'purple'
 
-  if (isDynamicPricingModel(props.model)) {
+  if (dynamic || isDynamicPricingModel(props.model)) {
     variant = 'warning'
   } else if (labelKey === 'Token-based') {
     variant = 'info'

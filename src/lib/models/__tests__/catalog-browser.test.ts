@@ -9,6 +9,7 @@ const mockGroups = vi.fn();
 const mockCostRules = vi.fn();
 const mockMultipliers = vi.fn();
 const mockGetOption = vi.fn();
+const mockGetPricingPublishOptions = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
@@ -17,7 +18,10 @@ vi.mock('@/lib/db', () => ({
         pricingCostRule: { findMany: (...args: unknown[]) => mockCostRules(...args) },
     },
 }));
-vi.mock('@/lib/newapi/client', () => ({ getOption: (...args: unknown[]) => mockGetOption(...args) }));
+vi.mock('@/lib/newapi/client', () => ({
+    getOption: (...args: unknown[]) => mockGetOption(...args),
+    getPricingPublishOptions: (...args: unknown[]) => mockGetPricingPublishOptions(...args),
+}));
 vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
     listUserTierMultipliers: (...args: unknown[]) => mockMultipliers(...args),
 }));
@@ -126,11 +130,68 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockMultipliers.mockReset().mockResolvedValue([]);
     mockGetOption.mockReset().mockResolvedValue(JSON.stringify({ 'billing-sale': 0.16, 'billing-premium': 0.5 }));
+    mockGetPricingPublishOptions.mockReset().mockResolvedValue(null);
     mockCostRules.mockReset().mockResolvedValue([]);
     catalogFixture([]);
 });
 
 describe('loadBrowserCatalog memberships and retail prices', () => {
+    it('exposes a verified dynamic price breakdown without revealing the source mapping or billing expression', async () => {
+        const name = 'claude-fable-5';
+        const publicPrice = {
+            ...price('sale', BASE_FX, 5 * BASE_FX),
+            billing_details: {
+                version: 1,
+                mode: 'tiered_token',
+                unit: 'cny_per_million_tokens',
+                semantics: 'whole_request',
+                tiers: [
+                    {
+                        name: 'standard',
+                        min_input_tokens: null,
+                        max_input_tokens: null,
+                        min_inclusive: false,
+                        max_inclusive: false,
+                        rates: {
+                            input: BASE_FX,
+                            output: 5 * BASE_FX,
+                            cache_read: 0.1 * BASE_FX,
+                            cache_write: 1.25 * BASE_FX,
+                            cache_write_1h: 2 * BASE_FX,
+                        },
+                    },
+                ],
+            },
+        };
+        const options = {
+            GroupRatio: '{"billing-sale":0.1}',
+            ModelPrice: '{}',
+            'billing_setting.billing_mode': '{"internal-provider-name":"tiered_expr"}',
+            'billing_setting.billing_expr': JSON.stringify({
+                'internal-provider-name': 'tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5 + cc1h * 20)',
+            }),
+        };
+        catalogFixture([model(name, { sale: route(1) }, [publicPrice])]);
+        mockGetPricingPublishOptions.mockResolvedValue(options);
+        const load = () => loadBrowserCatalog(undefined, { includePriceBreakdown: true });
+        const matched = await load();
+        expect(matched.models[0].breakdownByTier?.sale).toMatchObject({
+            dynamic: true,
+            groupMultiplier: 0.1,
+            base: { input_cny_per_1m: 10 * BASE_FX, output_cny_per_1m: 50 * BASE_FX },
+        });
+        expect(JSON.stringify(matched)).not.toMatch(/internal-provider-name|billing-sale|billing_expr/);
+
+        mockGetPricingPublishOptions.mockResolvedValue({ ...options, GroupRatio: '{"billing-sale":0.2}' });
+        const mismatch = await load();
+        expect(mismatch.models[0].breakdownByTier).toBeUndefined();
+        expect(mismatch.models[0].pricesByTier).toEqual(matched.models[0].pricesByTier);
+
+        mockGetPricingPublishOptions.mockRejectedValue(new Error('temporary read failure'));
+        const unavailable = await load();
+        expect(unavailable.models[0]).toEqual(mismatch.models[0]);
+    });
+
     it('keeps resolution/second quotes visible when there is no scalar price', async () => {
         catalogFixture([
             model('video-test', { sale: route(1) }, [

@@ -33,7 +33,7 @@ Everything else is byte-identical to upstream.
 
 ## LLmRoute integration (2026-10-25)
 
-- Model membership and explicit per-tier CNY tariffs are supplied by the Portal catalog adapter. New-api metadata only enriches matching public models; upstream pricing, billing expressions and internal group names are not copied into Portal tariffs.
+- Model membership and explicit per-tier CNY tariffs are supplied by the Portal catalog adapter. New-api metadata only enriches matching public models. The detail drawer shows base prices and public group factors when they reconcile with the published Portal tariff. Raw billing expressions and internal group names are kept server-side.
 - Pricing cards, table cells and details use the same named Portal tariff, preserving complete token/cache/media rules and missing/zero prices. The recharge-price toggle is not offered for these tariffs.
 - Quote reads are uncached and fail closed on identity or dedicated-price errors. Performance reads remain separate, with public-model filtering and Portal group labels.
 - Public and workspace pages share the plaza, with LLmRoute branding and the configured customer API URL. Legacy ratio components remain available; zero multipliers are preserved.

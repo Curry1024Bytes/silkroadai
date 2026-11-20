@@ -12,10 +12,12 @@ import {
     sanitizeCatalogDisplayDetails,
     scaleCatalogBillingDetails,
 } from './catalog-pricing-details';
-import { getOption } from '@/lib/newapi/client';
+import { getOption, getPricingPublishOptions } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { resolvePriceProvenance, type PriceProvenanceVerification } from './price-provenance';
 import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
+import { verifiedPlazaBreakdown } from './plaza-detail-pricing';
+import type { PlazaPriceBreakdown } from './plaza-types';
 
 export type { BrowserCatalog, BrowserModelPricing, BrowserTier } from '@/lib/models/catalog-browser-types';
 
@@ -133,9 +135,12 @@ async function customerScales(
  * Deliberately uncached so price publications and customer overrides appear on refresh.
  * Failures propagate: callers must not substitute a different tier or a public customer quote.
  */
-export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalog> {
+export async function loadBrowserCatalog(
+    userId?: string,
+    { includePriceBreakdown = false } = {},
+): Promise<BrowserCatalog> {
     const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
-    const [models, groups, overrides] = await Promise.all([
+    const [models, groups, overrides, displayOptions] = await Promise.all([
         prisma.catalogModel.findMany({
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
             orderBy: [{ sort_order: 'asc' }, { slug: 'asc' }],
@@ -170,6 +175,7 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
             },
         }),
         userId ? listUserTierMultipliers(userId) : Promise.resolve([]),
+        includePriceBreakdown ? getPricingPublishOptions(2500).catch(() => null) : Promise.resolve(null),
     ]);
 
     const topology = new ChannelGroupTopology(PLATFORM_TENANT_ID, groups);
@@ -210,7 +216,9 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                         model: { select: { slug: true } },
                     },
                 }),
-                getOption('GroupRatio').then(parsePublicGroupRatios),
+                displayOptions && typeof displayOptions.GroupRatio === 'string'
+                    ? Promise.resolve(parsePublicGroupRatios(displayOptions.GroupRatio))
+                    : getOption('GroupRatio').then(parsePublicGroupRatios),
             ]);
         } catch {
             // Evidence is optional; if it cannot be read, preserve the catalog and omit the note.
@@ -228,6 +236,7 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
         for (const price of model.prices) {
             if (!latestPrices.has(price.tier)) latestPrices.set(price.tier, price);
         }
+        const breakdownByTier: Record<string, PlazaPriceBreakdown> = {};
         const pricesByTier = Object.fromEntries(
             memberships.map((tier): [string, TierPricing | null] => {
                 const price = latestPrices.get(tier);
@@ -250,6 +259,20 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                     per_image_cny: valueToNumber(price.per_image_cny),
                     ...(publicDetails ? { billing_details: publicDetails } : {}),
                 };
+                if (displayOptions) {
+                    const group = topology.byTier.get(tier);
+                    const mapping = currentMapping(model.upstream_map, tier, topology);
+                    if (group && mapping) {
+                        const breakdown = verifiedPlazaBreakdown(
+                            displayOptions,
+                            mapping.upstream_model,
+                            group.newapi_group,
+                            model.slug,
+                            publicPricing,
+                        );
+                        if (breakdown) breakdownByTier[tier] = breakdown;
+                    }
+                }
                 let pricing: TierPricing = {
                     input_cny_per_1m: tokenRates?.input ?? amount(price.input_cny_per_1m),
                     output_cny_per_1m: tokenRates?.output ?? amount(price.output_cny_per_1m),
@@ -295,7 +318,11 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                 return [tier, displayDetails ? { ...pricing, billing_details: displayDetails } : pricing];
             }),
         );
-        visibleModels.push({ slug: model.slug, pricesByTier });
+        visibleModels.push({
+            slug: model.slug,
+            pricesByTier,
+            ...(Object.keys(breakdownByTier).length ? { breakdownByTier } : {}),
+        });
     }
 
     return {

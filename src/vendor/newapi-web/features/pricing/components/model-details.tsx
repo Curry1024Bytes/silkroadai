@@ -44,6 +44,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@newapi/components/ui/sheet'
+import { usePortalContainer } from '@newapi/components/ui/portal-container'
 import { Skeleton } from '@newapi/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@newapi/components/ui/tabs'
 import { getPerfMetrics } from '@newapi/features/performance-metrics/api'
@@ -532,7 +533,7 @@ function ModelBackendProviderSection(props: { model: PricingModel }) {
 
   cells.push(
     <CatalogInfoCell key='type' label={t('Type')}>
-      <ModelBillingModeBadge model={model} />
+      <ModelBillingModeBadge model={model} showPortalBillingMode />
     </CatalogInfoCell>
   )
 
@@ -605,7 +606,7 @@ function ModelHeader(props: { model: PricingModel }) {
     <header className='pb-4'>
       <div className='flex items-center gap-2.5'>
         {modelIcon}
-        <h1 className='font-mono text-xl font-bold tracking-tight sm:text-2xl'>
+        <h1 className='m-0 min-w-0 break-all font-mono! text-xl font-bold tracking-tight sm:text-2xl'>
           {model.model_name}
         </h1>
         <CopyButton
@@ -622,7 +623,7 @@ function ModelHeader(props: { model: PricingModel }) {
           <span className='text-muted-foreground'>{model.vendor_name}</span>
         )}
         <span className='text-muted-foreground/30'>·</span>
-        <ModelBillingModeBadge model={model} />
+        <ModelBillingModeBadge model={model} showPortalBillingMode />
       </div>
       {description && (
         <p className='text-muted-foreground mt-2 text-sm leading-relaxed'>
@@ -1576,12 +1577,14 @@ export interface ModelDetailsDrawerProps extends ModelDetailsContentProps {
 
 export function ModelDetailsDrawer(props: ModelDetailsDrawerProps) {
   const { t } = useTranslation()
+  const container = usePortalContainer()
   const { open, onOpenChange, ...contentProps } = props
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side='right'
+        portalContainer={container}
         className={sideDrawerContentClassName(
           'sm:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-5xl'
         )}

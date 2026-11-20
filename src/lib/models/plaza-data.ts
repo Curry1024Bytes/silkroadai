@@ -134,7 +134,12 @@ export function adaptPlazaCatalog(catalog: BrowserCatalog, rawMetadata: unknown)
             tags: [TYPE_BADGE[entry.type], text(meta?.tags)].filter(Boolean).join(','),
             enable_groups: Object.keys(model.pricesByTier),
             supported_endpoint_types: endpointTypes,
-            portal: { type: entry.type, tiers: catalog.tiers, pricesByTier: model.pricesByTier },
+            portal: {
+                type: entry.type,
+                tiers: catalog.tiers,
+                pricesByTier: model.pricesByTier,
+                ...(model.breakdownByTier ? { breakdownByTier: model.breakdownByTier } : {}),
+            },
         };
         // These values come from actual model metadata, never seeded capability guesses.
         for (const key of ['context_length', 'max_output_tokens'] as const) {
@@ -167,7 +172,7 @@ export function adaptPlazaCatalog(catalog: BrowserCatalog, rawMetadata: unknown)
 }
 
 export async function loadPlazaData(viewer: PlazaViewer | null): Promise<PricingData> {
-    const catalog = await loadBrowserCatalog(viewer?.id);
+    const catalog = await loadBrowserCatalog(viewer?.id, { includePriceBreakdown: true });
     return {
         ...adaptPlazaCatalog(catalog, await readMetadata(viewer)),
         portal_viewer_key: viewer?.id ?? 'anonymous',

@@ -1,3 +1,4 @@
+import type { PlazaPriceBreakdown } from './plaza-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 
 export interface BrowserTier {
@@ -10,6 +11,7 @@ export interface BrowserModelPricing {
     slug: string;
     /** Keys are current, validated memberships. A null value means that tier has no published price. */
     pricesByTier: Record<string, TierPricing | null>;
+    breakdownByTier?: Record<string, PlazaPriceBreakdown>;
 }
 
 export interface BrowserCatalog {

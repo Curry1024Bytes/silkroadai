@@ -1256,13 +1256,13 @@ export async function getCatalogSyncOptions(): Promise<Record<string, unknown>> 
 }
 
 /** Pricing-only allowlist. Never retain/log the complete admin option response. */
-export async function getPricingPublishOptions(): Promise<Record<string, unknown>> {
+export async function getPricingPublishOptions(timeoutMs = 10_000): Promise<Record<string, unknown>> {
     const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown>>(
         'GET',
         '/api/option/',
         undefined,
         undefined,
-        { timeoutMs: 10_000 },
+        { timeoutMs },
     );
     if (!data || typeof data !== 'object') throw new Error('Invalid pricing options response');
     const keys = [
