@@ -112,6 +112,30 @@ function withExternal(overrides: { ratio?: boolean; groups?: Record<string, stri
 }
 
 describe('buildNewApiSyncPlan prices', () => {
+    it('publishes an AIGAS fixed-second model as video only when its group has a unique eligible route', () => {
+        const slug = 'sd-2-vip-720';
+        const catalog = state({ models: [] });
+        const aigas = channel({ models: [slug], taskPluginKey: 'aigas-seedance' });
+        const upstream = source({ channels: [aigas, channel({ id: 7, models: [slug], groups: ['elsewhere'] })] });
+        upstream.prices.pluginBillingExpr = {
+            [`aigas-seedance::${slug}`]: 'tier("base", u("seconds") * 0.24)',
+        };
+        const plan = buildNewApiSyncPlan(catalog, upstream, NOW);
+        expect(plan.blocked).toBeNull();
+        expect(plan.models).toHaveLength(1);
+        expect(plan.models[0].next).toMatchObject({ slug, modality: 'video', enabled: true });
+        expect(plan.prices[0]).toMatchObject({
+            mapping: { channel_id: 6, upstream_model: slug },
+            next: { billing_details: { unit: 'cny_per_second', default_price: 0.048 * IMAGE_FX } },
+        });
+
+        // A competing new-api route matters even if Portal does not register that channel in the tier.
+        upstream.channels[1].groups = [GROUP];
+        const ambiguous = buildNewApiSyncPlan(catalog, upstream, NOW);
+        expect(ambiguous.models).toEqual([]);
+        expect(ambiguous.prices).toEqual([]);
+        expect(ambiguous.warnings.join(' ')).toContain('渠道专属表达式');
+    });
     it('does not overwrite mirrored selectability or shared/disabled channel memberships', () => {
         const stamp = new Date(NOW).toISOString();
         const groups = [

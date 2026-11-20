@@ -24,6 +24,29 @@ afterEach(() => {
 });
 
 describe('catalog sync full source', () => {
+    it('extracts only the task plugin key from typed channel settings', async () => {
+        fetchMock.mockImplementation((url) =>
+            Promise.resolve(
+                new URL(url).pathname === '/api/channel/'
+                    ? envelope({
+                          items: [
+                              {
+                                  ...channel(1),
+                                  type: 61,
+                                  setting: '{"task_plugin_key":"aigas-seedance","other":"SECRET"}',
+                              },
+                              { ...channel(2), type: 1, setting: '{"task_plugin_key":"aigas-seedance"}' },
+                              { ...channel(3), type: 61, setting: '{bad json' },
+                          ],
+                          total: 3,
+                      })
+                    : envelope({ UserUsableGroups: '{"public":"Public"}' }),
+            ),
+        );
+        const source = await readNewApiSyncSource();
+        expect(source.channels.map((row) => row.taskPluginKey)).toEqual(['aigas-seedance', undefined, undefined]);
+        expect(JSON.stringify(source)).not.toContain('SECRET');
+    });
     it('reads modern billing rules in the same allowlisted snapshot without exposing secrets', async () => {
         fetchMock.mockImplementation((url) =>
             Promise.resolve(

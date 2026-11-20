@@ -105,7 +105,12 @@ function validCatalogAmount(amount: number, positiveBeforeRounding: boolean): bo
  * Model names do not determine the billing basis: token-priced image models stay token-priced.
  * User-specific GroupGroupRatio adjustments are intentionally outside the standard catalog.
  */
-export function readSyncPrice(raw: RawSyncPrices, model: string, group: string): SyncPriceResult {
+export function readSyncPrice(
+    raw: RawSyncPrices,
+    model: string,
+    group: string,
+    taskPluginKey?: string,
+): SyncPriceResult {
     if (!model.trim()) return unavailable('缺少 new-api 模型名');
     if (!group.trim()) return unavailable('缺少 new-api 分组名');
 
@@ -119,7 +124,7 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
     const groupRatio = readNumber(groupRatios.dictionary, group, 'GroupRatio');
     if (groupRatio.value === null) return unavailable(groupRatio.reason, basis);
 
-    const advanced = advancedSyncPrice(raw, model, groupRatio.value);
+    const advanced = advancedSyncPrice(raw, model, groupRatio.value, taskPluginKey);
     if (advanced) return advanced;
 
     if (basis === 'request') {

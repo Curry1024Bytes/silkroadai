@@ -75,14 +75,33 @@ function componentExpression(expression: string): CatalogBillingDetails {
     })!;
 }
 
-export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio: number): SyncPriceResult | null {
+export const AIGAS_TASK_PLUGIN_KEY = 'aigas-seedance';
+
+// Only import the fixed per-second expression used by the AIGAS task plugin.
+function aigasSecondPrice(expression: unknown): number {
+    const match =
+        typeof expression === 'string' &&
+        /^tier\(\s*"base"\s*,\s*u\(\s*"seconds"\s*\)\s*\*\s*((?:0|[1-9]\d*)(?:\.\d+)?)\s*\)$/.exec(expression.trim());
+    const price = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(price) || price <= 0) throw new Error('AIGAS 渠道专属表达式不符合固定秒价格式');
+    return price;
+}
+
+export function advancedSyncPrice(
+    raw: RawSyncPrices,
+    model: string,
+    groupRatio: number,
+    taskPluginKey?: string,
+): SyncPriceResult | null {
     try {
         const mode = own(syncDictionary(raw.billingMode, 'billing_mode'), model);
         const image = own(syncDictionary(raw.imageResolutionPrice, 'ImageResolutionPrice'), model);
         const task = own(syncDictionary(raw.taskBillingPricing, 'task_billing_pricing'), model);
         const discount = own(syncDictionary(raw.scheduledDiscount, 'scheduled_discount'), model);
         const plugins = syncDictionary(raw.pluginBillingExpr, 'plugin_billing_expr');
-        if (Object.keys(plugins).some((key) => key.endsWith(`::${model}`)))
+        const aigasKey = `${AIGAS_TASK_PLUGIN_KEY}::${model}`;
+        const hasAigasPrice = taskPluginKey === AIGAS_TASK_PLUGIN_KEY && Object.hasOwn(plugins, aigasKey);
+        if (!hasAigasPrice && Object.keys(plugins).some((key) => key.endsWith(`::${model}`)))
             throw new Error('模型配置了渠道专属表达式，目录暂不能表示多个不同计费规则');
         if (
             mode !== undefined &&
@@ -93,7 +112,16 @@ export function advancedSyncPrice(raw: RawSyncPrices, model: string, groupRatio:
             throw new Error(`暂不支持的计费方式：${String(mode)}`);
         let details: CatalogBillingDetails;
         let basis: SyncPriceResult['basis'];
-        if (mode === 'tiered_expr') {
+        if (hasAigasPrice) {
+            details = parseCatalogBillingDetails({
+                version: 1,
+                mode: 'media',
+                unit: 'cny_per_second',
+                default_price: aigasSecondPrice(plugins[aigasKey]),
+                resolution_prices: {},
+            })!;
+            basis = 'second';
+        } else if (mode === 'tiered_expr') {
             const expression = own(syncDictionary(raw.billingExpr, 'billing_expr'), model);
             if (typeof expression !== 'string' || !expression.trim()) throw new Error('阶梯计费表达式缺失');
             if (isTaskUsageExpression(expression)) {

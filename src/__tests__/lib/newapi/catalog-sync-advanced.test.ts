@@ -21,6 +21,46 @@ const read = (extra: Record<string, unknown>, model = 'test') =>
     readSyncPrice(syncPricesFromOptions(options(extra)), model, 'sale');
 const amount = (n: number) => Number((n * 0.12 * IMAGE_FX).toFixed(12));
 describe('catalog synchronization of new-api billing rules', () => {
+    it('reads the exact AIGAS fixed-second override only in a confirmed channel context', () => {
+        const model = 'sd-2.5-720P';
+        const raw = syncPricesFromOptions(
+            options({
+                ModelPrice: { [model]: 99 },
+                'billing_setting.plugin_billing_expr': {
+                    [`aigas-seedance::${model}`]: 'tier("base", u("seconds") * 0.398)',
+                    [`other-provider::${model}`]: 'tier("base", u("seconds") * 9)',
+                },
+            }),
+        );
+        expect(readSyncPrice(raw, model, 'sale', 'aigas-seedance')).toMatchObject({
+            basis: 'second',
+            reason: null,
+            price: {
+                input_cny_per_1m: null,
+                output_cny_per_1m: null,
+                per_image_cny: null,
+                billing_details: { mode: 'media', unit: 'cny_per_second', default_price: amount(0.398) },
+            },
+        });
+        expect(readSyncPrice(raw, model, 'sale').price).toBeNull();
+        expect(readSyncPrice(raw, model, 'sale', 'other-provider').price).toBeNull();
+    });
+    it.each([
+        'tier("base", u("seconds") * 0.24 + 1)',
+        'tier("base", u("tokens") * 0.24)',
+        'tier("base", u("seconds") * 0)',
+    ])('refuses unsupported AIGAS expressions without falling back to ModelPrice: %s', (expression) => {
+        const raw = syncPricesFromOptions(
+            options({
+                ModelPrice: { test: 99 },
+                'billing_setting.plugin_billing_expr': { 'aigas-seedance::test': expression },
+            }),
+        );
+        expect(readSyncPrice(raw, 'test', 'sale', 'aigas-seedance')).toMatchObject({
+            price: null,
+            reason: expect.stringContaining('不符合固定秒价格式'),
+        });
+    });
     it('preserves explicit legacy cache prices, including zero, and refuses malformed values', () => {
         const source = {
             ModelRatio: { test: 2.5 },

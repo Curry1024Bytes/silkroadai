@@ -9,11 +9,23 @@ export interface SyncChannel {
     status: number;
     groups: string[];
     models: string[];
+    taskPluginKey?: string;
 }
 export interface NewApiSyncSource {
     channels: SyncChannel[];
     groups: Record<string, string>;
     prices: RawSyncPrices;
+}
+
+function readTaskPluginKey(type: unknown, setting: unknown): string | undefined {
+    if (type !== 61) return undefined; // new-api Task Plugin channel
+    try {
+        const parsed: unknown = typeof setting === 'string' ? JSON.parse(setting) : setting;
+        if (!parsed || typeof parsed !== 'object' || !('task_plugin_key' in parsed)) return undefined;
+        return typeof parsed.task_plugin_key === 'string' ? parsed.task_plugin_key : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 export async function readNewApiSyncSource(): Promise<NewApiSyncSource> {
@@ -32,12 +44,14 @@ export async function readNewApiSyncSource(): Promise<NewApiSyncSource> {
             if (typeof row.group !== 'string' || typeof row.models !== 'string' || !Number.isInteger(row.status))
                 throw new Error('Incomplete channel metadata');
             const channel = replacementChannel(row);
+            const taskPluginKey = readTaskPluginKey(row.type, row.setting);
             return {
                 id: channel.id,
                 name: channel.name,
                 status: channel.status!,
                 groups: channel.groups,
                 models: channel.models,
+                ...(taskPluginKey ? { taskPluginKey } : {}),
             };
         })
         .sort((a, b) => a.id - b.id);

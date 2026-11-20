@@ -2,7 +2,7 @@ import 'server-only';
 import { generateChannelGroupKey } from '@/lib/channel-group-key';
 import { inferVendor, isImageModel, toDisplayName } from '@/lib/newapi/import-catalog';
 import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
-import { syncModelModality } from '@/lib/newapi/catalog-sync-advanced';
+import { AIGAS_TASK_PLUGIN_KEY, syncModelModality } from '@/lib/newapi/catalog-sync-advanced';
 import {
     parseCatalogBillingDetails,
     catalogRequestMultiplierLines,
@@ -219,7 +219,7 @@ function item(
 }
 
 type PriceStatus =
-    | { ok: true; current: SyncPrice | null; next: PriceValues | null }
+    | { ok: true; current: SyncPrice | null; next: PriceValues | null; aigasVideo?: boolean }
     | { ok: false; issue: 'protected' | 'scheduled' | 'unsupported' | 'missing'; reason: string };
 
 /**
@@ -390,25 +390,44 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
         group.newapi_channel_ids.find((id) => sellable(group.key, { channel_id: id, upstream_model: upstream }));
 
     // 3. Models: sold while any tier sells them, published once a tier also has a valid price.
-    const priceStatus = (model: SyncModel, tier: string, upstream: string): PriceStatus => {
+    const priceStatus = (model: SyncModel, tier: string, mapping: UpstreamMapLike[string]): PriceStatus => {
         const group = byKey.get(tier)!;
+        const { channel_id: channelId, upstream_model: upstream } = mapping;
         const current = model.id ? currentSyncPrice(state, model.id, tier, now) : null;
         if (PROTECTED_SKU.test(model.slug))
             return current && validSyncPrice(current, model.modality)
                 ? { ok: true, current, next: null }
                 : { ok: false, issue: 'protected', reason: '' };
-        const live = readSyncPrice(source.prices, upstream, group.newapi_group);
+        const routedChannel = channelById.get(channelId);
+        const aigasOnly =
+            routedChannel?.taskPluginKey === AIGAS_TASK_PLUGIN_KEY &&
+            routedChannel.groups.includes(group.newapi_group) &&
+            !source.channels.some(
+                (channel) =>
+                    channel.id !== channelId &&
+                    channel.status === 1 &&
+                    channel.groups.includes(group.newapi_group) &&
+                    channel.models.includes(upstream),
+            );
+        const live = readSyncPrice(
+            source.prices,
+            upstream,
+            group.newapi_group,
+            aigasOnly ? AIGAS_TASK_PLUGIN_KEY : undefined,
+        );
         if (!live.price) return { ok: false, issue: 'missing', reason: live.reason ?? '价格不完整' };
         if (!live.price.billing_details && (live.basis === 'request') !== (model.modality === 'image'))
             return { ok: false, issue: 'unsupported', reason: '' };
-        if (current && equal(valueOf(current), valueOf(live.price))) return { ok: true, current, next: null };
+        const aigasVideo = aigasOnly && live.basis === 'second';
+        if (current && equal(valueOf(current), valueOf(live.price)))
+            return { ok: true, current, next: null, aigasVideo };
         if (
             state.prices.some(
                 (row) => row.model_id === model.id && row.tier === tier && Date.parse(row.effective_from) > now,
             )
         )
             return { ok: false, issue: 'scheduled', reason: '' };
-        return { ok: true, current, next: live.price };
+        return { ok: true, current, next: live.price, aigasVideo };
     };
     const issues = {
         missing: [] as string[],
@@ -460,15 +479,16 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
         }
         const statuses = new Map<string, PriceStatus>();
         for (const [tier, entry] of Object.entries(map))
-            if (sellable(tier, entry)) statuses.set(tier, priceStatus(base, tier, entry.upstream_model));
+            if (sellable(tier, entry)) statuses.set(tier, priceStatus(base, tier, entry));
         for (const group of enabledGroups) {
             if (Object.hasOwn(map, group.key) || claimed.has(`${group.key}\u0000${slug}`)) continue;
             const channelId = supportingChannel(group, slug);
             if (channelId === undefined) continue;
-            const status = priceStatus(base, group.key, slug);
+            const entry = { channel_id: channelId, upstream_model: slug };
+            const status = priceStatus(base, group.key, entry);
             statuses.set(group.key, status);
             // A tier is only added once it can be priced.
-            if (status.ok) map[group.key] = { channel_id: channelId, upstream_model: slug };
+            if (status.ok) map[group.key] = entry;
         }
         const selling = Object.entries(map).filter(([tier, entry]) => sellable(tier, entry));
         const enabled =
@@ -482,8 +502,15 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
         if (!current && !enabled) continue;
         // A published model lists only the tiers that actually sell it.
         if (enabled) for (const [tier, entry] of Object.entries(map)) if (!sellable(tier, entry)) delete map[tier];
+        const aigasVideo =
+            !current &&
+            selling.some(([tier]) => {
+                const status = statuses.get(tier);
+                return status?.ok && status.aigasVideo;
+            });
         const next: SyncModel = {
             ...base,
+            modality: aigasVideo ? 'video' : base.modality,
             upstream_map: map,
             enabled,
             // Republishing a retired model must restore it to the management list.
