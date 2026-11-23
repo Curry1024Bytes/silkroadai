@@ -122,9 +122,14 @@ export function parseTieredPricingDetails(raw: unknown): TieredPricingDetails | 
     if (raw === null || raw === undefined) return null;
     const parsed = detailsSchema.safeParse(raw);
     if (!parsed.success) {
+        const rawJson = JSON.stringify(raw);
+        const errorJson = JSON.stringify(parsed.error.format(), null, 2);
+        process.stderr.write(`[parseTieredPricingDetails] VALIDATION FAILED\n`);
+        process.stderr.write(`Data: ${rawJson.slice(0, 500)}${rawJson.length > 500 ? '...(truncated)' : ''}\n`);
+        process.stderr.write(`Zod errors: ${errorJson}\n`);
         console.error('[parseTieredPricingDetails] Validation failed for data:', JSON.stringify(raw));
         console.error('[parseTieredPricingDetails] Zod errors:', JSON.stringify(parsed.error.format(), null, 2));
-        throw new Error('Invalid tiered pricing details');
+        throw new Error(`Invalid tiered pricing details: ${parsed.error.issues[0]?.message || 'unknown error'}`);
     }
     return parsed.data;
 }
