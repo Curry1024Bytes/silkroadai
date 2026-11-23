@@ -482,7 +482,9 @@ describe('catalog synchronization of new-api billing rules', () => {
         expect(syncModelModality(syncPricesFromOptions(options(extra)), 'test', 'chat')).toBe('chat');
     });
     it('validates persisted units and never treats unknown metadata as a scalar quote', () => {
-        expect(() =>
+        // After d71406f6: parseCatalogBillingDetails uses safeParse and returns null on validation errors
+        // instead of throwing, to gracefully handle malformed data in production
+        expect(
             parseCatalogBillingDetails({
                 version: 1,
                 mode: 'media',
@@ -490,8 +492,8 @@ describe('catalog synchronization of new-api billing rules', () => {
                 default_price: 1,
                 resolution_prices: {},
             }),
-        ).toThrow();
-        expect(() =>
+        ).toBeNull();
+        expect(
             parseCatalogBillingDetails({
                 version: 1,
                 mode: 'media',
@@ -499,6 +501,6 @@ describe('catalog synchronization of new-api billing rules', () => {
                 default_price: null,
                 resolution_prices: {},
             }),
-        ).toThrow();
+        ).toBeNull();
     });
 });
