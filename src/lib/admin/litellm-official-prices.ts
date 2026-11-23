@@ -147,7 +147,7 @@ export function searchOfficialModelPrices(
     const q = normalized(query);
     if (!q) return [];
 
-    return models
+    const scored = models
         .map((model) => {
             const name = normalized(model.model);
             const provider = normalized(model.provider ?? '');
@@ -159,7 +159,14 @@ export function searchOfficialModelPrices(
             return { model, score };
         })
         .filter((candidate) => candidate.score > 0)
-        .sort((a, b) => b.score - a.score || a.model.model.localeCompare(b.model.model))
-        .slice(0, limit)
-        .map((candidate) => candidate.model);
+        .sort((a, b) => b.score - a.score || a.model.model.localeCompare(b.model.model));
+
+    // If there are exact matches, only return exact matches (critical for pricing —
+    // must not let "doubao seedance 2 0 fast" appear when searching for the standard version).
+    const exactMatches = scored.filter((c) => c.score === 4);
+    if (exactMatches.length > 0) {
+        return exactMatches.slice(0, limit).map((c) => c.model);
+    }
+
+    return scored.slice(0, limit).map((candidate) => candidate.model);
 }
