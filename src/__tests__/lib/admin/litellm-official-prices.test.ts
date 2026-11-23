@@ -81,10 +81,9 @@ describe('LiteLLM official price source', () => {
             'claude-fable-5': SAMPLE['anthropic.claude-fable-5'],
         });
 
+        // After exact-match fix: only the exact match is returned, not provider variants
         expect(searchOfficialModelPrices(models, 'claude-fable-5').map((model) => model.model)).toEqual([
             'claude-fable-5',
-            'anthropic.claude-fable-5',
-            'bedrock/anthropic.claude-fable-5',
         ]);
     });
 });
