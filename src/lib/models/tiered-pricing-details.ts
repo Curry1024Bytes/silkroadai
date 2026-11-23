@@ -120,6 +120,8 @@ const detailsSchema = z
 /** Absence is a legacy scalar price; malformed non-null metadata must fail closed. */
 export function parseTieredPricingDetails(raw: unknown): TieredPricingDetails | null {
     if (raw === null || raw === undefined) return null;
+    // Skip non-tiered_token modes (media, video_token, etc.) - they're handled by parseCatalogBillingDetails
+    if (typeof raw === 'object' && 'mode' in raw && raw.mode !== 'tiered_token') return null;
     const parsed = detailsSchema.safeParse(raw);
     if (!parsed.success) {
         const rawJson = JSON.stringify(raw);
