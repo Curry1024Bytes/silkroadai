@@ -84,8 +84,7 @@ export function isImageModel(model: string): boolean {
     return m.includes('image') || m.includes('dall-e') || m.includes('imagen');
 }
 
-/** 从日志行 `other`(new-api 回的 JSON 串)取 `model_price`;取不到 → null。
- *  `model_price >= 0` = 按张(ModelPrice 定价);`-1` = 未设 ModelPrice,走 ModelRatio 按 token 计费。 */
+/** 从日志行 `other`(new-api 回的 JSON 串)取 `model_price`;取不到 → null。 */
 export function parseModelPrice(other: string | null | undefined): number | null {
     if (!other) return null;
     try {
@@ -94,6 +93,12 @@ export function parseModelPrice(other: string | null | undefined): number | null
     } catch {
         return null;
     }
+}
+
+/** new-api 这条日志是否采用非负 ModelPrice 固定价口径。 */
+export function isModelPriceBilled(other: string | null | undefined): boolean {
+    const modelPrice = parseModelPrice(other);
+    return modelPrice !== null && modelPrice >= 0;
 }
 
 /** 从日志行 `other` 取缓存 token 数:`cache_tokens` = 缓存读(命中),`cache_creation_tokens` =
@@ -212,13 +217,15 @@ export function settlementRefundContent(
  *   - `true`  → token 数是噪声(上游回报极不一致)→ 展示层显示 "—"(如 Gemini 生图)。
  *   - `false` → 按 token 计费(ModelRatio,含 gpt-image-2 / az-gpt-image-2 / 所有 LLM)→ token 就是
  *     计费依据,要如实显示。
- *  判据优先用【每条请求真实计费口径】`other.model_price`(≥0 按张、-1/缺省按 token);`other` 解析不出
+ *  对图片模型，判据优先用【每条请求真实计费口径】`other.model_price`(≥0 按张、-1/缺省按 token);`other` 解析不出
  *  才回退模型名 —— gpt-image-2-{1,2,4}k 是明确的 ModelPrice 固定价 SKU;
  *  canonical gpt-image-2 / az-gpt-image 族仍按 token 展示。 */
 export function isPerImageBilled(other: string | null | undefined, model: string): boolean {
-    const mp = parseModelPrice(other);
-    if (mp != null) return mp >= 0;
     const m = (model || '').toLowerCase();
+    const mp = parseModelPrice(other);
+    // `model_price` is also present on fixed-price text/video models. Only
+    // image models use it to distinguish per-image billing from token billing.
+    if (mp != null) return isImageModel(m) && mp >= 0;
     if (/^gpt-image-2-[124]k$/.test(m)) return true;
     if (m.includes('gpt-image')) return false; // gpt-image 族按 token 计费,即使缺 other 也要显示 token
     return isImageModel(m);

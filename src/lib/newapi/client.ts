@@ -473,7 +473,7 @@ export interface NewApiUsageLog {
     token_id: number;
     group: string;
     /** 计费元信息 JSON 串(model_price / model_ratio / completion_ratio / group_ratio 等)。
-     *  展示层用 `model_price` 区分「按张(≥0)」vs「按 token(-1)」计费 —— 见 log-display
+     *  图片日志展示层结合模型名和 `model_price` 判断是否按张计费 —— 见 log-display 的
      *  `isPerImageBilled`。rows 未经 zod 校验,老行可能缺此字段(空串)。 */
     other: string;
     /** new-api 为每条请求生成的唯一 ID(前 14 位是 UTC 时间戳)。客户排障 /

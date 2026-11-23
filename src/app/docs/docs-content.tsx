@@ -157,6 +157,11 @@ const AGENTS: AgentSection[] = [
         label: 'Seedance 视频 · Ark 兼容接口',
         blurb: '通过 LLmRoute API 调用 Seedance 2.5 / 2.0:使用平台 API 地址和 Key,提交任务 → 轮询 → 获取成片;按实际 token 用量计费。',
     },
+    {
+        id: 'sd-special-video',
+        label: 'SD特惠 · 按秒生成视频',
+        blurb: '使用「SD特惠」分组的 Key，通过 /v1/videos 提交、查询和下载视频。',
+    },
 ];
 
 /** 火山方舟原生接口的 Base URL(官方 SDK 的 base_url 也填这个)。 */
@@ -166,6 +171,41 @@ const OPENAI_BASE = OPENAI_API_BASE_URL;
 const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
 const SAMPLE_OPENAI_MODEL = 'gpt-5.4';
 const SAMPLE_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+
+// Snapshot of the SD特惠 channel's per-second model IDs and configured duration ranges.
+const SD_SPECIAL_MODELS = [
+    ['sd-2-mini-480', '480p', '5–15'],
+    ['sd-2-mini-720', '720p', '4–15'],
+    ['sd-2-fast-480', '480p', '4–15'],
+    ['sd-2-fast-720', '720p', '4–15'],
+    ['sd-2-vip-480', '480p', '4–15'],
+    ['sd-2-vip-720', '720p', '5–15'],
+    ['sd-2.5-480P', '480p', '4–30'],
+    ['sd-2.5-720P', '720p', '4–30'],
+    ['sd-2.5-1080P', '1080p', '4–30'],
+    ['sd-2.5-flash-480P', '480p', '4–30'],
+    ['sd-2.5-flash-720P', '720p', '4–30'],
+    ['sd-2-mini-480-novideo', '480p', '4–15'],
+    ['sd-2-mini-720-novideo', '720p', '4–15'],
+    ['sd-2-fast-480-novideo', '480p', '4–15'],
+    ['sd-2-fast-720-novideo', '720p', '4–15'],
+    ['sd-2-vip-480-novideo', '480p', '4–15'],
+    ['sd-2-vip-720-novideo', '720p', '4–15'],
+    ['sd-2.5-480P-novideo', '480p', '4–30'],
+    ['sd-2.5-720P-novideo', '720p', '4–30'],
+    ['sd-2.5-flash-480-novideo', '480p', '4–30'],
+    ['sd-2.5-flash-720-novideo', '720p', '4–30'],
+    ['sd-2.0-官方版-480p', '480p', '4–15'],
+    ['sd-2.0-官方版-720p', '720p', '4–15'],
+    ['sd-2.0-fast-官方版-480p', '480p', '5–15'],
+    ['sd-2.0-fast-官方版-720p', '720p', '5–15'],
+    ['sd-2.0-mini-官方版-480p', '480p', '4–15'],
+    ['sd-2.0-mini-官方版-720p', '720p', '4–15'],
+    ['sd-2.5-官方版-480p', '480p', '4–30'],
+    ['sd-2.5-官方版-720p', '720p', '4–30'],
+    ['sd-2.5-480P-限时特价', '480p', '4–30'],
+    ['sd-2.5-720P-限时特价', '720p', '4–30'],
+] as const;
 
 /**
  * Docs prose is Chinese-only for now (English edition = separate PR). The
@@ -989,12 +1029,21 @@ data: [DONE]`}
                                     <td className="px-4 py-3 text-ink align-top">Silk Road 扩展</td>
                                     <td className="px-4 py-3 text-ink">key 自查:档次 / 账户余额 / 用量(见第 19 章)</td>
                                 </tr>
-                                <tr>
+                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
                                         /v1/files + /v1/batches
                                     </td>
                                     <td className="px-4 py-3 text-ink align-top">OpenAI Batch 兼容</td>
                                     <td className="px-4 py-3 text-ink">批量生图:JSONL 批任务(见第 22 章)</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">POST /v1/videos</td>
+                                    <td className="px-4 py-3 text-ink align-top">JSON 异步任务</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <a href="#sd-special-video" className="text-brand-accent hover:underline">
+                                            SD特惠按秒视频（见第 25 章）
+                                        </a>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -4924,6 +4973,8 @@ print(result.status, result.content.video_url if result.status == "succeeded" el
                     </div>
                 </section>
 
+                <SdSpecialVideoSection modelsHref={modelsHref} />
+
                 <section className="mt-12 mb-6 text-center">
                     <h2 className="m-0 mb-2 text-base font-semibold text-navy">遇到问题?</h2>
                     <p className="m-0 text-sm text-muted-ink">
@@ -4946,6 +4997,169 @@ print(result.status, result.content.video_url if result.status == "succeeded" el
 }
 
 /* ──────────────────────────────────────────────────────────────────── */
+
+function SdSpecialVideoSection({ modelsHref }: { modelsHref: string }) {
+    return (
+        <section id="sd-special-video" className="mt-12 mb-10 scroll-mt-20">
+            <div className="mb-4 border-b-2 border-brand-accent pb-3">
+                <h2 className="m-0 text-2xl font-semibold text-navy">
+                    <span className="mr-3 font-bold tabular-nums text-brand-accent">25</span>
+                    SD特惠 · 按秒生成视频
+                </h2>
+            </div>
+            <p className="m-0 mb-4 text-sm leading-relaxed text-muted-ink">
+                使用同一把「SD特惠」Key 提交任务、查询状态和下载 MP4。模型 ID 可从本节表格或模型广场复制。
+            </p>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                在{' '}
+                <Link href="/keys" className="font-medium text-navy hover:text-brand-accent">
+                    API 密钥
+                </Link>{' '}
+                页选择 <strong className="text-navy">SD特惠</strong> 分组创建 Key。这个分组用 JSON 调用{' '}
+                <code className="font-mono text-xs">/v1/videos</code>，不使用上面的 Ark 接口。
+            </p>
+            <ConfigList
+                items={[
+                    ['API 域名', CUSTOMER_API_BASE_URL],
+                    ['Base URL（已含 /v1）', OPENAI_BASE],
+                    ['认证 Header', 'Authorization: Bearer <API_KEY>'],
+                    ['提交', 'POST /v1/videos'],
+                    ['查询', 'GET /v1/videos/{id}'],
+                    ['下载 MP4', 'GET /v1/videos/{id}/content'],
+                ]}
+            />
+
+            <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">1. 提交任务</h3>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                必填 <code className="font-mono text-xs">model</code>、<code className="font-mono text-xs">prompt</code>{' '}
+                和整数 <code className="font-mono text-xs">duration</code>（秒）。模型 ID
+                原样填写，区分大小写并保留中文后缀。分辨率由模型决定，可以省略{' '}
+                <code className="font-mono text-xs">resolution</code>，如显式传入，须填写匹配的{' '}
+                <code className="font-mono text-xs">480p</code>、<code className="font-mono text-xs">720p</code> 或{' '}
+                <code className="font-mono text-xs">1080p</code>。实际像素尺寸以下载的成片为准。
+            </p>
+            <CodeBlock language="bash">
+                {`curl --fail-with-body -sS "${OPENAI_BASE}/videos" \\
+  -H "Authorization: Bearer $LLMROUTE_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"sd-2-mini-480","prompt":"一片树叶随风落在水面，镜头缓慢推进","duration":5}'`}
+            </CodeBlock>
+
+            <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">2. 查询状态与下载</h3>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                保存提交响应的 <code className="font-mono text-xs">id</code>，用同一把 Key 查询。{' '}
+                <code className="font-mono text-xs">queued</code>（排队）或{' '}
+                <code className="font-mono text-xs">in_progress</code>（生成中）时继续轮询，例如间隔 10 秒。{' '}
+                <code className="font-mono text-xs">completed</code>（生成完成）后尝试下载；{' '}
+                <code className="font-mono text-xs">failed</code>（失败）时停止轮询并检查{' '}
+                <code className="font-mono text-xs">error</code>。
+            </p>
+            <CodeBlock language="bash">
+                {`TASK_ID="这里填提交返回的 id"
+curl --fail-with-body -sS "${OPENAI_BASE}/videos/$TASK_ID" \\
+  -H "Authorization: Bearer $LLMROUTE_API_KEY"
+
+# status 为 completed 后下载并保存成片
+curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
+  -H "Authorization: Bearer $LLMROUTE_API_KEY" \\
+  -o result.mp4`}
+            </CodeBlock>
+            <p className="m-0 mt-3 text-sm leading-relaxed text-ink">
+                <strong className="text-navy">超时不要自动重发提交。</strong>有任务 ID 就继续查询原任务；没拿到 ID
+                时，保留请求时间和请求 ID（若有），先查用量或联系客服确认。成片下载失败先排查原任务，不要重新生成。
+            </p>
+
+            <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">3. 添加参考素材</h3>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                文生视频省略 <code className="font-mono text-xs">references</code>；有素材时传数组，每项填写{' '}
+                <code className="font-mono text-xs">type</code>、<code className="font-mono text-xs">role</code> 和{' '}
+                <code className="font-mono text-xs">url</code>。URL 须能从公网直接访问。不要同时传旧字段{' '}
+                <code className="font-mono text-xs">images</code>、<code className="font-mono text-xs">videos</code> 或{' '}
+                <code className="font-mono text-xs">audios</code>。
+            </p>
+            <ul className="m-0 mb-3 space-y-1 pl-5 text-sm leading-relaxed text-ink">
+                <li>
+                    普通参考：type 为 image、video 或 audio，role 为 reference。提示词可用 @image1、@video1、@audio1
+                    指定素材。
+                </li>
+                <li>
+                    首帧／首尾帧：type 为 image，role 为 first_frame 或
+                    last_frame。各最多一张；尾帧必须搭配首帧，不与普通参考图混用。
+                </li>
+                <li>
+                    <strong className="text-navy">-novideo 仍然会生成视频，只是不接受参考视频作为输入。</strong>
+                </li>
+            </ul>
+            <p className="m-0 mb-2 text-sm font-medium text-navy">参考图请求示例</p>
+            <CodeBlock language="json">
+                {`{
+  "model": "sd-2-mini-720",
+  "prompt": "让 @image1 中的纸船沿水面缓缓前进",
+  "duration": 4,
+  "references": [
+    { "type": "image", "role": "reference", "url": "https://example.com/boat.jpg" }
+  ]
+}`}
+            </CodeBlock>
+            <p className="m-0 mt-3 mb-2 text-sm font-medium text-navy">混合参考请求示例</p>
+            <CodeBlock language="json">
+                {`{
+  "model": "sd-2-vip-480",
+  "prompt": "参考 @image1 的色彩和 @video1 的运镜，配合 @audio1 的节奏切换画面",
+  "duration": 4,
+  "references": [
+    { "type": "image", "role": "reference", "url": "https://example.com/scene.jpg" },
+    { "type": "video", "role": "reference", "url": "https://example.com/camera.mp4" },
+    { "type": "audio", "role": "reference", "url": "https://example.com/music.mp3" }
+  ]
+}`}
+            </CodeBlock>
+            <p className="m-0 mt-3 text-sm text-muted-ink">
+                请将示例 URL 换成真实素材地址。首帧、首尾帧需要型号支持。若报素材模式不支持，可改用普通图片参考。
+            </p>
+
+            <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">4. 模型与计费</h3>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                本分组按秒计费。请在{' '}
+                <Link href={modelsHref} className="font-medium text-navy hover:text-brand-accent">
+                    模型广场
+                </Link>{' '}
+                选择「SD特惠」查看各型号每秒单价。预算可按「单价 × 请求秒数」估算。任务终态的实扣或退款以用量账单为准。
+            </p>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                如果 <code className="font-mono text-xs">GET /v1/models</code> 未列出本分组的模型，从模型广场或下表复制
+                ID 后直接提交。收到 HTTP 400 时，检查型号的时长、分辨率和参考素材组合。
+            </p>
+            <details className="rounded-lg border border-brand-border bg-surface">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-navy">
+                    查看模型 ID 与时长范围（当前配置 {SD_SPECIAL_MODELS.length} 个）
+                </summary>
+                <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                        <thead className="bg-paper-muted text-muted-ink">
+                            <tr>
+                                {['模型 ID', '分辨率', '时长（秒）'].map((col) => (
+                                    <th key={col} scope="col" className="whitespace-nowrap px-4 py-2 text-left text-xs">
+                                        {col}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {SD_SPECIAL_MODELS.map(([id, resolution, duration]) => (
+                                <tr key={id} className="border-t border-brand-border">
+                                    <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-navy">{id}</td>
+                                    <td className="px-4 py-2 text-ink">{resolution}</td>
+                                    <td className="whitespace-nowrap px-4 py-2 text-ink">{duration}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        </section>
+    );
+}
 
 function AgentBlock({
     id,

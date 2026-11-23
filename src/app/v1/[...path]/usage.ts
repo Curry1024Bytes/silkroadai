@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { queryLogs, type NewApiUsageLog } from '@/lib/newapi/client';
 import { quotaToCny, quotaToRealUsd } from '@/lib/newapi/quota-units';
-import { sanitizeLogContent, isPerImageBilled } from '@/lib/newapi/log-display';
+import { sanitizeLogContent, isModelPriceBilled } from '@/lib/newapi/log-display';
 
 /** new-api /api/log/ 单页硬上限(gotcha:page_size 钳 100)。 */
 const MAX_PAGE_SIZE = 100;
@@ -82,7 +82,7 @@ function usageError(message: string, status: number): NextResponse {
 const round6 = (n: number) => Number(n.toFixed(6));
 
 function toUsageRow(log: NewApiUsageLog) {
-    const perCall = isPerImageBilled(log.other, log.model_name);
+    const perCall = isModelPriceBilled(log.other);
     return {
         request_id: log.request_id,
         created_at: log.created_at, // unix 秒(UTC)
