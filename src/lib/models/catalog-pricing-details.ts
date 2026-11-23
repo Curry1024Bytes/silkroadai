@@ -190,12 +190,49 @@ export function sanitizeCatalogDisplayDetails(
 export function parseCatalogBillingDetails(raw: unknown): CatalogBillingDetails | null {
     if (raw == null) return null;
     const mode = typeof raw === 'object' && 'mode' in raw ? raw.mode : null;
+
     if (mode === 'tiered_token') return parseTieredPricingDetails(raw);
-    if (mode === 'media') return mediaSchema.parse(raw);
-    if (mode === 'component_token') return componentSchema.parse(raw);
-    if (mode === 'video_token') return videoTokenSchema.parse(raw);
-    if (mode === 'time_token') return timeTokenSchema.parse(raw);
-    throw new Error('Invalid catalog billing details');
+
+    // Use safeParse for other modes to handle malformed data gracefully
+    if (mode === 'media') {
+        const parsed = mediaSchema.safeParse(raw);
+        if (!parsed.success) {
+            console.warn('[parseCatalogBillingDetails] Invalid media pricing:', parsed.error);
+            return null;
+        }
+        return parsed.data;
+    }
+
+    if (mode === 'component_token') {
+        const parsed = componentSchema.safeParse(raw);
+        if (!parsed.success) {
+            console.warn('[parseCatalogBillingDetails] Invalid component_token pricing:', parsed.error);
+            return null;
+        }
+        return parsed.data;
+    }
+
+    if (mode === 'video_token') {
+        const parsed = videoTokenSchema.safeParse(raw);
+        if (!parsed.success) {
+            console.warn('[parseCatalogBillingDetails] Invalid video_token pricing:', parsed.error);
+            return null;
+        }
+        return parsed.data;
+    }
+
+    if (mode === 'time_token') {
+        const parsed = timeTokenSchema.safeParse(raw);
+        if (!parsed.success) {
+            console.warn('[parseCatalogBillingDetails] Invalid time_token pricing:', parsed.error);
+            return null;
+        }
+        return parsed.data;
+    }
+
+    // Unknown mode: return null instead of throwing, so catalog loading can continue
+    console.warn('[parseCatalogBillingDetails] Unknown billing mode:', mode);
+    return null;
 }
 
 /** The tier a one-line quote shows for peak/off-peak pricing: the dearer one, so a summary never undersells. */
