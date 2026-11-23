@@ -31,7 +31,7 @@ jobs:
             run:
                 shell: bash
         env:
-            VERIFIED_SOURCE_SHA: c9908652b3aa41e6239df0bbe69c97ef16a68e82
+            VERIFIED_SOURCE_SHA: dea0718dd7219fe0aedeec442f8b6c3ee645261b
             DOCKER_BUILDKIT: '1'
 
         steps:
