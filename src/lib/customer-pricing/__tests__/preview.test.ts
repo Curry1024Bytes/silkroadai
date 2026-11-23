@@ -83,7 +83,9 @@ function context(models: OfficialModelContext[] = [model()], rules: OfficialCust
     };
 }
 
-const draft = (patch: Partial<OfficialPricingDraft> = {}): OfficialPricingDraft => ({
+const draft = (
+    patch: Partial<Extract<OfficialPricingDraft, { model_id: string | null }>> = {},
+): OfficialPricingDraft => ({
     tier_key: 'sd',
     model_id: null,
     official_multiplier: 0.2,
@@ -128,6 +130,35 @@ describe('customer official-price publication previews', () => {
         expect(result.preview.cells[0].official_multiplier).toBe(0.2);
         expect(result.preview.has_increases).toBe(true);
         expect(result.restoring).toBe(false);
+    });
+
+    it('previews and edits only checked models while preserving all other live billing rates', () => {
+        const thirdRule = { ...modelRule, id: 'model-c-rule', model_id: 'model-c' };
+        const source = context([model(), model('model-b'), model('model-c')], [groupRule, thirdRule]);
+        source.tiers[0].models[2].current_ratio = 0.61;
+        const selection = { tier_key: 'sd', model_ids: ['model-a', 'model-b'], official_multiplier: 0.7 };
+        const plan = compileCustomerPreview(source, selection, 1);
+        expect(plan.preview.blocked).toEqual([]);
+        expect(plan.preview.cells.map((cell) => cell.model_id)).toEqual(['model-a', 'model-a', 'model-b', 'model-b']);
+        expect(plan.preview.cells.map((cell) => cell.target_cny)).toEqual([70, 140, 70, 140]);
+        expect(plan.rules).toEqual([
+            groupRule,
+            thirdRule,
+            expect.objectContaining({ model_id: 'model-a', official_multiplier: 0.7 }),
+            expect.objectContaining({ model_id: 'model-b', official_multiplier: 0.7 }),
+        ]);
+        expect(plan.models.find((item) => item.model_id === 'model-c')?.customer_ratio).toBe(0.61);
+        expect(plan.preview.hash).not.toBe(
+            compileCustomerPreview(source, { ...selection, model_ids: ['model-a', 'model-c'] }, 1).preview.hash,
+        );
+    });
+
+    it('refuses empty, duplicate or out-of-group selections and blocks unverified unchecked billing rates', () => {
+        const source = context([model(), { ...model('model-b'), current_ratio_verified: false }]);
+        const selection = { tier_key: 'sd', model_ids: ['model-a'], official_multiplier: 0.7 };
+        for (const model_ids of [[], ['model-a', 'model-a'], ['other-group']])
+            expect(() => compileCustomerPreview(source, { ...selection, model_ids }, 1)).toThrow();
+        expect(compileCustomerPreview(source, selection, 1).preview.blocked.join(' ')).toContain('未勾选型号');
     });
 
     it('removes the last rule and reports the restored public official factor, rather than the old factor', () => {

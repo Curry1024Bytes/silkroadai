@@ -26,6 +26,7 @@ export interface OfficialModelContext {
     public_official_multiplier: number | null;
     current_official_multiplier: number | null;
     current_ratio: number;
+    current_ratio_verified?: boolean;
     current_rule_scope: 'model' | 'tier' | 'legacy' | null;
 }
 
@@ -54,12 +55,11 @@ export interface OfficialPricingView {
     pending_changes?: { id: string; tier_key: string; status: string }[];
 }
 
-export interface OfficialPricingDraft {
+export type OfficialPricingDraft = {
     tier_key: string;
-    model_id: string | null;
     /** null removes the selected rule; it never represents a free price. */
     official_multiplier: number | null;
-}
+} & ({ model_id: string | null; model_ids?: never } | { model_ids: string[]; model_id?: never });
 
 export interface OfficialPricingPreviewCell {
     model_id: string;

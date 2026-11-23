@@ -502,6 +502,17 @@ describe('official customer price publication failure contracts', () => {
         });
     });
 
+    it('writes only the confirmed model overrides in a batch publication', async () => {
+        const draft = { tier_key: 'sd', model_ids: ['model-a', 'model-c'], official_multiplier: 0.7 };
+        await saveCustomerOfficialPricing(args({ draft }));
+        expect(m.tx.ruleUpsert.mock.calls.map(([request]) => request.where.user_id_tier_key_model_key)).toEqual([
+            { user_id: USER, tier_key: 'sd', model_key: 'model-a' },
+            { user_id: USER, tier_key: 'sd', model_key: 'model-c' },
+        ]);
+        expect(m.tx.ruleDelete).not.toHaveBeenCalled();
+        expect(markerStatus).toBe('applied');
+    });
+
     it('does not downgrade shared active model registries while preparing another customer', async () => {
         m.global.registry.upsert.mockImplementation(async ({ create }: { create: Record<string, unknown> }) => ({
             id: `registry-${create.internal_group}`,

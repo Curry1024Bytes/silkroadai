@@ -133,6 +133,7 @@ export async function loadOfficialContext(
                 public_official_multiplier: null,
                 current_official_multiplier: null,
                 current_ratio: Number(old?.multiplier ?? publicRatio),
+                current_ratio_verified: binding?.status !== 'active',
                 current_rule_scope: old ? 'legacy' : null,
             };
             try {
@@ -158,6 +159,25 @@ export async function loadOfficialContext(
                 row.source_channel_ids = sources.map((c) => c!.id).sort((a, b) => a - b);
                 if (!row.source_channel_ids.length)
                     throw new CustomerPricingError('model_unavailable', '该模型没有已启用的来源渠道。');
+                // A published native rate can be verified independently of its official reference.
+                if (binding?.status === 'active') {
+                    const native = registry.find((r) => r.tier_key === group.key && r.model_id === model.id);
+                    if (
+                        !native ||
+                        native.status !== 'active' ||
+                        native.model_name !== name ||
+                        native.public_group !== group.newapi_group ||
+                        !Array.isArray(binding.model_groups) ||
+                        !binding.model_groups.includes(native.internal_group) ||
+                        !native.replica_channel_ids.length
+                    )
+                        throw new CustomerPricingError('binding_drift', '客户模型计费分组与已发布绑定无法核对。');
+                    const actualRatio = userRatios[native.internal_group];
+                    if (typeof actualRatio !== 'number' || !Number.isFinite(actualRatio) || actualRatio <= 0)
+                        throw new CustomerPricingError('binding_drift', '客户实际计费倍率与已发布规则无法核对。');
+                    row.current_ratio = actualRatio;
+                    row.current_ratio_verified = true;
+                }
                 const base = readBasePrice(options, name);
                 if (!base) throw new CustomerPricingError('model_unpriced', 'new-api 未设置模型价格。');
                 const flat = flattenBase(base, BASE_FX);
@@ -240,27 +260,7 @@ export async function loadOfficialContext(
                 row.public_official_multiplier = reference ? officialMultiplierOf(row.cells, publicRatio) : null;
                 const own = selectOfficialRule(rules, group.key, model.id);
                 if (own) row.current_rule_scope = own.model_id ? 'model' : 'tier';
-                const native = registry.find((r) => r.tier_key === group.key && r.model_id === model.id);
-                if (
-                    binding?.status === 'active' &&
-                    (!native ||
-                        native.status !== 'active' ||
-                        native.model_name !== name ||
-                        native.public_group !== group.newapi_group ||
-                        !Array.isArray(binding.model_groups) ||
-                        !binding.model_groups.includes(native.internal_group) ||
-                        !native.replica_channel_ids.length)
-                )
-                    throw new CustomerPricingError('binding_drift', '客户模型计费分组与已发布绑定无法核对。');
-                const actualRatio =
-                    binding?.status === 'active' && native
-                        ? userRatios[native.internal_group]
-                        : Number(old?.multiplier ?? publicRatio);
-                if (binding?.status === 'active' && (typeof actualRatio !== 'number' || actualRatio <= 0))
-                    throw new CustomerPricingError('binding_drift', '客户实际计费倍率与已发布规则无法核对。');
-                row.current_ratio = actualRatio;
-                row.current_official_multiplier =
-                    reference && typeof actualRatio === 'number' ? officialMultiplierOf(row.cells, actualRatio) : null;
+                row.current_official_multiplier = reference ? officialMultiplierOf(row.cells, row.current_ratio) : null;
                 if (binding && binding.status !== 'active')
                     row.unavailable_reason = '该客户定价尚待核验，请先恢复未完成的发布。';
             } catch (error) {

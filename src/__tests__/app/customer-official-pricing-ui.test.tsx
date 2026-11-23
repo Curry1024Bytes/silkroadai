@@ -19,6 +19,7 @@ import {
     OfficialPricingPreviewTable,
     OfficialPricingRecoveryNotice,
     OfficialReferenceEditor,
+    filterOfficialPricingModels,
     officialPricingSaveRequest,
     officialReferenceRequest,
     parseOfficialMultiplier,
@@ -183,6 +184,31 @@ describe('customer-facing official-price badges', () => {
 });
 
 describe('official-price editor confirmation contract', () => {
+    it('filters 2.5 by the display name or model ID without matching 2.0 or 2.50', () => {
+        const candidates = [
+            { ...unconfirmedModel, model_id: '2.5-a', display_name: 'Doubao Seedance 2 5', model_name: 'seedance-2-5' },
+            { ...unconfirmedModel, model_id: '2.5-b', display_name: 'Flash', model_name: 'seedance-2.5-flash' },
+            { ...unconfirmedModel, model_id: '2.0', display_name: 'Doubao Seedance 2.0', model_name: 'seedance-2-0' },
+            {
+                ...unconfirmedModel,
+                model_id: '2.50',
+                display_name: 'Doubao Seedance 2.50',
+                model_name: 'seedance-2-50',
+            },
+        ];
+        expect(filterOfficialPricingModels(candidates, '2.5').map((model) => model.model_id)).toEqual([
+            '2.5-a',
+            '2.5-b',
+        ]);
+    });
+
+    it('uses the checked model IDs from the server preview when confirming the multiplier', () => {
+        const draft = { tier_key: 'sd', model_ids: ['2.5-a', '2.5-b'], official_multiplier: 0.7 };
+        const request = officialPricingSaveRequest(preview({ draft }), { belowCost: false, increases: false });
+        expect(request).toMatchObject({ ...draft, preview_hash: 'server-preview-hash' });
+        expect(request).not.toHaveProperty('model_id');
+    });
+
     it.each(['', '0', '-0.2', 'Infinity', 'NaN', '20%', '0.2x', '101'])(
         'does not turn %s into a valid price',
         (raw) => {
@@ -224,6 +250,59 @@ describe('official-price editor confirmation contract', () => {
             model_id: 'model-a',
             official_multiplier: null,
         });
+    });
+
+    it('shows all specifications for the selected model and only includes unchanged peers in a group preview', () => {
+        const selected = { ...preview().cells[0], model_name: 'Seedance 2.5', label: '480p' };
+        const draft = preview({
+            cells: [
+                selected,
+                { ...selected, label: '720p' },
+                {
+                    ...selected,
+                    model_id: 'model-b',
+                    model_name: 'Seedance 2.0',
+                    before_cny: 33.12,
+                    target_cny: 33.12,
+                    actual_cny: 33.12000000001,
+                },
+            ],
+        });
+        const modelHtml = renderToString(<OfficialPricingPreviewTable preview={draft} isDark={false} locale="zh" />);
+        expect(modelHtml).toContain('Seedance 2.5');
+        expect(modelHtml).toContain('480p');
+        expect(modelHtml).toContain('720p');
+        expect(modelHtml).not.toContain('Seedance 2.0');
+
+        const groupPreview = {
+            ...draft,
+            draft: {
+                tier_key: draft.draft.tier_key,
+                official_multiplier: draft.draft.official_multiplier,
+                model_id: null,
+            },
+        };
+        const groupHtml = renderToString(
+            <OfficialPricingPreviewTable preview={groupPreview} isDark={false} locale="zh" />,
+        );
+        expect(groupHtml).toContain('Seedance 2.0');
+    });
+
+    it('keeps peer price changes and below-cost rows visible during a model preview', () => {
+        const selected = preview().cells[0];
+        const draft = preview({
+            below_cost: true,
+            has_increases: true,
+            cells: [
+                selected,
+                { ...selected, model_id: 'model-b', model_name: 'Price increase', actual_cny: 35 },
+                { ...selected, model_id: 'model-c', model_name: 'Below cost', cost_cny: 35, actual_cny: 30 },
+            ],
+        });
+        const html = renderToString(<OfficialPricingPreviewTable preview={draft} isDark={false} locale="zh" />);
+        expect(html).toContain('Price increase');
+        expect(html).toContain('Below cost');
+        expect(html).toContain('同组其他型号有价格变动或低于采购成本时，也会列出。');
     });
 
     it('shows actual per-model loss and unknown cost instead of an optimistic group margin', () => {

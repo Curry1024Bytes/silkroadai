@@ -31,6 +31,24 @@ export function parseOfficialMultiplier(raw: string): number | null {
     return Number.isFinite(value) && value > 0 && value <= 100 ? value : null;
 }
 
+export function filterOfficialPricingModels(models: OfficialModelContext[], query: string) {
+    const normalize = (text: string) =>
+        text
+            .normalize('NFKC')
+            .toLowerCase()
+            .replace(/[\s._-]+/g, ' ')
+            .trim();
+    const search = normalize(query);
+    if (!search) return models;
+    const versionSearch = /^\d+(?: \d+)*$/.test(search);
+    return models.filter((model) =>
+        [model.display_name, model.model_name].some((name) => {
+            const normalized = normalize(name);
+            return versionSearch ? ` ${normalized} `.includes(` ${search} `) : normalized.includes(search);
+        }),
+    );
+}
+
 /** Confirm precisely the server preview, rather than a form that may have changed since. */
 export function officialPricingSaveRequest(preview: OfficialPricingPreview, confirmed: Confirmations) {
     if (preview.blocked.length > 0) throw new Error('请先处理预览中无法发布的问题。');
@@ -235,6 +253,19 @@ export function OfficialPricingPreviewTable({
 }) {
     const en = locale === 'en';
     const muted = isDark ? 'text-slate-400' : 'text-slate-500';
+    const selectedModelId = preview.draft.model_id;
+    // Keep the price changes and below-cost rows covered by the server's confirmation checks visible.
+    const priceTolerance = 1e-9;
+    const visibleCells = selectedModelId
+        ? preview.cells.filter(
+              (cell) =>
+                  cell.model_id === selectedModelId ||
+                  Math.abs(cell.actual_cny - cell.before_cny) > priceTolerance ||
+                  (cell.cost_cny !== null && cell.actual_cny < cell.cost_cny - priceTolerance),
+          )
+        : preview.cells;
+    if (visibleCells.length === 0) return null;
+    const includesOtherModels = selectedModelId && visibleCells.some((cell) => cell.model_id !== selectedModelId);
     return (
         <div className="overflow-x-auto">
             <table className="w-full min-w-[56rem] text-left text-xs">
@@ -242,6 +273,13 @@ export function OfficialPricingPreviewTable({
                     {en
                         ? 'Prices are CNY per million tokens or per call, as specified in each row. Margin uses this model’s purchasing cost.'
                         : '金额按各行注明的「元／百万 token」或「元／次」显示。毛利按各模型的采购成本分别计算。'}
+                    {includesOtherModels && (
+                        <span className="mt-1 block">
+                            {en
+                                ? 'Other models in this group are shown when their price changes or falls below cost.'
+                                : '同组其他型号有价格变动或低于采购成本时，也会列出。'}
+                        </span>
+                    )}
                 </caption>
                 <thead className={muted}>
                     <tr>
@@ -261,7 +299,7 @@ export function OfficialPricingPreviewTable({
                     </tr>
                 </thead>
                 <tbody>
-                    {preview.cells.map((cell, index) => (
+                    {visibleCells.map((cell, index) => (
                         <tr
                             key={`${cell.model_id}:${cell.label}:${index}`}
                             className={isDark ? 'border-t border-slate-700' : 'border-t border-slate-200'}
@@ -369,7 +407,12 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
     const url = `/api/admin/customers/${encodeURIComponent(customerId)}/official-pricing`;
     const [view, setView] = useState<OfficialPricingView | null>(null);
     const [tierKey, setTierKey] = useState('');
-    const [modelId, setModelId] = useState('');
+    const [scope, setScope] = useState<'models' | 'tier'>('models');
+    const [modelQuery, setModelQuery] = useState('');
+    const [checkedSelection, setCheckedSelection] = useState<{ tierKey: string; modelIds: string[] }>({
+        tierKey: '',
+        modelIds: [],
+    });
     const [multiplier, setMultiplier] = useState('');
     const [preview, setPreview] = useState<OfficialPricingPreview | null>(null);
     const [confirmed, setConfirmed] = useState<Confirmations>({ belowCost: false, increases: false });
@@ -380,9 +423,15 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
     const muted = isDark ? 'text-slate-400' : 'text-slate-500';
     const card = isDark ? 'border-slate-700 bg-slate-800/70 text-slate-100' : 'border-slate-200 bg-white shadow-sm';
     const selectedTier = view?.tiers.find((tier) => tier.key === tierKey) ?? null;
-    const selectedRule = view?.rules.find((rule) => rule.tier_key === tierKey && rule.model_id === (modelId || null));
+    const checkedModelIds = checkedSelection.tierKey === tierKey ? checkedSelection.modelIds : [];
+    const matchingModels = filterOfficialPricingModels(selectedTier?.models ?? [], modelQuery);
+    const selectedModels =
+        scope === 'tier'
+            ? (selectedTier?.models ?? [])
+            : matchingModels.filter((m) => checkedModelIds.includes(m.model_id));
+    const ruleModelId = scope === 'tier' ? null : selectedModels.length === 1 ? selectedModels[0].model_id : undefined;
+    const selectedRule = view?.rules.find((rule) => rule.tier_key === tierKey && rule.model_id === ruleModelId);
     const selectedRuleMultiplier = selectedRule?.official_multiplier;
-    const selectedModels = selectedTier?.models.filter((model) => !modelId || model.model_id === modelId) ?? [];
     const unavailable = selectedModels.filter((model) => !model.reference_available);
     const value = parseOfficialMultiplier(multiplier);
     const referenceModel = selectedTier?.models.find((model) => model.model_id === referenceModelId) ?? null;
@@ -391,6 +440,12 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
         setPreview(null);
         setConfirmed({ belowCost: false, increases: false });
     };
+
+    const draftForSelection = (official_multiplier: number | null): OfficialPricingDraft => ({
+        tier_key: tierKey,
+        official_multiplier,
+        ...(scope === 'tier' ? { model_id: null } : { model_ids: selectedModels.map((model) => model.model_id) }),
+    });
 
     const load = useCallback(
         async (signal?: AbortSignal) => {
@@ -417,7 +472,7 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
         // Synchronize the editor only when the selected persisted rule changes.
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setMultiplier(selectedRuleMultiplier === undefined ? '' : String(selectedRuleMultiplier));
-    }, [tierKey, modelId, selectedRuleMultiplier]);
+    }, [tierKey, ruleModelId, selectedRuleMultiplier]);
 
     const requestPreview = async (draft: OfficialPricingDraft) => {
         setBusy(true);
@@ -479,7 +534,9 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
         resetPreview();
         setReferenceModelId(null);
         setTierKey(rule.tier_key);
-        setModelId(rule.model_id ?? '');
+        setScope(rule.model_id ? 'models' : 'tier');
+        setModelQuery('');
+        setCheckedSelection({ tierKey: rule.tier_key, modelIds: rule.model_id ? [rule.model_id] : [] });
         setMultiplier(String(rule.official_multiplier));
     };
 
@@ -579,7 +636,9 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
                                         resetPreview();
                                         setReferenceModelId(null);
                                         setTierKey(event.target.value);
-                                        setModelId('');
+                                        setScope('models');
+                                        setModelQuery('');
+                                        setCheckedSelection({ tierKey: event.target.value, modelIds: [] });
                                     }}
                                 >
                                     {view.tiers.map((tier) => (
@@ -593,20 +652,17 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
                                 <span>{en ? 'Apply to' : '适用范围'}</span>
                                 <select
                                     className={`${inputCls(isDark, 'w-full')} h-10`}
-                                    value={modelId}
+                                    value={scope}
                                     disabled={busy || !selectedTier}
                                     onChange={(event) => {
                                         resetPreview();
                                         setReferenceModelId(null);
-                                        setModelId(event.target.value);
+                                        setScope(event.target.value === 'tier' ? 'tier' : 'models');
+                                        setCheckedSelection({ tierKey, modelIds: [] });
                                     }}
                                 >
-                                    <option value="">{en ? 'Entire group' : '整个分组'}</option>
-                                    {selectedTier?.models.map((model) => (
-                                        <option key={model.model_id} value={model.model_id}>
-                                            {model.display_name || model.model_name}
-                                        </option>
-                                    ))}
+                                    <option value="models">{en ? 'Selected models' : '勾选的型号'}</option>
+                                    <option value="tier">{en ? 'Entire group' : '整个分组'}</option>
                                 </select>
                             </label>
                             <label className="space-y-1 text-xs">
@@ -624,6 +680,69 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
                                 />
                             </label>
                         </div>
+                        {scope === 'models' && selectedTier && (
+                            <fieldset className="min-w-0 space-y-2" disabled={busy}>
+                                <label className="block space-y-1 text-xs">
+                                    <span>{en ? 'Search models' : '筛选型号'}</span>
+                                    <input
+                                        type="search"
+                                        className={`${inputCls(isDark, 'w-full')} h-10`}
+                                        value={modelQuery}
+                                        onChange={(event) => {
+                                            const query = event.target.value;
+                                            const visible = filterOfficialPricingModels(selectedTier.models, query);
+                                            resetPreview();
+                                            setReferenceModelId(null);
+                                            setModelQuery(query);
+                                            setCheckedSelection({
+                                                tierKey,
+                                                modelIds: checkedModelIds.filter((id) =>
+                                                    visible.some((model) => model.model_id === id),
+                                                ),
+                                            });
+                                        }}
+                                    />
+                                </label>
+                                <p className={`text-xs ${muted}`} aria-live="polite">
+                                    {en
+                                        ? `${selectedModels.length} selected`
+                                        : `已勾选 ${selectedModels.length} 个型号`}
+                                </p>
+                                {matchingModels.length ? (
+                                    <div className="grid max-h-48 gap-1 overflow-y-auto sm:grid-cols-2">
+                                        {matchingModels.map((model) => (
+                                            <label
+                                                key={model.model_id}
+                                                className="flex min-h-11 items-center gap-2 px-2 text-xs"
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={checkedModelIds.includes(model.model_id)}
+                                                    onChange={(event) => {
+                                                        const checked = event.target.checked;
+                                                        resetPreview();
+                                                        setReferenceModelId(null);
+                                                        setCheckedSelection({
+                                                            tierKey,
+                                                            modelIds: checked
+                                                                ? [...checkedModelIds, model.model_id]
+                                                                : checkedModelIds.filter((id) => id !== model.model_id),
+                                                        });
+                                                    }}
+                                                />
+                                                <span className="min-w-0 break-words">
+                                                    {model.display_name || model.model_name}
+                                                </span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className={`text-xs ${muted}`}>
+                                        {en ? 'No matching models.' : '没有匹配的型号。'}
+                                    </p>
+                                )}
+                            </fieldset>
+                        )}
                         {selectedTier?.legacy_multiplier != null && (
                             <p className={`m-0 text-xs leading-relaxed ${muted}`}>
                                 {en
@@ -684,14 +803,7 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
                                     value === null ||
                                     unavailable.length > 0
                                 }
-                                onClick={() =>
-                                    value !== null &&
-                                    void requestPreview({
-                                        tier_key: tierKey,
-                                        model_id: modelId || null,
-                                        official_multiplier: value,
-                                    })
-                                }
+                                onClick={() => value !== null && void requestPreview(draftForSelection(value))}
                             >
                                 {busy
                                     ? en
@@ -706,13 +818,7 @@ export function OfficialPricingPanel({ customerId, isDark, locale, onChanged }: 
                                     type="button"
                                     className={buttonCls('plain', isDark)}
                                     disabled={busy}
-                                    onClick={() =>
-                                        void requestPreview({
-                                            tier_key: tierKey,
-                                            model_id: modelId || null,
-                                            official_multiplier: null,
-                                        })
-                                    }
+                                    onClick={() => void requestPreview(draftForSelection(null))}
                                 >
                                     {en ? 'Preview removing this rule' : '预览取消此规则'}
                                 </button>

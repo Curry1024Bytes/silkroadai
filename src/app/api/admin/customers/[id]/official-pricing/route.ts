@@ -10,12 +10,14 @@ import { compileCustomerPreview } from '@/lib/customer-pricing/preview';
 import { officialReferenceSchema, saveOfficialReference } from '@/lib/customer-pricing/reference';
 import { saveCustomerOfficialPricing } from '@/lib/customer-pricing/service';
 import { recoverCustomerOfficialPricing } from '@/lib/customer-pricing/recovery';
+import type { OfficialPricingDraft } from '@/lib/customer-pricing/types';
 
 export const runtime = 'nodejs';
 const noStore = { 'Cache-Control': 'private, no-store' };
 const draftFields = {
     tier_key: z.string().trim().min(1).max(100),
-    model_id: z.string().uuid().nullable(),
+    model_id: z.string().uuid().nullable().optional(),
+    model_ids: z.array(z.string().uuid()).min(1).optional(),
     official_multiplier: z.number().finite().positive().max(100).nullable(),
 };
 const schema = z.discriminatedUnion('action', [
@@ -106,11 +108,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
                 { ok: true, view: await saveOfficialReference(id, admin.user?.id ?? null, input) },
                 { headers: noStore },
             );
-        const draft = {
-            tier_key: input.tier_key,
-            model_id: input.model_id,
-            official_multiplier: input.official_multiplier,
-        };
+        const { model_id, model_ids, tier_key, official_multiplier } = input;
+        let draft: OfficialPricingDraft;
+        if (model_ids !== undefined && model_id === undefined) draft = { tier_key, official_multiplier, model_ids };
+        else if (model_id !== undefined && model_ids === undefined) draft = { tier_key, official_multiplier, model_id };
+        else throw new CustomerPricingError('invalid_model_selection', '请选择要设置的型号或整个分组。', 400);
         if (input.action === 'preview') {
             const [context, count] = await Promise.all([
                 loadOfficialContext(id),

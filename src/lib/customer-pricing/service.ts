@@ -268,26 +268,26 @@ export async function saveCustomerOfficialPricing(args: SaveOfficialPricingArgs)
                     data: { status: 'active' },
                 });
             }
-            const where = {
-                user_id_tier_key_model_key: {
+            for (const modelId of args.draft.model_ids ?? [args.draft.model_id ?? null]) {
+                const scope = {
                     user_id: args.userId,
                     tier_key: args.draft.tier_key,
-                    model_key: args.draft.model_id ?? '*',
-                },
-            };
-            if (args.draft.official_multiplier === null)
-                await tx.customerOfficialPriceRule.deleteMany({ where: where.user_id_tier_key_model_key });
-            else
-                await tx.customerOfficialPriceRule.upsert({
-                    where,
-                    create: {
-                        tenant_id: context.user.tenant_id ?? PLATFORM_TENANT_ID,
-                        ...where.user_id_tier_key_model_key,
-                        official_multiplier: args.draft.official_multiplier,
-                        created_by: args.actorId,
-                    },
-                    update: { official_multiplier: args.draft.official_multiplier, revision: { increment: 1 } },
-                });
+                    model_key: modelId ?? '*',
+                };
+                if (args.draft.official_multiplier === null)
+                    await tx.customerOfficialPriceRule.deleteMany({ where: scope });
+                else
+                    await tx.customerOfficialPriceRule.upsert({
+                        where: { user_id_tier_key_model_key: scope },
+                        create: {
+                            tenant_id: context.user.tenant_id ?? PLATFORM_TENANT_ID,
+                            ...scope,
+                            official_multiplier: args.draft.official_multiplier,
+                            created_by: args.actorId,
+                        },
+                        update: { official_multiplier: args.draft.official_multiplier, revision: { increment: 1 } },
+                    });
+            }
             await tx.adminAuditLog.create({
                 data: {
                     admin_user_id: args.actorId,

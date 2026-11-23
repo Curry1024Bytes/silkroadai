@@ -11,23 +11,31 @@ import {
 } from './math';
 
 export function rulesAfterDraft(rules: OfficialCustomerRule[], draft: OfficialPricingDraft): OfficialCustomerRule[] {
-    const prior = rules.find((r) => r.tier_key === draft.tier_key && r.model_id === draft.model_id);
-    const next = rules.filter((r) => r !== prior);
-    if (draft.official_multiplier !== null)
+    const modelIds = draft.model_ids ?? [draft.model_id ?? null];
+    const next = rules.filter((r) => r.tier_key !== draft.tier_key || !modelIds.includes(r.model_id));
+    if (draft.official_multiplier === null) return next;
+    for (const modelId of modelIds) {
+        const prior = rules.find((r) => r.tier_key === draft.tier_key && r.model_id === modelId);
         next.push({
-            id: prior?.id ?? 'draft',
+            id: prior?.id ?? (draft.model_ids ? `draft:${modelId}` : 'draft'),
             tier_key: draft.tier_key,
-            model_id: draft.model_id,
+            model_id: modelId,
             official_multiplier: draft.official_multiplier,
             revision: (prior?.revision ?? 0) + 1,
         });
+    }
     return next;
 }
 
 export function compileCustomerPreview(context: OfficialContext, draft: OfficialPricingDraft, affectedKeys: number) {
     const tier = context.tiers.find((t) => t.key === draft.tier_key);
     if (!tier) throw new CustomerPricingError('tier_missing', '该分组不可用。', 404);
-    if (draft.model_id && !tier.models.some((m) => m.model_id === draft.model_id))
+    const batchModelIds = draft.model_ids;
+    const checkedModelIds = batchModelIds ? new Set(batchModelIds) : null;
+    if (checkedModelIds && (!checkedModelIds.size || checkedModelIds.size !== batchModelIds?.length))
+        throw new CustomerPricingError('invalid_model_selection', '请勾选至少一个型号，型号不能重复。', 400);
+    const modelIds = batchModelIds ?? (draft.model_id ? [draft.model_id] : []);
+    if (modelIds.some((id) => !tier.models.some((m) => m.model_id === id)))
         throw new CustomerPricingError('model_missing', '模型不属于所选分组。', 400);
     if (
         draft.official_multiplier !== null &&
@@ -37,6 +45,7 @@ export function compileCustomerPreview(context: OfficialContext, draft: Official
     )
         throw new CustomerPricingError('invalid_multiplier', '官方价倍率须大于 0 且不超过 100。', 400);
     const rules = rulesAfterDraft(context.rules, draft);
+    const restoring = !rules.some((r) => r.tier_key === tier.key) && tier.legacy_multiplier === null;
     const cells: OfficialPricingPreview['cells'] = [];
     const blocked: string[] = [];
     const warnings: string[] = [];
@@ -48,13 +57,18 @@ export function compileCustomerPreview(context: OfficialContext, draft: Official
     for (const model of tier.models) {
         if (names.has(model.model_name)) blocked.push(`多个目录模型共用 ${model.model_name}，无法分别定价。`);
         names.add(model.model_name);
+        const preserveCurrent = checkedModelIds !== null && !checkedModelIds.has(model.model_id);
         const rule = selectOfficialRule(rules, tier.key, model.model_id);
-        let ratio = tier.legacy_multiplier ?? tier.public_ratio;
+        let ratio = preserveCurrent ? model.current_ratio : (tier.legacy_multiplier ?? tier.public_ratio);
         try {
             if (!model.source_channel_ids.length)
                 throw new CustomerPricingError('channel_missing', '没有可用来源渠道。');
-            if (rule) ratio = compileOfficialRatio(model, rule.official_multiplier);
-            if (!(ratio > 0)) throw new CustomerPricingError('ratio_missing', '当前计费倍率无效。');
+            if (preserveCurrent) {
+                if (model.current_ratio_verified === false || (restoring && ratio !== tier.public_ratio))
+                    throw new CustomerPricingError('ratio_unverified', '无法保留未勾选型号的当前价格。');
+            } else if (rule) ratio = compileOfficialRatio(model, rule.official_multiplier);
+            if (!Number.isFinite(ratio) || ratio <= 0)
+                throw new CustomerPricingError('ratio_missing', '当前计费倍率无效。');
         } catch (error) {
             blocked.push(`${model.display_name}：${error instanceof Error ? error.message : '不能确定客户价。'}`);
         }
@@ -69,6 +83,7 @@ export function compileCustomerPreview(context: OfficialContext, draft: Official
             replica_channel_ids: existing?.replica_channel_ids ?? [],
             ...(existing?.source_fingerprint ? { source_fingerprint: existing.source_fingerprint } : {}),
         });
+        if (preserveCurrent) continue;
         const scope = rule ? (rule.model_id ? 'model' : 'tier') : tier.legacy_multiplier !== null ? 'legacy' : null;
         for (const cell of model.cells) {
             const actual = roundPrice(cell.base_cny * ratio);
@@ -114,6 +129,6 @@ export function compileCustomerPreview(context: OfficialContext, draft: Official
         models,
         rules,
         tier,
-        restoring: !rules.some((r) => r.tier_key === tier.key) && tier.legacy_multiplier === null,
+        restoring,
     };
 }

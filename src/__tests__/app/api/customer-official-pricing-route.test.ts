@@ -154,6 +154,31 @@ describe('customer official-pricing API contract', () => {
         expect(m.save).not.toHaveBeenCalled();
     });
 
+    it('forwards the same explicit model IDs during preview and confirmation', async () => {
+        const selected = {
+            tier_key: 'sd',
+            model_ids: [MODEL, '33333333-3333-4333-8333-333333333333'],
+            official_multiplier: 0.7,
+        };
+        expect((await POST(req({ action: 'preview', ...selected }), params)).status).toBe(200);
+        expect(m.preview).toHaveBeenCalledWith(expect.any(Object), selected, 2);
+        const save = { action: 'save', ...selected, expected_version: 'v1', preview_hash: 'hash-a' };
+        expect((await POST(req(save), params)).status).toBe(200);
+        expect(m.save).toHaveBeenCalledWith(expect.objectContaining({ draft: selected }));
+    });
+
+    it.each([{}, { model_ids: [] }, { model_id: null, model_ids: [MODEL] }])(
+        'rejects an empty or ambiguous scope without escalating it to a group rule: %o',
+        async (selection) => {
+            expect(
+                (await POST(req({ action: 'preview', tier_key: 'sd', official_multiplier: 0.7, ...selection }), params))
+                    .status,
+            ).toBe(400);
+            expect(m.preview).not.toHaveBeenCalled();
+            expect(m.save).not.toHaveBeenCalled();
+        },
+    );
+
     it('forwards the exact absolute multiplier, preview version/hash, actor and loss/increase acknowledgements', async () => {
         const response = await POST(
             req({
