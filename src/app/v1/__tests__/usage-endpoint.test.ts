@@ -225,6 +225,23 @@ describe('GET /v1/usage — 行映射', () => {
         expect(body.data[0].billing).toBe('per_call');
     });
 
+    it('非图片模型固定价仍标记 per_call,且保留上游 token 用量', async () => {
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({
+                    model_name: 'gpt-6.1-sol',
+                    other: '{"model_price":0.000001,"model_ratio":0}',
+                    prompt_tokens: 120,
+                    completion_tokens: 30,
+                }),
+            ],
+            total: 1,
+        });
+        const body = (await (await handleUsageQuery(req())).json()) as Envelope;
+        expect(body.data[0].billing).toBe('per_call');
+        expect(body.data[0].usage).toEqual({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 });
+    });
+
     it('错误行 content 脱敏(不含上游来源)', async () => {
         mockQueryLogs.mockResolvedValue({
             items: [makeLog({ type: 5, content: 'adobe content rejected: image_unsafe' })],

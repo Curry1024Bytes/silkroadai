@@ -341,3 +341,57 @@ describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', 
         expect(section).toContain('LLmRoute API');
     });
 });
+
+describe('/docs page — SD特惠按秒视频', () => {
+    const html = renderToString(<DocsContent />);
+    const section = html.match(/<section id="sd-special-video"[\s\S]*?<\/section>/)?.[0] ?? '';
+
+    it('links from the TOC and API quick reference and renders in the workspace', async () => {
+        expect(html.match(/href="#sd-special-video"/g)).toHaveLength(2);
+        expect(section).toContain('href="/models"');
+        const workspace = renderToString(await WorkspaceDocsPage());
+        expect(workspace.match(/<section id="sd-special-video"[\s\S]*?<\/section>/)?.[0]).toContain(
+            'href="/workspace/models"',
+        );
+    });
+
+    it('shows customer endpoints, billing, and discovery instructions', () => {
+        for (const text of [
+            'https://api.llmroute.club/v1/videos',
+            'POST /v1/videos',
+            'GET /v1/videos/{id}',
+            'GET /v1/videos/{id}/content',
+            'href="/keys"',
+            'Authorization: Bearer $LLMROUTE_API_KEY',
+            'queued',
+            'in_progress',
+            'completed',
+            'failed',
+            '下载 MP4',
+            'GET /v1/models',
+            '超时不要自动重发提交',
+            '任务终态的实扣或退款以用量账单为准',
+        ]) {
+            expect(section, text).toContain(text);
+        }
+        expect(section).not.toMatch(/aigasapi\.com|metadata\.url|out_task_id/);
+    });
+
+    it('preserves exact model ID spellings and includes the material request patterns', () => {
+        const rows = section.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? '';
+        expect(rows.match(/<tr\b/g)).toHaveLength(31);
+        for (const id of [
+            'sd-2-mini-480',
+            'sd-2.5-1080P',
+            'sd-2.5-flash-720-novideo',
+            'sd-2.0-fast-官方版-720p',
+            'sd-2.5-720P-限时特价',
+        ]) {
+            expect(rows, id).toContain(`>${id}</td>`);
+        }
+        for (const material of ['@image1', '@video1', '@audio1', 'first_frame', 'last_frame']) {
+            expect(section, material).toContain(material);
+        }
+        expect(section).toContain('-novideo 仍然会生成视频，只是不接受参考视频作为输入');
+    });
+});

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     parseModelPrice,
+    isModelPriceBilled,
     isPerImageBilled,
     isImageModel,
     parseCacheTokens,
@@ -37,11 +38,25 @@ describe('parseModelPrice', () => {
     });
 });
 
+describe('isModelPriceBilled', () => {
+    it('非负 model_price 是固定价,负数或缺失不是', () => {
+        expect(isModelPriceBilled(GEMINI_IMAGE_OTHER)).toBe(true);
+        expect(isModelPriceBilled(LLM_OTHER)).toBe(false);
+        expect(isModelPriceBilled(null)).toBe(false);
+    });
+});
+
 describe('isPerImageBilled', () => {
     it('优先用 other.model_price:≥0 = 按张(藏 token);-1 = 按 token(显示)', () => {
         expect(isPerImageBilled(GEMINI_IMAGE_OTHER, 'gemini-3-pro-image-preview')).toBe(true); // 按张
         expect(isPerImageBilled(GPT_IMAGE_OTHER, 'gpt-image-2')).toBe(false); // 按 token → 显示
         expect(isPerImageBilled(LLM_OTHER, 'gpt-5.4')).toBe(false); // LLM 按 token
+    });
+
+    it('文本模型即使日志带非负 model_price 也显示输入/输出 token', () => {
+        const fixedPriceOther = '{"model_price":0.000001,"model_ratio":0}';
+        expect(isPerImageBilled(fixedPriceOther, 'gpt-6.1-sol')).toBe(false);
+        expect(isPerImageBilled(fixedPriceOther, 'claude-opus-5-5')).toBe(false);
     });
 
     it('other.model_price 优先级高于模型名(名字含 image 但 model_price=-1 → 显示)', () => {
