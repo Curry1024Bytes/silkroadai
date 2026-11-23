@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
+import { Prisma } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,7 +10,7 @@ export async function GET() {
         const prices = await prisma.catalogPrice.findMany({
             where: {
                 billing_details: {
-                    not: null as unknown,
+                    not: Prisma.JsonNull,
                 },
             },
             select: {
