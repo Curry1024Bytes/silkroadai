@@ -9,7 +9,7 @@ export async function GET() {
         const prices = await prisma.catalogPrice.findMany({
             where: {
                 billing_details: {
-                    not: null as any,
+                    not: null as unknown,
                 },
             },
             select: {
@@ -20,7 +20,7 @@ export async function GET() {
             take: 300, // Test all
         });
 
-        const errors: Array<{ id: string; tier: string; error: string; data: any }> = [];
+        const errors: Array<{ id: string; tier: string; error: string; data: unknown }> = [];
         let successCount = 0;
 
         for (const price of prices) {
@@ -44,9 +44,6 @@ export async function GET() {
             errors: errors.slice(0, 10), // Return first 10 errors
         });
     } catch (error) {
-        return NextResponse.json(
-            { error: error instanceof Error ? error.message : String(error) },
-            { status: 500 }
-        );
+        return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
     }
 }
