@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowUpRight, Check, Code2, Copy } from 'lucide-react';
-import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL } from '@/lib/public-config';
+import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
 import { useMessages } from '@/lib/i18n/client';
 import { keysMessages } from '@/lib/i18n/messages/keys';
 
@@ -29,8 +29,7 @@ import { keysMessages } from '@/lib/i18n/messages/keys';
  * everyone (matches chat.b.ai/key's design).
  */
 
-const OPENAI_BASE = OPENAI_API_BASE_URL;
-const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
+const API_BASE = CUSTOMER_API_BASE_URL;
 const SAMPLE_MODEL = 'claude-sonnet-4-6';
 const PLACEHOLDER = 'YOUR_API_KEY';
 
@@ -47,7 +46,7 @@ const TABS: TabDef[] = [
         id: 'curl',
         label: 'curl',
         code: [
-            `curl ${OPENAI_BASE}/chat/completions \\`,
+            `curl ${API_BASE}/v1/chat/completions \\`,
             `  -H "Authorization: Bearer ${PLACEHOLDER}" \\`,
             `  -H "Content-Type: application/json" \\`,
             `  -d '{`,
@@ -63,7 +62,7 @@ const TABS: TabDef[] = [
             `from openai import OpenAI`,
             ``,
             `client = OpenAI(`,
-            `    base_url="${OPENAI_BASE}",`,
+            `    base_url="${API_BASE}",`,
             `    api_key="${PLACEHOLDER}",`,
             `)`,
             ``,
@@ -81,7 +80,7 @@ const TABS: TabDef[] = [
             `import OpenAI from 'openai';`,
             ``,
             `const client = new OpenAI({`,
-            `  baseURL: '${OPENAI_BASE}',`,
+            `  baseURL: '${API_BASE}',`,
             `  apiKey: '${PLACEHOLDER}',`,
             `});`,
             ``,
@@ -135,9 +134,8 @@ export function KeysSnippetsPanel() {
                 </div>
             </header>
 
-            <div className="grid grid-cols-1 border-b border-portal-line bg-portal-soft sm:grid-cols-2 sm:divide-x sm:divide-portal-line">
-                <BaseUrlChip label={m.openaiBase} value={OPENAI_BASE} />
-                <BaseUrlChip label={m.anthropicBase} value={ANTHROPIC_BASE} />
+            <div className="border-b border-portal-line bg-portal-soft">
+                <BaseUrlChip label={m.apiBase} value={API_BASE} />
             </div>
 
             <div
@@ -216,15 +214,20 @@ export function KeysSnippetsPanel() {
                         <ArrowUpRight size={12} aria-hidden="true" />
                     </Link>
                 </span>
-                <span>
+                {[
+                    { label: m.imageGuide, href: '/workspace/docs#api-gpt-image' },
+                    { label: m.videoGuide, href: '/workspace/docs#sd-special-video' },
+                    { label: m.fullGuide, href: '/workspace/docs' },
+                ].map(({ label, href }) => (
                     <Link
-                        href="/workspace/docs"
+                        key={href}
+                        href={href}
                         className="inline-flex items-center gap-0.5 font-medium text-portal-ink hover:text-portal-gold"
                     >
-                        {m.fullGuide}
+                        {label}
                         <ArrowUpRight size={12} aria-hidden="true" />
                     </Link>
-                </span>
+                ))}
             </footer>
         </section>
     );

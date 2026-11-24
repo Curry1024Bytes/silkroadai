@@ -27,12 +27,9 @@ describe('/docs page — header + chrome', () => {
         expect(html).toContain('集成文档');
     });
 
-    it('exposes both Anthropic + OpenAI base URLs in the 通用配置 card', async () => {
+    it('uses the same Base URL for the common configuration card', async () => {
         const html = renderToString(await DocsPage());
-        expect(html).toContain('https://api.llmroute.club/v1');
-        expect(html).toContain('https://api.llmroute.club');
-        expect(html).toContain('OpenAI 兼容 Base URL');
-        expect(html).toContain('Anthropic 兼容 Base URL');
+        expect(html).toMatch(/>API Base URL<\/dt><dd[^>]*>https:\/\/api\.llmroute\.club<\/dd>/);
     });
 
     it('links to /portal/register, /keys, /models from the chrome', async () => {
@@ -111,9 +108,8 @@ describe('/docs page — code snippets ground-truthed', () => {
         // Verified against github.com/openai/openai-python during pre-build
         // research — the Python SDK constructor uses snake_case `base_url`
         // and `api_key`.
-        expect(html).toContain('base_url=');
+        expect(html).toContain('base_url=&quot;https://api.llmroute.club&quot;');
         expect(html).toContain('api_key=');
-        expect(html).toContain('https://api.llmroute.club/v1');
         expect(html).toContain('from openai import OpenAI');
     });
 
@@ -121,7 +117,7 @@ describe('/docs page — code snippets ground-truthed', () => {
         const html = renderToString(await DocsPage());
         // Verified against github.com/openai/openai-node — the Node SDK
         // constructor uses camelCase `baseURL` + `apiKey`.
-        expect(html).toContain('baseURL:');
+        expect(html).toMatch(/baseURL:\s*(?:&quot;|&#x27;)https:\/\/api\.llmroute\.club(?:&quot;|&#x27;)/);
         expect(html).toContain('apiKey:');
         // React renderToString escapes single quotes in text content as
         // &#x27; — match either form for robustness across React minor
@@ -338,6 +334,7 @@ describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', 
         const end = html.indexOf('</section>', start);
         const section = html.slice(start, end);
         expect(section).toContain('https://api.llmroute.club/api/v3');
+        expect(section).toContain('Ark(base_url=&quot;https://api.llmroute.club&quot;');
         expect(section).toContain('LLmRoute API');
     });
 });

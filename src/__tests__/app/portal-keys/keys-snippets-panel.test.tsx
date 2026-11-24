@@ -25,12 +25,12 @@ describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
         expect(html).toContain('YOUR_API_KEY');
     });
 
-    it('exposes both base URLs (OpenAI /v1 + Anthropic root)', () => {
+    it('displays one shared API Base URL and links to image and video examples', () => {
         const html = renderToString(<KeysSnippetsPanel />);
-        expect(html).toContain('https://api.llmroute.club/v1');
-        expect(html).toContain('https://api.llmroute.club');
-        expect(html).toContain('OpenAI 兼容 Base URL');
-        expect(html).toContain('Anthropic 兼容 Base URL');
+        expect(html.match(/>API Base URL</g)).toHaveLength(1);
+        expect(html).toContain('title="https://api.llmroute.club"');
+        expect(html).toContain('href="/workspace/docs#api-gpt-image"');
+        expect(html).toContain('href="/workspace/docs#sd-special-video"');
     });
 
     it('renders 3 tab buttons (curl / Python / Node SDK)', () => {
@@ -119,8 +119,9 @@ describe('<KeysSnippetsPanel /> English locale', () => {
             </LocaleProvider>,
         );
         expect(html).toContain('Code examples');
-        expect(html).toContain('OpenAI-compatible base URL');
-        expect(html).toContain('Anthropic-compatible base URL');
+        expect(html.match(/>API Base URL</g)).toHaveLength(1);
+        expect(html).toContain('Image examples');
+        expect(html).toContain('Video examples');
         expect(html).toMatch(/<button[^>]*aria-label="Copy the curl example"/);
         expect(html).toContain('>Copy<');
         expect(html).toContain('Full integration guide');

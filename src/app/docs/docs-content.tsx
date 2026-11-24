@@ -164,9 +164,10 @@ const AGENTS: AgentSection[] = [
     },
 ];
 
-/** 火山方舟原生接口的 Base URL(官方 SDK 的 base_url 也填这个)。 */
+/** Prefix for full HTTP paths in the Ark cURL examples. */
 const ARK_BASE = `${CUSTOMER_API_BASE_URL}/api/v3`;
 
+/** Prefix for the canonical versioned paths in the raw HTTP examples. */
 const OPENAI_BASE = OPENAI_API_BASE_URL;
 const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
 const SAMPLE_OPENAI_MODEL = 'gpt-5.4';
@@ -310,12 +311,8 @@ export function DocsContent({ embedded = false, locale = 'zh' }: { embedded?: bo
                     <h2 className="m-0 mb-3 text-base font-semibold text-navy">通用配置</h2>
                     <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 m-0 text-sm">
                         <div>
-                            <dt className="text-xs text-muted-ink mb-1">OpenAI 兼容 Base URL</dt>
-                            <dd className="m-0 font-mono text-sm text-navy break-all">{OPENAI_BASE}</dd>
-                        </div>
-                        <div>
-                            <dt className="text-xs text-muted-ink mb-1">Anthropic 兼容 Base URL</dt>
-                            <dd className="m-0 font-mono text-sm text-navy break-all">{ANTHROPIC_BASE}</dd>
+                            <dt className="text-xs text-muted-ink mb-1">API Base URL</dt>
+                            <dd className="m-0 font-mono text-sm text-navy break-all">{CUSTOMER_API_BASE_URL}</dd>
                         </div>
                         <div>
                             <dt className="text-xs text-muted-ink mb-1">API Key</dt>
@@ -653,7 +650,7 @@ codex app
                         {`from openai import OpenAI
 
 client = OpenAI(
-    base_url="${OPENAI_BASE}",
+    base_url="${CUSTOMER_API_BASE_URL}",
     api_key="sk-…",   # portal /keys
 )
 
@@ -687,7 +684,7 @@ print(resp.choices[0].message.content)`}
                         {`import OpenAI from 'openai';
 
 const client = new OpenAI({
-  baseURL: '${OPENAI_BASE}',
+  baseURL: '${CUSTOMER_API_BASE_URL}',
   apiKey: 'sk-…',   // portal /keys
 });
 
@@ -1073,7 +1070,7 @@ data: [DONE]`}
 
 client = OpenAI(
     api_key="sk-…",                       # portal /keys
-    base_url="${OPENAI_BASE}",
+    base_url="${CUSTOMER_API_BASE_URL}",
 )
 
 resp = client.chat.completions.create(
@@ -1089,7 +1086,7 @@ print(resp.choices[0].message.content)`}
 
 const client = new OpenAI({
   apiKey: "sk-…",                         // portal /keys
-  baseURL: "${OPENAI_BASE}",
+  baseURL: "${CUSTOMER_API_BASE_URL}",
 });
 
 const completion = await client.chat.completions.create({
@@ -1775,7 +1772,7 @@ curl ${OPENAI_BASE}/images/edits \\
                         {`from openai import OpenAI
 import base64
 
-client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+client = OpenAI(api_key="sk-你的KEY", base_url="${CUSTOMER_API_BASE_URL}")
 
 resp = client.images.generate(
     model="gpt-image-2-2k",
@@ -1788,7 +1785,7 @@ with open("out.png", "wb") as f:
                         {`import OpenAI from "openai";
 import fs from "node:fs";
 
-const client = new OpenAI({ apiKey: "sk-你的KEY", baseURL: "${OPENAI_BASE}" });
+const client = new OpenAI({ apiKey: "sk-你的KEY", baseURL: "${CUSTOMER_API_BASE_URL}" });
 
 const resp = await client.images.generate({
   model: "gpt-image-2-2k",
@@ -1856,7 +1853,7 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                         {`from openai import OpenAI
 import base64
 
-client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+client = OpenAI(api_key="sk-你的KEY", base_url="${CUSTOMER_API_BASE_URL}")
 
 resp = client.images.edit(
     model="gpt-image-2-2k",
@@ -2111,7 +2108,7 @@ with open("edited.png", "wb") as f:
                     </CodeBlock>
                     <CodeBlock language="python">
                         {`from openai import OpenAI
-client = OpenAI(base_url="${OPENAI_BASE}", api_key="sk-你的KEY")
+client = OpenAI(base_url="${CUSTOMER_API_BASE_URL}", api_key="sk-你的KEY")
 
 stream = client.images.generate(
     model="gpt-image-2",
@@ -4262,7 +4259,7 @@ print(f'合计 ¥{sum(s["cny"] for s in by_model.values()):.4f}')`}
                         {`import json, time
 from openai import OpenAI
 
-client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+client = OpenAI(api_key="sk-你的KEY", base_url="${CUSTOMER_API_BASE_URL}")
 
 # ① 上传 JSONL
 batch_file = client.files.create(file=open("batch.jsonl", "rb"), purpose="batch")
@@ -4742,7 +4739,7 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                     <p className="m-0 mb-2 text-sm font-medium text-navy">D. OpenAI SDK(Python)</p>
                     <div className="mb-4">
                         <CodeBlock language="python">{`from openai import OpenAI
-client = OpenAI(api_key="sk-...", base_url="https://api.llmroute.club/v1")
+client = OpenAI(api_key="sk-...", base_url="${CUSTOMER_API_BASE_URL}")
 
 # 文生图(extra_body 传 Seedream 特有参数)
 r = client.images.generate(
@@ -4819,12 +4816,12 @@ print(r.data[0].url)`}</CodeBlock>
                     </p>
                     <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
                         <p className="m-0">
-                            Base URL:<code className="font-mono text-xs break-all">{ARK_BASE}</code>(SDK 的{' '}
-                            <code className="font-mono text-xs">base_url</code> 也填这个)
+                            SDK Base URL <code className="font-mono text-xs break-all">{CUSTOMER_API_BASE_URL}</code>
                         </p>
                         <p className="m-0 mt-1">
-                            提交:<code className="font-mono text-xs">POST /contents/generations/tasks</code>
-                            ;查询:<code className="font-mono text-xs">GET /contents/generations/tasks/{'{id}'}</code>
+                            提交 <code className="font-mono text-xs">POST /api/v3/contents/generations/tasks</code>
+                            ，查询{' '}
+                            <code className="font-mono text-xs">GET /api/v3/contents/generations/tasks/{'{id}'}</code>
                         </p>
                         <p className="m-0 mt-1">
                             鉴权:<code className="font-mono text-xs">Authorization: Bearer sk-…</code>。Key
@@ -4937,7 +4934,7 @@ print(r.data[0].url)`}</CodeBlock>
                         {`import time
 from volcenginesdkarkruntime import Ark
 
-client = Ark(base_url="${ARK_BASE}", api_key="你的key")
+client = Ark(base_url="${CUSTOMER_API_BASE_URL}", api_key="你的key")
 task = client.content_generation.tasks.create(
     model="doubao-seedance-2-5-260628",
     content=[{"type": "text", "text": "一只穿红大衣的小猫在雪地里抓雪花"}],
@@ -5020,8 +5017,7 @@ function SdSpecialVideoSection({ modelsHref }: { modelsHref: string }) {
             </p>
             <ConfigList
                 items={[
-                    ['API 域名', CUSTOMER_API_BASE_URL],
-                    ['Base URL（已含 /v1）', OPENAI_BASE],
+                    ['API Base URL', CUSTOMER_API_BASE_URL],
                     ['认证 Header', 'Authorization: Bearer <API_KEY>'],
                     ['提交', 'POST /v1/videos'],
                     ['查询', 'GET /v1/videos/{id}'],
