@@ -669,6 +669,28 @@ export async function getTokenForCustomer(
     });
 }
 
+const VideoDeliveryTokenSchema = NewApiTokenSchema.pick({
+    id: true,
+    user_id: true,
+    status: true,
+    group: true,
+    expired_time: true,
+    remain_quota: true,
+    unlimited_quota: true,
+}).extend({ allow_ips: z.string().nullable() });
+
+/** Read current quota and authentication policy with the customer's own PAT. */
+export async function getVideoDeliveryTokenForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+) {
+    const data = await call<unknown>('GET', `/api/token/${tokenId}`, undefined, undefined, {
+        ...TOKEN_REVOCATION_CALL_OPTIONS,
+        asUser: customerAuth,
+    });
+    return VideoDeliveryTokenSchema.parse(data);
+}
+
 /** Strict, uncached owner identity read; never rotates the customer's access token. */
 export async function getTokenRevocationCustomerIdentity(customerAuth: {
     accessToken: string;

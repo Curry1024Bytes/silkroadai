@@ -7754,3 +7754,76 @@ describe('/v1 proxy — /images/edits 官方 JSON schema:images[{image_url|file_
         expect((await sentForm()).getAll('image')).toHaveLength(1);
     });
 });
+
+describe('SD special unified video models', () => {
+    it.each([
+        ['sd-2-mini', '480p', 'sd-2-mini-480', 'sd-2-mini-480-novideo'],
+        ['sd-2-mini', '720p', 'sd-2-mini-720', 'sd-2-mini-720-novideo'],
+        ['sd-2-fast', '480p', 'sd-2-fast-480', 'sd-2-fast-480-novideo'],
+        ['sd-2-fast', '720p', 'sd-2-fast-720', 'sd-2-fast-720-novideo'],
+        ['sd-2-vip', '480p', 'sd-2-vip-480', 'sd-2-vip-480-novideo'],
+        ['sd-2-vip', '720p', 'sd-2-vip-720', 'sd-2-vip-720-novideo'],
+        ['sd-2.5', '480p', 'sd-2.5-480P', 'sd-2.5-480P-novideo'],
+        ['sd-2.5', '720p', 'sd-2.5-720P', 'sd-2.5-720P-novideo'],
+        ['sd-2.5', '1080p', 'sd-2.5-1080P', 'sd-2.5-1080P'],
+        ['sd-2.5-flash', '480p', 'sd-2.5-flash-480P', 'sd-2.5-flash-480-novideo'],
+        ['sd-2.5-flash', '720p', 'sd-2.5-flash-720P', 'sd-2.5-flash-720-novideo'],
+    ])(
+        '%s at %s selects the exact billable SKU, preserving references and public task model',
+        async (model, resolution, on, off) => {
+            for (const [references, internal] of [
+                [[{ type: 'video', url: 'https://example.com/ref.mp4' }], on],
+                [
+                    [
+                        { type: 'image', url: 'https://example.com/ref.jpg' },
+                        { type: 'audio', url: 'https://example.com/ref.mp3' },
+                    ],
+                    off,
+                ],
+                [undefined, off],
+            ] as const) {
+                mockFetch.mockResolvedValueOnce(Response.json({ id: 'task_1', model: internal }));
+                const body = { model, resolution, duration: 5, prompt: 'water', references };
+                const response = await POST(makeReq('/videos', { body }), ctx('videos'));
+                expect(response.status).toBe(200);
+                expect(await response.json()).toEqual({ id: 'task_1', model });
+                expect(JSON.parse(mockFetch.mock.lastCall![1].body)).toEqual({
+                    ...JSON.parse(JSON.stringify(body)),
+                    model: internal,
+                });
+            }
+            expect(mockFetch).toHaveBeenCalledTimes(3);
+        },
+    );
+
+    it.each([
+        [{ model: 'sd-2-fast', resolution: '1080p', duration: 5 }, 400],
+        [{ model: 'sd-2-mini', duration: 5 }, 400],
+        [{ model: 'sd-2-mini', resolution: '480p', duration: 4, references: [{ type: 'video' }] }, 400],
+        [{ model: 'sd-2.5-1080P-novideo', duration: 5 }, 404],
+        [{ model: 'sd-2.5-flash-480P', duration: 5 }, 404],
+        [{ model: 'sd-2.0-fast-官方版-720p', duration: 5 }, 404],
+        [{ model: 'sd-2.5-720P-限时特价', duration: 5 }, 404],
+    ])('rejects invalid or retired requests on both endpoints without submitting', async (body, status) => {
+        expect((await POST(makeReq('/videos', { body }), ctx('videos'))).status).toBe(status);
+        expect((await POST(makeReq('/video/generations', { body }), ctx('video', 'generations'))).status).toBe(status);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('hides retired models from direct lookup and from a list when catalog enrichment fails', async () => {
+        const retired = await GET(makeReq('/models/sd-2-mini-480', { method: 'GET' }), ctx('models', 'sd-2-mini-480'));
+        expect(retired.status).toBe(404);
+        expect(mockFetch).not.toHaveBeenCalled();
+        mockFetch.mockResolvedValueOnce(Response.json({ data: [{ id: 'sd-2-mini-480' }, { id: 'kling-video' }] }));
+        const result = await GET(makeReq('/models', { method: 'GET' }), ctx('models'));
+        expect(await result.json()).toEqual({ data: [{ id: 'kling-video' }] });
+    });
+
+    it('preserves non-SD video requests and their response body', async () => {
+        const body = { model: 'some-video-model', prompt: 'water', duration: 5 };
+        mockFetch.mockResolvedValueOnce(Response.json({ id: 'task_1', model: body.model }));
+        const response = await POST(makeReq('/videos', { body }), ctx('videos'));
+        expect(await response.json()).toEqual({ id: 'task_1', model: body.model });
+        expect(JSON.parse(mockFetch.mock.lastCall![1].body)).toEqual(body);
+    });
+});

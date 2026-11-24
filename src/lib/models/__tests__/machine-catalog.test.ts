@@ -10,7 +10,11 @@ const mockFindRevision = vi.fn();
 const mockFindGroup = vi.fn();
 const mockMultipliers = vi.fn();
 const mockGetOption = vi.fn();
-vi.mock('@/lib/newapi/client', () => ({ getOption: (...args: unknown[]) => mockGetOption(...args) }));
+const mockLiveToken = vi.fn();
+vi.mock('@/lib/newapi/client', () => ({
+    getOption: (...args: unknown[]) => mockGetOption(...args),
+    getTokenForCustomer: (...args: unknown[]) => mockLiveToken(...args),
+}));
 vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
     listUserTierMultipliers: (...args: unknown[]) => mockMultipliers(...args),
 }));
@@ -26,6 +30,7 @@ vi.mock('@/lib/db', () => ({
 
 import {
     loadCatalogMeta,
+    hideSdSpecialInternalModels,
     resolveTierFromAuthHeader,
     resolveCatalogPricingContextFromAuthHeader,
     enrichModelList,
@@ -423,5 +428,96 @@ describe('enrichModelList(纯函数)', () => {
 
     it('data 非数组 → 抛(调用方回退透传)', () => {
         expect(() => enrichModelList({ object: 'list' }, 'pool', meta)).toThrow();
+    });
+});
+
+describe('SD special catalog discovery', () => {
+    const sdMeta = (withVideo = 0.1, without = 0.125) =>
+        new Map<string, CatalogMetaEntry>(
+            [
+                ['sd-2-mini-480', withVideo],
+                ['sd-2-mini-480-novideo', without],
+            ].map(([sku, amount]) => [
+                String(sku),
+                {
+                    display_name: String(sku),
+                    context_window: null,
+                    pricesByTier: new Map([
+                        [
+                            'sd',
+                            {
+                                input_cny_per_1m: null,
+                                output_cny_per_1m: null,
+                                per_image_cny: null,
+                                billing_details: {
+                                    version: 1,
+                                    mode: 'media',
+                                    unit: 'cny_per_second',
+                                    default_price: Number(amount),
+                                    resolution_prices: {},
+                                },
+                            },
+                        ],
+                    ]),
+                },
+            ]),
+        );
+    it('applies the customer price scale, keeps unrelated entries and suppresses all legacy IDs', () => {
+        const input = {
+            data: ['sd-2-mini-480', 'sd-2-mini-480-novideo', 'sd-2.5-720P-限时特价', 'kling-video'].map((id) => ({
+                id,
+            })),
+        };
+        expect(enrichModelList(input, { tier: 'sd', multiplierScale: 2, sdSpecial: true }, sdMeta())).toMatchObject({
+            data: [
+                { id: 'kling-video' },
+                {
+                    id: 'sd-2-mini',
+                    silkroadai: {
+                        type: 'video',
+                        pricing: {
+                            billing_details: {
+                                resolution_prices: { '480p': 0.25 },
+                                reference_video_prices: { '480p': 0.2 },
+                            },
+                        },
+                    },
+                },
+            ],
+        });
+        expect(hideSdSpecialInternalModels(input)).toEqual({ data: [{ id: 'kling-video' }] });
+    });
+
+    it('uses live key limits for a successful empty list and does not guess when limits are unknown', async () => {
+        mockFindUniqueToken
+            .mockResolvedValueOnce({ tier: 'sd', user_id: 'owner', status: 'active' })
+            .mockResolvedValueOnce({
+                newapi_token_id: 91,
+                user: { newapi_user_id: 25, newapi_access_token: 'test-token' },
+            });
+        mockFindGroup.mockResolvedValueOnce({ newapi_group: 'SD特惠' });
+        mockLiveToken.mockResolvedValueOnce({
+            user_id: 25,
+            status: 1,
+            group: 'SD特惠',
+            model_limits_enabled: true,
+            model_limits: 'sd-2-mini-480-novideo',
+        });
+        const context = await resolveCatalogPricingContextFromAuthHeader('Bearer test-key', true);
+        expect(enrichModelList({ data: [] }, context, sdMeta())).toMatchObject({
+            data: [
+                {
+                    id: 'sd-2-mini',
+                    silkroadai: {
+                        pricing: {
+                            billing_details: { resolution_prices: { '480p': 0.125 }, reference_video_prices: {} },
+                        },
+                    },
+                },
+            ],
+        });
+        expect(enrichModelList({ data: [] }, { tier: 'sd', multiplierScale: 1, sdSpecial: true }, sdMeta())).toEqual({
+            data: [],
+        });
     });
 });

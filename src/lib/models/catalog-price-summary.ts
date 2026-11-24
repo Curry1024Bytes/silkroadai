@@ -36,6 +36,22 @@ export function catalogPriceSummary(price: TierPricing | null, type: TypeName): 
         };
     }
     if (details?.mode === 'media') {
+        if (details.reference_video_prices) {
+            const resolution = Object.keys({ ...details.resolution_prices, ...details.reference_video_prices }).sort(
+                (a, b) => a.localeCompare(b, 'en', { numeric: true }),
+            )[0];
+            const without = details.resolution_prices[resolution];
+            const withVideo = details.reference_video_prices[resolution];
+            return {
+                unit: '元 / 秒',
+                rates: [
+                    ...(without == null ? [] : [{ label: '无参考视频', amount: without }]),
+                    ...(withVideo == null ? [] : [{ label: '有参考视频', amount: withVideo }]),
+                ],
+                condition: resolution,
+                note: '完整规格价格见详情',
+            };
+        }
         const unit = { cny_per_image: '元 / 张', cny_per_request: '元 / 次', cny_per_second: '元 / 秒' }[details.unit];
         // Pick a named specification, not the cheapest amount. A default is not a price for every resolution.
         const specification = Object.keys(details.resolution_prices).sort((a, b) =>

@@ -1,3 +1,5 @@
+import { isSdSpecialPublicModel } from '@/lib/sd-special-video';
+
 /**
  * Model categorization for the public /models page.
  *
@@ -119,6 +121,7 @@ const IMAGE_WORD = /(^|[^a-z])image([^a-z]|$)/;
 /** Type-classification rules. Order matters — first match wins. Specific
  *  modalities are checked before the chat fallback. */
 export function categorizeByType(modelName: string): TypeName {
+    if (isSdSpecialPublicModel(modelName)) return 'video';
     const n = modelName.toLowerCase();
 
     // Audio first — `gpt-4o-mini-tts` should NOT land in vision.
@@ -187,6 +190,7 @@ export function categorizeByType(modelName: string): TypeName {
  *  Implementation note: plain string checks beat a single mega-regex here.
  *  The model names are short — readability wins over a single-pass scan. */
 export function categorizeByVendor(modelName: string): VendorName {
+    if (isSdSpecialPublicModel(modelName)) return 'ByteDance';
     const n = modelName.toLowerCase();
 
     // OpenAI family — chat (gpt-/o1/o3/o4/chatgpt) + branded products
