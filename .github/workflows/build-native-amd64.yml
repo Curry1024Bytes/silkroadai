@@ -12,7 +12,7 @@ on:
             source_sha:
                 description: 'Exact already-verified application commit; only the pinned SHA below is accepted'
                 required: true
-                default: 'ac3be509b164c09e6e0699a67604a5b3dbdefb76'
+                default: '4f81a60b80d66b3fe09ce6c016dc4914c24ad955'
                 type: string
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
             run:
                 shell: bash
         env:
-            VERIFIED_SOURCE_SHA: 'ac3be509b164c09e6e0699a67604a5b3dbdefb76'
+            VERIFIED_SOURCE_SHA: '4f81a60b80d66b3fe09ce6c016dc4914c24ad955'
             DOCKER_BUILDKIT: '1'
 
         steps:
