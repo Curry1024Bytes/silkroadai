@@ -5,7 +5,7 @@ import { logsMessages } from '@/lib/i18n/messages/logs';
 /**
  * 全功能调用日志查看器(客户「调用日志」页)。
  *
- * 顶部过滤条:日期范围(datetime-local ×2)+ Request ID / 令牌 / 模型 / 渠道 文本搜索。
+ * 顶部过滤条:日期范围、Request ID、令牌、模型和渠道。
  * 下面分页表格,数据来自 /api/portal/logs(服务端已折叠重试中间失败 + 脱敏错误文案)。
  * 分页是【服务端】的(new-api /api/log/ 一页 100 原始行),prev/next 走 page 参数。
  *
@@ -32,6 +32,7 @@ import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabe
 import { formatSignedCny } from '@/lib/format/number';
 import { pickMessages, intlLocale, type Locale } from '@/lib/i18n';
 import type { LogRow } from '@/app/api/portal/logs/route';
+import { DateRangePicker, getLogDatePresets } from '@/components/date-range-picker';
 
 interface Filters {
     start: string;
@@ -49,14 +50,18 @@ function toUnix(local: string): number | undefined {
     return Number.isFinite(t) ? Math.floor(t / 1000) : undefined;
 }
 
-/** 默认近 7 天(datetime-local 形态 YYYY-MM-DDTHH:mm,本地时区)。 */
-function defaultRange(): { start: string; end: string } {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) =>
-        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    const now = new Date();
-    const start = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
-    return { start: fmt(start), end: fmt(now) };
+type FilterKey = { key_alias: string; tier: string };
+type FilterModel = { model_name: string; enable_groups: string[] };
+
+export function logModelOptions(models: FilterModel[], keys: FilterKey[], token: string): string[] {
+    const tiers = new Set(keys.filter((key) => key.key_alias === token).map((key) => key.tier));
+    return [
+        ...new Set(
+            models
+                .filter((model) => tiers.size === 0 || model.enable_groups.some((tier) => tiers.has(tier)))
+                .map((model) => model.model_name),
+        ),
+    ].sort();
 }
 
 /** 过滤条件 → query string(/api/portal/logs 与 /export 共用同一套参数)。 */
@@ -79,6 +84,59 @@ const INPUT =
 const HEAD =
     'whitespace-nowrap border-b border-portal-line px-4 py-2.5 text-left text-xs font-semibold text-portal-muted';
 const CELL = 'border-b border-portal-line px-4 py-3 text-sm text-portal-ink';
+
+function LogFilterSelect({
+    label,
+    value,
+    options,
+    allLabel,
+    placeholder,
+    onChange,
+}: {
+    label: string;
+    value: string;
+    options: string[];
+    allLabel: string;
+    placeholder: string;
+    onChange: (value: string) => void;
+}) {
+    const customLabel = useMessages(logsMessages).filters.customValue;
+    const [manual, setManual] = useState(false);
+    const custom = manual || (!!value && !options.includes(value));
+    return (
+        <div className="space-y-2">
+            <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                {label}
+                <select
+                    className={INPUT}
+                    value={custom ? 'custom' : value ? `option:${value}` : ''}
+                    onChange={(event) => {
+                        const next = event.target.value;
+                        setManual(next === 'custom');
+                        if (next !== 'custom') onChange(next.slice('option:'.length));
+                    }}
+                >
+                    <option value="">{allLabel}</option>
+                    {options.map((option) => (
+                        <option key={option} value={`option:${option}`}>
+                            {option}
+                        </option>
+                    ))}
+                    <option value="custom">{customLabel}</option>
+                </select>
+            </label>
+            {custom && (
+                <input
+                    className={INPUT}
+                    aria-label={`${label} · ${customLabel}`}
+                    placeholder={placeholder}
+                    value={value}
+                    onChange={(event) => onChange(event.target.value)}
+                />
+            )}
+        </div>
+    );
+}
 
 interface LogsResult {
     rows: LogRow[];
@@ -113,15 +171,13 @@ async function loadLogs(f: Filters, page: number, signal: AbortSignal, locale: L
 export function LogsViewer() {
     const copy = useMessages(logsMessages);
     const locale = useLocale();
-    const dr = defaultRange();
-    const [filters, setFilters] = useState<Filters>({
-        start: dr.start,
-        end: dr.end,
+    const [filters, setFilters] = useState<Filters>(() => ({
+        ...getLogDatePresets(new Date()).last7d,
         requestId: '',
         token: '',
         model: '',
         channel: '',
-    });
+    }));
     // 实际查询用的快照 —— 点「搜索」才更新,避免边打字边查。
     const [applied, setApplied] = useState<Filters>(filters);
     const [page, setPage] = useState(1);
@@ -130,6 +186,54 @@ export function LogsViewer() {
     const [hasMore, setHasMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<number | null>(null);
+    const [filterKeys, setFilterKeys] = useState<FilterKey[]>([]);
+    const [filterModels, setFilterModels] = useState<FilterModel[]>([]);
+
+    useEffect(() => {
+        const controller = new AbortController();
+        const init = { signal: controller.signal };
+        void fetch('/api/portal/keys', init)
+            .then(async (response) => {
+                if (!response.ok) return;
+                const { tokens } = (await response.json()) as { tokens?: unknown[] };
+                if (Array.isArray(tokens) && !controller.signal.aborted)
+                    setFilterKeys(
+                        tokens
+                            .filter(
+                                (key): key is FilterKey =>
+                                    !!key &&
+                                    typeof key === 'object' &&
+                                    'key_alias' in key &&
+                                    typeof key.key_alias === 'string' &&
+                                    'tier' in key &&
+                                    typeof key.tier === 'string',
+                            )
+                            .map(({ key_alias, tier }) => ({ key_alias, tier })),
+                    );
+            })
+            .catch(() => {});
+        void fetch('/api/portal/models/pricing', init)
+            .then(async (response) => {
+                if (!response.ok) return;
+                const { data } = (await response.json()) as { data?: unknown[] };
+                if (Array.isArray(data) && !controller.signal.aborted)
+                    setFilterModels(
+                        data
+                            .filter(
+                                (model): model is FilterModel =>
+                                    !!model &&
+                                    typeof model === 'object' &&
+                                    'model_name' in model &&
+                                    typeof model.model_name === 'string' &&
+                                    'enable_groups' in model &&
+                                    Array.isArray(model.enable_groups),
+                            )
+                            .map(({ model_name, enable_groups }) => ({ model_name, enable_groups })),
+                    );
+            })
+            .catch(() => {});
+        return () => controller.abort();
+    }, []);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -171,24 +275,12 @@ export function LogsViewer() {
                 </div>
                 <div className="p-4 sm:p-5">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.start}
-                            <input
-                                type="datetime-local"
-                                className={INPUT}
-                                value={filters.start}
-                                onChange={(ev) => set('start', ev.target.value)}
+                        <div className="sm:col-span-2">
+                            <DateRangePicker
+                                value={{ start: filters.start, end: filters.end }}
+                                onChange={(range) => setFilters((previous) => ({ ...previous, ...range }))}
                             />
-                        </label>
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.end}
-                            <input
-                                type="datetime-local"
-                                className={INPUT}
-                                value={filters.end}
-                                onChange={(ev) => set('end', ev.target.value)}
-                            />
-                        </label>
+                        </div>
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
                             {copy.table.colRequestId}
                             <input
@@ -198,24 +290,23 @@ export function LogsViewer() {
                                 onChange={(ev) => set('requestId', ev.target.value)}
                             />
                         </label>
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.token}
-                            <input
-                                className={INPUT}
-                                placeholder={copy.filters.tokenPlaceholder}
-                                value={filters.token}
-                                onChange={(ev) => set('token', ev.target.value)}
-                            />
-                        </label>
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
-                            {copy.filters.model}
-                            <input
-                                className={INPUT}
-                                placeholder={copy.filters.modelPlaceholder}
-                                value={filters.model}
-                                onChange={(ev) => set('model', ev.target.value)}
-                            />
-                        </label>
+                        <LogFilterSelect
+                            label={copy.filters.token}
+                            value={filters.token}
+                            options={[...new Set(filterKeys.map((key) => key.key_alias))].sort()}
+                            allLabel={copy.filters.allKeys}
+                            placeholder={copy.filters.tokenPlaceholder}
+                            onChange={(token) => setFilters((previous) => ({ ...previous, token, model: '' }))}
+                        />
+                        <LogFilterSelect
+                            key={filters.token}
+                            label={copy.filters.model}
+                            value={filters.model}
+                            options={logModelOptions(filterModels, filterKeys, filters.token)}
+                            allLabel={copy.filters.allModels}
+                            placeholder={copy.filters.modelPlaceholder}
+                            onChange={(model) => set('model', model)}
+                        />
                         <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
                             {copy.filters.channel}
                             <input

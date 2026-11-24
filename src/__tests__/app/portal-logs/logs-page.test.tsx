@@ -13,8 +13,9 @@ vi.mock('@/lib/i18n/server', () => ({
 }));
 
 import LogsPage, { generateMetadata } from '@/app/(authenticated)/logs/page';
-import { LogsViewer } from '@/app/(authenticated)/logs/logs-viewer';
+import { logModelOptions, LogsViewer } from '@/app/(authenticated)/logs/logs-viewer';
 import { LocaleProvider } from '@/lib/i18n/client';
+import { getLogDatePresets } from '@/components/date-range-picker';
 
 afterEach(() => {
     mockLocale.mockResolvedValue('zh');
@@ -27,6 +28,8 @@ describe('/logs (zh default)', () => {
         expect(html).toContain('起始时间');
         expect(html).toContain('结束时间');
         expect(html).toContain('令牌名(Key)');
+        expect(html).toContain('全部 Key');
+        expect(html).toContain('全部模型');
         expect(html).toContain('渠道 ID');
         expect(html).toContain('导出 CSV');
         expect(html).toContain('查询中…');
@@ -55,14 +58,39 @@ describe('/logs (English)', () => {
         expect(await generateMetadata()).toEqual({ title: 'Request logs · LLmRoute' });
     });
 
-    it('viewer placeholders follow the locale', () => {
+    it('viewer filter controls follow the locale', () => {
         const html = renderToString(
             <LocaleProvider locale="en">
                 <LogsViewer />
             </LocaleProvider>,
         );
         expect(html).toContain('placeholder="Exact match"');
-        expect(html).toContain('placeholder="e.g. prod-openai"');
+        expect(html).toContain('All keys');
+        expect(html).toContain('All models');
+        expect(html).toContain('Enter manually');
         expect(html).not.toContain('精确匹配');
+    });
+});
+
+describe('log filter controls', () => {
+    it('selects models for the Key tier and keeps both tiers for shared aliases', () => {
+        const keys = [
+            { key_alias: 'video', tier: 'sd' },
+            { key_alias: 'shared', tier: 'sd' },
+            { key_alias: 'shared', tier: 'kiro' },
+        ];
+        const models = [
+            { model_name: 'seedance-2.5', enable_groups: ['sd'] },
+            { model_name: 'claude-opus', enable_groups: ['kiro'] },
+        ];
+        expect(logModelOptions(models, keys, 'video')).toEqual(['seedance-2.5']);
+        expect(logModelOptions(models, keys, 'shared')).toEqual(['claude-opus', 'seedance-2.5']);
+        expect(logModelOptions(models, keys, 'archived-key')).toEqual(['claude-opus', 'seedance-2.5']);
+    });
+
+    it('includes the last second of yesterday and defaults to a non-zero range', () => {
+        const presets = getLogDatePresets(new Date(2026, 10, 23, 15, 50, 0));
+        expect(presets.yesterday).toEqual({ start: '2026-11-22T00:00', end: '2026-11-22T23:59:59' });
+        expect(presets.last7d).toEqual({ start: '2026-11-16T15:50', end: '2026-11-23T15:50' });
     });
 });
