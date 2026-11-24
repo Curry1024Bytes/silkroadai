@@ -209,7 +209,18 @@ async function call<T>(
     if (options.securityProof) headers['X-Security-Proof'] = options.securityProof;
 
     const guardTimeoutMs = await customerKeyMutationTimeout();
-    const timeoutMs = Math.min(options.timeoutMs ?? callTimeoutMs(), guardTimeoutMs ?? Infinity);
+    const baseTimeoutMs = options.timeoutMs ?? callTimeoutMs();
+    const guardMs = guardTimeoutMs ?? Infinity;
+
+    // 验证两个超时值都是有效数字
+    if (!Number.isFinite(baseTimeoutMs) || baseTimeoutMs < 1) {
+        throw new Error(`Invalid baseTimeoutMs: ${baseTimeoutMs}`);
+    }
+    if (!Number.isFinite(guardMs) || (guardMs !== Infinity && guardMs < 1)) {
+        throw new Error(`Invalid guardMs: ${guardMs}`);
+    }
+
+    const timeoutMs = Math.min(baseTimeoutMs, guardMs);
     const init: RequestInit = {
         method,
         headers,
@@ -247,16 +258,22 @@ async function call<T>(
     let text: string;
     try {
         text = await res.text();
-    } catch {
-        if (isPatCreationRequest(method, path))
-            throw new NewApiError(502, `${method} ${path}`, null, 'new-api response outcome unknown', undefined, true);
+    } catch (err) {
+        // 区分错误类型：网络级 vs 读取级
+        const isNetworkError = err instanceof TypeError || err instanceof Error && err.name === 'TypeError';
+        const ambiguousSideEffect =
+            isPatCreationRequest(method, path) && (isNetworkError || (res.status >= 500 && res.status !== 502));
+        if (ambiguousSideEffect)
+            throw new NewApiError(502, `${method} ${path}`, null, 'new-api response read failed', undefined, true);
         throw new NewApiError(502, `${method} ${path}`, null, 'Unable to read new-api response');
     }
     let data: NewApiEnvelope<T> | null = null;
     try {
         data = text ? (JSON.parse(text) as NewApiEnvelope<T>) : null;
-    } catch {
-        /* */
+    } catch (parseErr) {
+        // JSON 解析失败不应该生吃——记录警告并标记为无效数据
+        console.warn(`[new-api] JSON parse failed for ${method} ${path}:`, parseErr, 'body:', text.slice(0, 200));
+        data = null;  // 显式标记解析失败
     }
 
     if (!res.ok || (data && !data.success)) {

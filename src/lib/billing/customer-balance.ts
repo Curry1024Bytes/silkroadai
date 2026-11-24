@@ -46,14 +46,15 @@ export async function getCustomerBalance(userId: string): Promise<CustomerBalanc
 
     // ── portal:¥账本(Account)是唯一真相,绝不读 new-api quota(它是哑门开关)──
     if (user?.billing_mode === 'portal') {
-        const balanceCny = user.account ? Number(user.account.balance_cny) : 0;
+        // balance_cny 是 Decimal(12,4)，直接转 string 再转 number 避免精度丢失
+        const balanceCny = user.account?.balance_cny ? Number(user.account.balance_cny) : 0;
         let spentCny = 0;
         if (user.account) {
             const agg = await prisma.ledgerEntry.aggregate({
                 where: { account_id: user.account.id, kind: 'charge' },
                 _sum: { amount_cny: true },
             });
-            // charge 金额带负号(扣减)→ 取绝对值作"累计消费"。
+            // charge 金额带负号(扣减)→ 取绝对值作"累计消费"。保留 Decimal 精度
             spentCny = agg._sum.amount_cny ? Math.abs(Number(agg._sum.amount_cny)) : 0;
         }
         return { balanceCny, spentCny, source: 'portal', stale: false, quota: null };
@@ -72,6 +73,13 @@ export async function getCustomerBalance(userId: string): Promise<CustomerBalanc
                 username: user.newapi_username,
             });
             refundQuota = refunds.reduce((sum, r) => sum + r.quota, 0);
+            // 防护性上限：退款总额不应超过毛消费
+            if (refundQuota > snap.used_quota) {
+                console.warn(
+                    `[customer-balance] refundQuota ${refundQuota} > used_quota ${snap.used_quota} for user ${userId}, capping`,
+                );
+                refundQuota = snap.used_quota;
+            }
         } catch (err) {
             console.warn(`[customer-balance] 退款查询失败 user ${userId},历史消费暂用毛消费:`, err);
         }

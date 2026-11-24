@@ -228,7 +228,14 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
         'CANCEL_RATE_LIMIT_WINDOW_MODE',
     ]);
     if (rateLimitConfigs['CANCEL_RATE_LIMIT_ENABLED'] === 'true') {
-        const windowSize = parseInt(rateLimitConfigs['CANCEL_RATE_LIMIT_WINDOW'] || '1', 10) || 1;
+        // 验证窗口大小参数
+        const rawWindowSize = rateLimitConfigs['CANCEL_RATE_LIMIT_WINDOW']?.trim() || '1';
+        const windowSize = parseInt(rawWindowSize, 10);  // 明确基数 10
+        if (!Number.isFinite(windowSize) || windowSize < 1 || windowSize > 365) {
+            throw new Error(
+                `Invalid CANCEL_RATE_LIMIT_WINDOW: "${rawWindowSize}" must be integer 1-365, got ${windowSize}`,
+            );
+        }
         const maxCount = parseInt(rateLimitConfigs['CANCEL_RATE_LIMIT_MAX'] || '10', 10) || 10;
         const unit = rateLimitConfigs['CANCEL_RATE_LIMIT_UNIT'] || 'day';
         const windowMode = rateLimitConfigs['CANCEL_RATE_LIMIT_WINDOW_MODE'] || 'rolling';
@@ -523,33 +530,36 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
             isMobile: input.isMobile,
         });
 
-        await prisma.order.update({
-            where: { id: order.id },
-            data: {
-                paymentTradeNo: paymentResult.tradeNo,
-                payUrl: paymentResult.payUrl || null,
-                qrCode: paymentResult.qrCode || null,
-                providerInstanceId: selectedInstanceId ?? null,
-            },
-        });
+        // 将 order 信息更新和审计日志在同一 transaction 中执行，保证一致性
+        await prisma.$transaction(async (tx) => {
+            await tx.order.update({
+                where: { id: order.id },
+                data: {
+                    paymentTradeNo: paymentResult.tradeNo,
+                    payUrl: paymentResult.payUrl || null,
+                    qrCode: paymentResult.qrCode || null,
+                    providerInstanceId: selectedInstanceId ?? null,
+                },
+            });
 
-        await prisma.auditLog.create({
-            data: {
-                orderId: order.id,
-                action: 'ORDER_CREATED',
-                detail: JSON.stringify({
-                    user_id: input.user_id,
-                    amount: input.amount,
-                    paymentType: input.paymentType,
-                    orderType,
-                    ...(subscriptionPlan && {
-                        planId: subscriptionPlan.id,
-                        planName: subscriptionPlan.name,
-                        groupId: subscriptionPlan.groupId,
+            await tx.auditLog.create({
+                data: {
+                    orderId: order.id,
+                    action: 'ORDER_CREATED',
+                    detail: JSON.stringify({
+                        user_id: input.user_id,
+                        amount: input.amount,
+                        paymentType: input.paymentType,
+                        orderType,
+                        ...(subscriptionPlan && {
+                            planId: subscriptionPlan.id,
+                            planName: subscriptionPlan.name,
+                            groupId: subscriptionPlan.groupId,
+                        }),
                     }),
-                }),
-                operator: `user:${input.user_id}`,
-            },
+                    operator: `user:${input.user_id}`,
+                },
+            });
         });
 
         return {
@@ -571,7 +581,13 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
             statusAccessToken,
         };
     } catch (error) {
-        await prisma.order.delete({ where: { id: order.id } });
+        // 清理已创建的订单，出错时记录但不阻塞
+        try {
+            await prisma.order.delete({ where: { id: order.id } });
+        } catch (deleteErr) {
+            console.error(`Failed to cleanup order ${order.id}:`, deleteErr);
+            // 继续处理原始错误，不让清理失败隐藏业务错误
+        }
 
         // 已经是业务错误，直接向上抛
         if (error instanceof OrderError) throw error;
@@ -661,23 +677,24 @@ export async function cancelOrderCore(options: {
         }
     }
 
-    // 2. DB 更新 (WHERE status='PENDING' 保证幂等)
-    const result = await prisma.order.updateMany({
-        where: { id: orderId, status: ORDER_STATUS.PENDING },
-        data: { status: finalStatus, updatedAt: new Date() },
-    });
-
-    // 3. 审计日志
-    if (result.count > 0) {
-        await prisma.auditLog.create({
-            data: {
-                orderId,
-                action: finalStatus === ORDER_STATUS.EXPIRED ? 'ORDER_EXPIRED' : 'ORDER_CANCELLED',
-                detail: auditDetail,
-                operator,
-            },
+    // 2. DB 更新 (WHERE status='PENDING' 保证幂等) + 审计日志在同一 transaction
+    await prisma.$transaction(async (tx) => {
+        const result = await tx.order.updateMany({
+            where: { id: orderId, status: ORDER_STATUS.PENDING },
+            data: { status: finalStatus, updatedAt: new Date() },
         });
-    }
+
+        if (result.count > 0) {
+            await tx.auditLog.create({
+                data: {
+                    orderId,
+                    action: finalStatus === ORDER_STATUS.EXPIRED ? 'ORDER_EXPIRED' : 'ORDER_CANCELLED',
+                    detail: auditDetail,
+                    operator,
+                },
+            });
+        }
+    });
 
     return 'cancelled';
 }
