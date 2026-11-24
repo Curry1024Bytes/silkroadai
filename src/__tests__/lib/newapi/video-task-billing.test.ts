@@ -9,7 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseVideoTaskBilling } from '@/lib/newapi/log-display';
 
-const EXPR = 'dSgicmVzb2x1dGlvbiIpID09ICI0ODBwIiAmJiB1KCJ2aWRlb19pbnB1dCIpID09ICJub25lIiA/IHRpZXIoIjQ4MHDCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDMzLjEyIC8gMTAwMDAwMCkgOiB1KCJyZXNvbHV0aW9uIikgPT0gIjQ4MHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjQ4MHDCt3ZpZGVvIiwgdSgidG9rZW5zIikgKiAyMC4xNiAvIDEwMDAwMDApIDogdSgicmVzb2x1dGlvbiIpID09ICI3MjBwIiAmJiB1KCJ2aWRlb19pbnB1dCIpID09ICJub25lIiA/IHRpZXIoIjcyMHDCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDMzLjEyIC8gMTAwMDAwMCkgOiB1KCJyZXNvbHV0aW9uIikgPT0gIjcyMHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjcyMHDCt3ZpZGVvIiwgdSgidG9rZW5zIikgKiAyMC4xNiAvIDEwMDAwMDApIDogdSgicmVzb2x1dGlvbiIpID09ICIxMDgwcCIgJiYgdSgidmlkZW9faW5wdXQiKSA9PSAibm9uZSIgPyB0aWVyKCIxMDgwcMK3bm9uZSIsIHUoInRva2VucyIpICogMzYuNzIgLyAxMDAwMDAwKSA6IHUoInJlc29sdXRpb24iKSA9PSAiMTA4MHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjEwODBwwrd2aWRlbyIsIHUoInRva2VucyIpICogMjIuMzIgLyAxMDAwMDAwKSA6IHUoInJlc29sdXRpb24iKSA9PSAiNGsiICYmIHUoInZpZGVvX2lucHV0IikgPT0gIm5vbmUiID8gdGllcigiNGvCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDE4LjcyIC8gMTAwMDAwMCkgOiB0aWVyKCI0a8K3dmlkZW8iLCB1KCJ0b2tlbnMiKSAqIDExLjUyIC8gMTAwMDAwMCk=';
+const EXPR =
+    'dSgicmVzb2x1dGlvbiIpID09ICI0ODBwIiAmJiB1KCJ2aWRlb19pbnB1dCIpID09ICJub25lIiA/IHRpZXIoIjQ4MHDCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDMzLjEyIC8gMTAwMDAwMCkgOiB1KCJyZXNvbHV0aW9uIikgPT0gIjQ4MHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjQ4MHDCt3ZpZGVvIiwgdSgidG9rZW5zIikgKiAyMC4xNiAvIDEwMDAwMDApIDogdSgicmVzb2x1dGlvbiIpID09ICI3MjBwIiAmJiB1KCJ2aWRlb19pbnB1dCIpID09ICJub25lIiA/IHRpZXIoIjcyMHDCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDMzLjEyIC8gMTAwMDAwMCkgOiB1KCJyZXNvbHV0aW9uIikgPT0gIjcyMHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjcyMHDCt3ZpZGVvIiwgdSgidG9rZW5zIikgKiAyMC4xNiAvIDEwMDAwMDApIDogdSgicmVzb2x1dGlvbiIpID09ICIxMDgwcCIgJiYgdSgidmlkZW9faW5wdXQiKSA9PSAibm9uZSIgPyB0aWVyKCIxMDgwcMK3bm9uZSIsIHUoInRva2VucyIpICogMzYuNzIgLyAxMDAwMDAwKSA6IHUoInJlc29sdXRpb24iKSA9PSAiMTA4MHAiICYmIHUoInZpZGVvX2lucHV0IikgPT0gInZpZGVvIiA/IHRpZXIoIjEwODBwwrd2aWRlbyIsIHUoInRva2VucyIpICogMjIuMzIgLyAxMDAwMDAwKSA6IHUoInJlc29sdXRpb24iKSA9PSAiNGsiICYmIHUoInZpZGVvX2lucHV0IikgPT0gIm5vbmUiID8gdGllcigiNGvCt25vbmUiLCB1KCJ0b2tlbnMiKSAqIDE4LjcyIC8gMTAwMDAwMCkgOiB0aWVyKCI0a8K3dmlkZW8iLCB1KCJ0b2tlbnMiKSAqIDExLjUyIC8gMTAwMDAwMCk=';
 const UNITS = { quotaPerUsd: 500000, quotaPerCny: 500000 };
 const base = {
     billing_mode: 'tiered_expr',
@@ -106,4 +107,10 @@ describe('parseVideoTaskBilling', () => {
         const other = { ...JSON.parse(estimate.other), task_id: 'task_<script>' };
         expect(parseVideoTaskBilling({ ...estimate, other: JSON.stringify(other) }, UNITS)!.taskId).toBeNull();
     });
+    it.each(['null', '[]', 'true', '42', '"text"'])(
+        'ignores non-object log metadata without breaking the log page: %s',
+        (other) => {
+            expect(parseVideoTaskBilling({ type: 2, quota: 1, other }, UNITS)).toBeNull();
+        },
+    );
 });

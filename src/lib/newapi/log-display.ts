@@ -295,6 +295,7 @@ export function parseVideoTaskBilling(
     } catch {
         return null;
     }
+    if (!other || typeof other !== 'object' || Array.isArray(other)) return null;
     if (other.is_task !== true || other.billing_mode !== 'tiered_expr') return null;
     const facts = other.usage_facts as Record<string, unknown> | undefined;
     const tokens = finiteNumber(facts?.tokens);

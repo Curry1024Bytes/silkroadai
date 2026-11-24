@@ -11,8 +11,7 @@ type Amounts = ReturnType<typeof customerPrice>;
 function withExactAmounts(actual: Amounts, exact: Map<string, number>): Amounts {
     const pick = (key: string): number => {
         const value = exact.get(key);
-        if (value === undefined)
-            throw new CustomerPricingError('customer_price_missing', '该模型实际价格无法核对。');
+        if (value === undefined) throw new CustomerPricingError('customer_price_missing', '该模型实际价格无法核对。');
         return value;
     };
     const details = actual.billing_details;

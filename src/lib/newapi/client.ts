@@ -210,17 +210,15 @@ async function call<T>(
 
     const guardTimeoutMs = await customerKeyMutationTimeout();
     const baseTimeoutMs = options.timeoutMs ?? callTimeoutMs();
-    const guardMs = guardTimeoutMs ?? Infinity;
-
-    // 验证两个超时值都是有效数字
+    // No mutation context means no additional deadline; validate only real guards.
     if (!Number.isFinite(baseTimeoutMs) || baseTimeoutMs < 1) {
         throw new Error(`Invalid baseTimeoutMs: ${baseTimeoutMs}`);
     }
-    if (!Number.isFinite(guardMs) || (guardMs !== Infinity && guardMs < 1)) {
-        throw new Error(`Invalid guardMs: ${guardMs}`);
+    if (guardTimeoutMs !== undefined && (!Number.isFinite(guardTimeoutMs) || guardTimeoutMs < 1)) {
+        throw new Error(`Invalid guardMs: ${guardTimeoutMs}`);
     }
 
-    const timeoutMs = Math.min(baseTimeoutMs, guardMs);
+    const timeoutMs = Math.min(baseTimeoutMs, guardTimeoutMs ?? Infinity);
     const init: RequestInit = {
         method,
         headers,
@@ -258,22 +256,19 @@ async function call<T>(
     let text: string;
     try {
         text = await res.text();
-    } catch (err) {
-        // 区分错误类型：网络级 vs 读取级
-        const isNetworkError = err instanceof TypeError || err instanceof Error && err.name === 'TypeError';
-        const ambiguousSideEffect =
-            isPatCreationRequest(method, path) && (isNetworkError || (res.status >= 500 && res.status !== 502));
-        if (ambiguousSideEffect)
-            throw new NewApiError(502, `${method} ${path}`, null, 'new-api response read failed', undefined, true);
+    } catch {
+        // A lost response body cannot prove that credential creation did not commit.
+        if (isPatCreationRequest(method, path))
+            throw new NewApiError(502, `${method} ${path}`, null, 'new-api response outcome unknown', undefined, true);
         throw new NewApiError(502, `${method} ${path}`, null, 'Unable to read new-api response');
     }
     let data: NewApiEnvelope<T> | null = null;
     try {
         data = text ? (JSON.parse(text) as NewApiEnvelope<T>) : null;
-    } catch (parseErr) {
-        // JSON 解析失败不应该生吃——记录警告并标记为无效数据
-        console.warn(`[new-api] JSON parse failed for ${method} ${path}:`, parseErr, 'body:', text.slice(0, 200));
-        data = null;  // 显式标记解析失败
+    } catch {
+        // Authentication responses can contain credentials, including in parse errors.
+        console.warn(`[new-api] Invalid JSON response for ${method} ${path}`);
+        data = null;
     }
 
     if (!res.ok || (data && !data.success)) {

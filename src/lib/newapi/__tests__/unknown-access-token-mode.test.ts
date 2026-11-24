@@ -24,6 +24,7 @@ interface Options {
     legacyFailure?: Error;
     verifyStatus?: number;
     createFailure?: Error;
+    createReadFailure?: Error;
     createStatus?: number;
     createData?: unknown;
 }
@@ -75,6 +76,11 @@ function setup(options: Options = {}) {
             }
             if (method === 'POST' && url.pathname === '/api/user/access_tokens') {
                 if (options.createFailure) throw options.createFailure;
+                if (options.createReadFailure) {
+                    const response = json(null, options.createStatus ?? 200);
+                    vi.spyOn(response, 'text').mockRejectedValue(options.createReadFailure);
+                    return response;
+                }
                 if (options.createStatus) return json(null, options.createStatus);
                 return json(options.createData ?? { token: 'nap_new-persistent-credential' });
             }
@@ -212,6 +218,20 @@ describe('unknown-version read-only PAT capability detection', () => {
             ambiguousSideEffect: true,
         });
         expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
+    });
+    it.each([
+        { createStatus: 200, createReadFailure: new Error('body lost after commit') },
+        { createStatus: 200, createReadFailure: new DOMException('body timed out', 'TimeoutError') },
+        { createStatus: 502, createReadFailure: new Error('body lost') },
+        { createStatus: 503, createReadFailure: new TypeError('connection reset') },
+    ])('never replays PAT creation after losing its response body: %j', async (options) => {
+        setup({ modern: true, ...options });
+        await expect(issueCustomerAccessToken(args)).rejects.toMatchObject({
+            status: 502,
+            ambiguousSideEffect: true,
+        });
+        expect(calls('POST', '/api/user/access_tokens')).toHaveLength(1);
+        expect(calls('GET', '/api/user/token')).toHaveLength(0);
     });
     it('does not repeat legacy rotation after a timeout once the catalog is definitively absent', async () => {
         setup({ legacyFailure: new DOMException('rotation outcome unknown', 'TimeoutError') });

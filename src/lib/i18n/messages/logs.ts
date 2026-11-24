@@ -158,11 +158,13 @@ export const logsMessages = defineMessages(
             perMillion: (price: string) => `${price} / 1M tokens`,
             formula: 'Calculation',
             settlement: 'Settlement',
-            estimateNote: 'Settled against the actual tokens when the task finishes; the difference is charged or refunded in a separate settlement record.',
+            estimateNote:
+                'Settled against the actual tokens when the task finishes; the difference is charged or refunded in a separate settlement record.',
             settleNote: (pre: string, actual: string, diff: string, refund: boolean) =>
                 `Pre-charged ${pre}, actual ${actual}, ${refund ? 'refunded' : 'charged'} ${diff}`,
             elapsed: 'Generation time',
-            sameTask: 'The pre-charge and settlement records of one task share its Task ID; together they are the task’s actual cost.',
+            sameTask:
+                'The pre-charge and settlement records of one task share its Task ID; together they are the task’s actual cost.',
         },
         viewer: {
             filters: 'Filters',

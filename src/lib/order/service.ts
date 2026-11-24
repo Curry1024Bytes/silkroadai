@@ -230,7 +230,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     if (rateLimitConfigs['CANCEL_RATE_LIMIT_ENABLED'] === 'true') {
         // 验证窗口大小参数
         const rawWindowSize = rateLimitConfigs['CANCEL_RATE_LIMIT_WINDOW']?.trim() || '1';
-        const windowSize = parseInt(rawWindowSize, 10);  // 明确基数 10
+        const windowSize = parseInt(rawWindowSize, 10); // 明确基数 10
         if (!Number.isFinite(windowSize) || windowSize < 1 || windowSize > 365) {
             throw new Error(
                 `Invalid CANCEL_RATE_LIMIT_WINDOW: "${rawWindowSize}" must be integer 1-365, got ${windowSize}`,

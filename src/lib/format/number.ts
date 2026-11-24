@@ -73,10 +73,7 @@ export function formatCny(value: number, locale: Locale = 'zh'): CompactNumber {
  * `perCall`: a single request's charge. Quota settles at ¥0.000002, so six decimals show the
  * exact amount billed (e.g. 108900 tokens × ¥32.2/M = ¥3.50658) and customers can verify it.
  */
-export function formatCnyAmount(
-    value: number,
-    options: { preciseSmall?: boolean; perCall?: boolean } = {},
-): string {
+export function formatCnyAmount(value: number, options: { preciseSmall?: boolean; perCall?: boolean } = {}): string {
     let n = safe(value);
     if (Object.is(n, -0)) n = 0;
     const abs = Math.abs(n);
