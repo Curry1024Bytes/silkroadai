@@ -33,6 +33,7 @@ import { formatSignedCny } from '@/lib/format/number';
 import { pickMessages, intlLocale, type Locale } from '@/lib/i18n';
 import type { LogRow } from '@/app/api/portal/logs/route';
 import { DateRangePicker, getLogDatePresets } from '@/components/date-range-picker';
+import { VideoBillingDetail, videoSpec, videoPhaseLabel } from './video-billing-detail';
 
 interface Filters {
     start: string;
@@ -516,12 +517,14 @@ function LogRowItem({
                 <td className={CELL}>
                     <RequestIdCell value={row.requestId} />
                 </td>
-                <td className={`${CELL} text-right tabular-nums text-portal-muted`}>
-                    {formatDuration(row.video?.elapsedSec ? row.video.elapsedSec * 1000 : row.useTimeMs)}
+                <td className={`${CELL} whitespace-nowrap text-right tabular-nums text-portal-muted`}>
+                    {formatDuration(row.video?.elapsedSec != null ? row.video.elapsedSec * 1000 : row.useTimeMs)}
                 </td>
                 <td className={`${CELL} text-right tabular-nums text-portal-muted`}>
                     {row.video
-                        ? formatTokens(0, row.video.tokens)
+                        ? row.video.billingUnit === 'seconds'
+                            ? '—'
+                            : formatTokens(0, row.video.tokens)
                         : formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                     {(() => {
                         // 缓存读写副行(参照 new-api):只有真用了 prompt cache 才渲染
@@ -548,7 +551,7 @@ function LogRowItem({
                             onClick={onToggle}
                             title={row.content || refundLabel(result, locale).chip}
                             aria-expanded={isOpen}
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-warning-border bg-status-warning-bg px-2 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-warning-text/20"
+                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-status-warning-border bg-status-warning-bg px-2 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-warning-text/20"
                         >
                             <Undo2 size={13} strokeWidth={1.9} aria-hidden="true" />
                             {refundLabel(result, locale).chip}
@@ -564,7 +567,7 @@ function LogRowItem({
                             onClick={onToggle}
                             title={row.content || copy.table.callFailed}
                             aria-expanded={isOpen}
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-error-border bg-status-error-bg px-2 text-xs font-medium text-status-error-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error-text/20"
+                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-status-error-border bg-status-error-bg px-2 text-xs font-medium text-status-error-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error-text/20"
                         >
                             <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
                             {copy.table.failed}
@@ -580,7 +583,8 @@ function LogRowItem({
                             onClick={onToggle}
                             title={copy.video.heading}
                             aria-expanded={isOpen}
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-success-text/20"
+                            aria-controls={`video-detail-${row.id}`}
+                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-success-text/20"
                         >
                             <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
                             {copy.table.success}
@@ -600,8 +604,8 @@ function LogRowItem({
             </tr>
             {row.video && isOpen && (
                 <tr className="bg-portal-soft">
-                    <td colSpan={8} className="border-b border-portal-line px-4 py-3">
-                        <VideoBillingDetail video={row.video} costCny={row.costCny} />
+                    <td colSpan={8} id={`video-detail-${row.id}`} className="border-b border-portal-line px-4 py-4">
+                        <VideoBillingDetail row={row} />
                     </td>
                 </tr>
             )}
@@ -620,72 +624,5 @@ function LogRowItem({
                 </tr>
             )}
         </>
-    );
-}
-
-type VideoCopy = (typeof logsMessages)['zh']['video'];
-type RowVideo = NonNullable<LogRow['video']>;
-
-function videoSpec(video: RowVideo, copy: VideoCopy): string {
-    const parts: string[] = [];
-    if (video.resolution) parts.push(video.resolution);
-    if (video.videoInput) parts.push(video.videoInput === 'video' ? copy.withVideo : copy.noVideo);
-    return parts.join(' · ');
-}
-
-function videoPhaseLabel(phase: RowVideo['phase'], copy: VideoCopy): string {
-    return phase === 'estimate' ? copy.estimate : phase === 'settle_extra' ? copy.settleExtra : copy.settleRefund;
-}
-
-/** 单价按 6 位小数去尾零显示(¥32.2,不是 ¥32.200000)。 */
-function formatUnitCny(value: number): string {
-    return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 6 })}`;
-}
-
-function VideoBillingDetail({ video, costCny }: { video: RowVideo; costCny: number }) {
-    const copy = useMessages(logsMessages).video;
-    const tokens = video.tokens.toLocaleString('en-US');
-    const settled = video.phase !== 'estimate' && video.preConsumedCny !== null && video.actualCny !== null;
-    const total = settled ? video.actualCny! : costCny;
-    const items: Array<[string, string]> = [];
-    if (video.taskId) items.push([copy.taskId, video.taskId]);
-    const spec = videoSpec(video, copy);
-    if (spec) items.push([copy.spec, spec]);
-    items.push([copy.tokens, settled ? copy.actualTokens(tokens) : copy.estimatedTokens(tokens)]);
-    if (video.unitCnyPer1M !== null) {
-        items.push([copy.unitPrice, copy.perMillion(formatUnitCny(video.unitCnyPer1M))]);
-        items.push([
-            copy.formula,
-            `${tokens} × ${formatUnitCny(video.unitCnyPer1M)} / 1,000,000 = ${formatSignedCny(total, { perCall: true })}`,
-        ]);
-    }
-    if (settled) {
-        const diff = Math.abs(video.actualCny! - video.preConsumedCny!);
-        items.push([
-            copy.settlement,
-            copy.settleNote(
-                formatSignedCny(video.preConsumedCny!, { perCall: true }),
-                formatSignedCny(video.actualCny!, { perCall: true }),
-                formatSignedCny(diff, { perCall: true }),
-                video.phase === 'settle_refund',
-            ),
-        ]);
-    }
-    if (video.elapsedSec) items.push([copy.elapsed, formatDuration(video.elapsedSec * 1000)]);
-    return (
-        <div>
-            <p className="m-0 mb-2 text-xs font-medium text-portal-ink">{copy.heading}</p>
-            <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 rounded-md border border-portal-line bg-portal-panel px-3 py-2 text-xs">
-                {items.map(([label, value]) => (
-                    <div key={label} className="contents">
-                        <dt className="text-portal-muted">{label}</dt>
-                        <dd className="m-0 break-all font-mono tabular-nums text-portal-ink">{value}</dd>
-                    </div>
-                ))}
-            </dl>
-            <p className="m-0 mt-2 text-[11px] leading-relaxed text-minor-ink">
-                {video.phase === 'estimate' ? copy.estimateNote : copy.sameTask}
-            </p>
-        </div>
     );
 }

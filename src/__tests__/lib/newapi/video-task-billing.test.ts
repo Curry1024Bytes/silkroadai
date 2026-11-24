@@ -113,4 +113,99 @@ describe('parseVideoTaskBilling', () => {
             expect(parseVideoTaskBilling({ type: 2, quota: 1, other }, UNITS)).toBeNull();
         },
     );
+
+    const secondLog = (overrides: Record<string, unknown> = {}) => ({
+        type: 2,
+        quota: 600000,
+        model_name: 'sd-2.5-480P-novideo',
+        other: JSON.stringify({
+            billing_mode: 'tiered_expr',
+            is_task: true,
+            task_id: 'task_sdExample123',
+            matched_tier: 'base',
+            expr_b64: btoa('tier("base", u("seconds") * 0.3)'),
+            group_ratio: 1,
+            request_path: '/v1/videos',
+            usage_facts: { seconds: 4 },
+            ...overrides,
+        }),
+    });
+
+    it('SD特惠真实形态:秒数计费,不编造 tokens,保留历史单价', () => {
+        expect(parseVideoTaskBilling(secondLog(), UNITS)).toMatchObject({
+            phase: 'charge',
+            billingUnit: 'seconds',
+            seconds: 4,
+            tokens: 0,
+            unitCnyPerSecond: 0.3,
+            unitCnyPer1M: null,
+            resolution: '480p',
+            videoInput: 'none',
+            requestPath: '/v1/videos',
+            preConsumedCny: null,
+            actualCny: null,
+        });
+    });
+
+    it('普通特惠 SKU 只推断分辨率,不能据此判定带参考视频', () => {
+        const log = { ...secondLog(), model_name: 'sd-2.5-1080P' };
+        expect(parseVideoTaskBilling(log, UNITS)).toMatchObject({ resolution: '1080p', videoInput: null });
+        expect(parseVideoTaskBilling({ ...log, model_name: 'unfamiliar-video-model' }, UNITS)).toMatchObject({
+            resolution: null,
+            videoInput: null,
+        });
+    });
+
+    it('按秒单价包含本条客户倍率,换算成 CNY 后必须与扣费对上', () => {
+        const log = { ...secondLog({ group_ratio: 0.8 }), quota: 480000 };
+        expect(parseVideoTaskBilling(log, UNITS)!.unitCnyPerSecond).toBe(0.24);
+        expect(parseVideoTaskBilling(log, { ...UNITS, quotaPerCny: 100000 })!.unitCnyPerSecond).toBe(1.2);
+        expect(parseVideoTaskBilling({ ...log, quota: 123 }, UNITS)!.unitCnyPerSecond).toBeNull();
+    });
+
+    it('按秒结算退款与补扣:公式使用实际总额,不能用差额作总价', () => {
+        const refund = { ...secondLog({ pre_consumed_quota: 800000, actual_quota: 600000 }), type: 6, quota: 200000 };
+        expect(parseVideoTaskBilling(refund, UNITS)).toMatchObject({
+            phase: 'settle_refund',
+            preConsumedCny: 1.6,
+            actualCny: 1.2,
+            unitCnyPerSecond: 0.3,
+        });
+        const extra = { ...secondLog({ pre_consumed_quota: 500000, actual_quota: 600000 }), quota: 100000 };
+        expect(parseVideoTaskBilling(extra, UNITS)).toMatchObject({ phase: 'settle_extra', unitCnyPerSecond: 0.3 });
+        expect(parseVideoTaskBilling({ ...extra, quota: 5 }, UNITS)!.unitCnyPerSecond).toBeNull();
+    });
+
+    it('统一字段只保留白名单,未知供应商同口径也可展示', () => {
+        const log = secondLog({
+            usage_facts: { seconds: '4', resolution: '720p', video_input: 'video', ratio: '16:9', key: 'secret' },
+            admin_info: { key: 'secret' },
+            root_info: { upstream_task_id: 'private' },
+        });
+        const video = parseVideoTaskBilling({ ...log, model_name: 'future-video-model' }, UNITS)!;
+        expect(video).toMatchObject({ resolution: '720p', videoInput: 'video', ratio: '16:9', seconds: 4 });
+        expect(JSON.stringify(video)).not.toMatch(
+            /secret|private|upstream|admin_info|usage_facts|expr_b64|group_ratio/,
+        );
+    });
+
+    it('缺字段或损坏数据降级,不让文本、图片、失败退款误入视频明细', () => {
+        for (const usage_facts of [null, [], 'broken', { seconds: -1 }, { seconds: 0 }]) {
+            expect(parseVideoTaskBilling(secondLog({ usage_facts }), UNITS)).toBeNull();
+        }
+        expect(parseVideoTaskBilling({ ...secondLog(), type: 5 }, UNITS)).toBeNull();
+        expect(parseVideoTaskBilling({ ...secondLog(), type: 6 }, UNITS)).toBeNull();
+        expect(parseVideoTaskBilling(secondLog({ is_task: false }), UNITS)).toBeNull();
+        expect(parseVideoTaskBilling(secondLog({ request_path: '/v1/audio/speech' }), UNITS)).toBeNull();
+        expect(parseVideoTaskBilling(secondLog({ request_path: '/v1/images/generations' }), UNITS)).toBeNull();
+        expect(parseVideoTaskBilling(secondLog(), { ...UNITS, quotaPerCny: Infinity })).toBeNull();
+        const unsafe = parseVideoTaskBilling(
+            secondLog({
+                request_path: undefined,
+                usage_facts: { seconds: 4, resolution: '<script>', video_input: 'unknown', ratio: 'secret' },
+            }),
+            UNITS,
+        )!;
+        expect(unsafe).toMatchObject({ requestPath: null, resolution: '480p', ratio: null });
+    });
 });

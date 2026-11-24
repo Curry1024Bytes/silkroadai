@@ -21,6 +21,7 @@ vi.mock('@/lib/i18n/server', () => ({
 }));
 
 const mockQueryLogs = vi.fn();
+vi.mock('@/lib/newapi/quota-units', () => ({ QUOTA_PER_USD: 500000, USD_TO_CNY_RATE: 5 }));
 vi.mock('@/lib/newapi/client', () => ({
     queryLogs: (...a: unknown[]) => mockQueryLogs(...a),
     quotaToCny: (q: number) => q / 100000, // 简化;测试不深究金额
@@ -75,6 +76,76 @@ beforeEach(() => {
 });
 
 describe('GET /api/portal/logs', () => {
+    it('官转和特惠统一视频明细,保留账单金额和隔离边界', async () => {
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        const secondOther = JSON.stringify({
+            billing_mode: 'tiered_expr',
+            is_task: true,
+            matched_tier: 'base',
+            group_ratio: 1,
+            expr_b64: btoa('tier("base", u("seconds") * 0.3)'),
+            usage_facts: { seconds: 4 },
+            task_id: 'task_sd123',
+            request_path: '/v1/videos',
+            root_info: { upstream_task_id: 'supplier-secret' },
+            admin_info: { key: 'supplier-key' },
+        });
+        const tokenBase = {
+            billing_mode: 'tiered_expr',
+            is_task: true,
+            matched_tier: '480p·none',
+            group_ratio: 1,
+            expr_b64: Buffer.from('tier("480p·none", u("tokens") * 50 / 1000000)').toString('base64'),
+            task_id: 'task_tokens123',
+            usage_facts: { tokens: 100000, resolution: '480p', video_input: 'none' },
+        };
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ id: 1, type: 2, model_name: 'sd-2.5-480P-novideo', quota: 600000, other: secondOther }),
+                makeLog({
+                    id: 2,
+                    type: 2,
+                    model_name: 'doubao-seedance-2-5-260628',
+                    created_at: 100,
+                    quota: 2400000,
+                    other: JSON.stringify(tokenBase),
+                }),
+                makeLog({
+                    id: 3,
+                    type: 2,
+                    model_name: 'doubao-seedance-2-5-260628',
+                    created_at: 130,
+                    quota: 100000,
+                    other: JSON.stringify({ ...tokenBase, pre_consumed_quota: 2400000, actual_quota: 2500000 }),
+                }),
+                makeLog({ id: 4, type: 2, user_id: 999, quota: 600000, other: secondOther }),
+            ],
+            total: 4,
+        });
+        const data = await (await GET(req())).json();
+        expect(data.rows).toHaveLength(3);
+        const byId = Object.fromEntries(data.rows.map((r: { id: number }) => [r.id, r]));
+        expect(byId[1]).toMatchObject({
+            costCny: 6,
+            video: {
+                billingUnit: 'seconds',
+                phase: 'charge',
+                seconds: 4,
+                unitCnyPerSecond: 1.5,
+                resolution: '480p',
+                videoInput: 'none',
+                elapsedSec: null,
+            },
+        });
+        expect(byId[3]).toMatchObject({
+            costCny: 1,
+            video: { billingUnit: 'tokens', phase: 'settle_extra', actualCny: 25, preConsumedCny: 24, elapsedSec: 30 },
+        });
+        expect(JSON.stringify(data)).not.toMatch(
+            /supplier-secret|supplier-key|expr_b64|group_ratio|root_info|admin_info/,
+        );
+    });
+
     it('未登录 → 401', async () => {
         mockGetCurrentUser.mockResolvedValue(null);
         expect((await GET(req())).status).toBe(401);

@@ -232,12 +232,13 @@ export function isPerImageBilled(other: string | null | undefined, model: string
 }
 
 /**
- * 视频任务(new-api Task Plugin,按 token 计费)的客户可见计费明细。
+ * 视频任务(new-api Task Plugin,按 tokens 或按秒计费)的客户可见计费明细。
  *
  * 一个视频任务在 new-api 记两行,同一个 `task_id`、各自一个 request_id:
  *   - 提交时按插件预估的 tokens 预扣(type=2,无 `pre_consumed_quota`);
  *   - 完成后按上游返回的实际 tokens 结算差额:多了补扣(type=2),少了退还(type=6)。
  *     这一行的 `other` 带 `pre_consumed_quota` / `actual_quota`,整笔账都在这里。
+ * 按秒任务通常仅在提交时记一条扣费，不能把它说成 tokens 预估或已生成完成。
  *
  * 单价 = 命中档位在计费表达式里的系数 × 分组倍率,还原成 ¥/1M tokens 后只保留 6 位小数
  * (分组倍率是 12 位小数的近似值,原始乘积带 1e-11 的尾巴)。还原出的单价必须能复算出 new-api
@@ -245,17 +246,22 @@ export function isPerImageBilled(other: string | null | undefined, model: string
  *
  * 只出公开信息:不含渠道、上游模型名、上游任务号、表达式原文和分组倍率本身。
  */
-export type VideoTaskPhase = 'estimate' | 'settle_extra' | 'settle_refund';
+export type VideoTaskPhase = 'estimate' | 'charge' | 'settle_extra' | 'settle_refund';
 
 export interface VideoTaskBilling {
     taskId: string | null;
     phase: VideoTaskPhase;
+    billingUnit: 'tokens' | 'seconds';
     /** 本行计费所用 tokens:预扣行是预估值,结算行是实际值。 */
     tokens: number;
+    seconds: number | null;
     resolution: string | null;
     videoInput: 'none' | 'video' | null;
+    ratio: string | null;
+    requestPath: string | null;
     /** ¥ / 1M tokens;复算对不上时为 null。 */
     unitCnyPer1M: number | null;
+    unitCnyPerSecond: number | null;
     /** 结算行才有:预扣与实际总额(¥)。 */
     preConsumedCny: number | null;
     actualCny: number | null;
@@ -283,12 +289,35 @@ function tierTokenCoefficient(expr: string, tier: string): number | null {
     return match ? Number(match[1]) : null;
 }
 
+function tierSecondCoefficient(expr: string, tier: string): number | null {
+    const match = new RegExp(
+        `tier\\("${escapeRegExp(tier)}",\\s*u\\("seconds"\\)\\s*\\*\\s*([0-9]+(?:\\.[0-9]+)?)\\s*\\)`,
+    ).exec(expr);
+    return match ? Number(match[1]) : null;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+}
+
 export function parseVideoTaskBilling(
-    log: { type: number; quota: number; other?: string | null },
+    log: { type: number; quota: number; model_name?: string; other?: string | null },
     units: { quotaPerUsd: number; quotaPerCny: number },
 ): VideoTaskBilling | null {
     const { quotaPerUsd, quotaPerCny } = units;
-    if (!log.other || !(quotaPerCny > 0) || !(quotaPerUsd > 0)) return null;
+    if (
+        !log.other ||
+        !Number.isFinite(quotaPerCny) ||
+        !Number.isFinite(quotaPerUsd) ||
+        !(quotaPerCny > 0) ||
+        !(quotaPerUsd > 0) ||
+        !Number.isFinite(log.quota) ||
+        log.quota < 0 ||
+        (log.type !== 2 && log.type !== 6)
+    )
+        return null;
     let other: Record<string, unknown>;
     try {
         other = JSON.parse(log.other) as Record<string, unknown>;
@@ -297,38 +326,89 @@ export function parseVideoTaskBilling(
     }
     if (!other || typeof other !== 'object' || Array.isArray(other)) return null;
     if (other.is_task !== true || other.billing_mode !== 'tiered_expr') return null;
-    const facts = other.usage_facts as Record<string, unknown> | undefined;
+    const facts = record(other.usage_facts);
     const tokens = finiteNumber(facts?.tokens);
-    if (tokens === null || tokens <= 0) return null;
+    const seconds = finiteNumber(facts?.seconds);
+    if (!(tokens !== null && tokens > 0) && !(seconds !== null && seconds > 0)) return null;
 
     const preConsumedQuota = finiteNumber(other.pre_consumed_quota);
     const actualQuota = finiteNumber(other.actual_quota);
-    const settled = preConsumedQuota !== null && actualQuota !== null;
+    const settled = preConsumedQuota !== null && preConsumedQuota >= 0 && actualQuota !== null && actualQuota >= 0;
     if (log.type === 6 && !settled) return null;
-    const phase: VideoTaskPhase = !settled ? 'estimate' : log.type === 6 ? 'settle_refund' : 'settle_extra';
     // 本行对应的总额 quota:预扣行就是本行,结算行是实际总额。
     const totalQuota = settled ? actualQuota : log.quota;
 
     let unitCnyPer1M: number | null = null;
+    let unitCnyPerSecond: number | null = null;
     const ratio = finiteNumber(other.group_ratio);
     const tier = typeof other.matched_tier === 'string' ? other.matched_tier : null;
     const expr = typeof other.expr_b64 === 'string' ? decodeBase64Utf8(other.expr_b64) : null;
-    const coefficient = expr && tier ? tierTokenCoefficient(expr, tier) : null;
-    if (coefficient !== null && ratio !== null && ratio > 0) {
+    const tokenCoefficient = expr && tier ? tierTokenCoefficient(expr, tier) : null;
+    const secondCoefficient = expr && tier ? tierSecondCoefficient(expr, tier) : null;
+    const billingUnit =
+        seconds !== null && seconds > 0 && (secondCoefficient !== null || !(tokens && tokens > 0))
+            ? 'seconds'
+            : 'tokens';
+    const phase: VideoTaskPhase = !settled
+        ? billingUnit === 'seconds'
+            ? 'charge'
+            : 'estimate'
+        : log.type === 6
+          ? 'settle_refund'
+          : 'settle_extra';
+    const coefficient = billingUnit === 'seconds' ? secondCoefficient : tokenCoefficient;
+    const quantity = billingUnit === 'seconds' ? seconds! : tokens!;
+    const divisor = billingUnit === 'seconds' ? 1 : 1_000_000;
+    const settlementMatches =
+        !settled ||
+        Math.abs((log.type === 6 ? preConsumedQuota - actualQuota : actualQuota - preConsumedQuota) - log.quota) <= 1;
+    if (coefficient !== null && ratio !== null && ratio >= 0 && settlementMatches) {
         // 表达式结果按 new-api 计费单位计:quota = 结果 × quotaPerUsd × 分组倍率。
         const unit = Number(((coefficient * ratio * quotaPerUsd) / quotaPerCny).toFixed(6));
-        if (Math.abs((tokens * unit * quotaPerCny) / 1_000_000 - totalQuota) <= 1) unitCnyPer1M = unit;
+        if (Number.isFinite(unit) && Math.abs((quantity * unit * quotaPerCny) / divisor - totalQuota) <= 1) {
+            if (billingUnit === 'seconds') unitCnyPerSecond = unit;
+            else unitCnyPer1M = unit;
+        }
     }
 
-    const resolution = typeof facts?.resolution === 'string' ? facts.resolution : null;
-    const videoInput = facts?.video_input === 'video' ? 'video' : facts?.video_input === 'none' ? 'none' : null;
+    // Historic SD SKUs contain the output resolution. A non-novideo SKU permits reference
+    // video but does not prove one was supplied, so never infer a positive reference from it.
+    const sku = /^(?:sd-2-(?:mini|fast|vip)|sd-2\.5(?:-flash)?)-(480|720|1080)p?(?:-novideo)?$/i.exec(
+        log.model_name ?? '',
+    );
+    const resolution =
+        typeof facts?.resolution === 'string' && /^(?:[1-9]\d{2,3}p|[1-9]\d?k)$/i.test(facts.resolution)
+            ? facts.resolution.toLowerCase()
+            : sku
+              ? `${sku[1]}p`
+              : null;
+    const videoInput =
+        facts?.video_input === 'video'
+            ? 'video'
+            : facts?.video_input === 'none' || (sku && /-novideo$/i.test(log.model_name!))
+              ? 'none'
+              : null;
+    const aspect = facts?.ratio ?? facts?.aspect_ratio;
+    const requestPath =
+        typeof other.request_path === 'string' &&
+        /^\/(?:v1\/videos|api\/v3\/contents\/generations\/tasks)$/.test(other.request_path)
+            ? other.request_path
+            : null;
+    // Seconds are also used by audio tasks. Only accept video request paths, or
+    // known historic SD SKUs when their old log has no request path at all.
+    if (billingUnit === 'seconds' && !requestPath && (!sku || typeof other.request_path === 'string')) return null;
     return {
         taskId: typeof other.task_id === 'string' && /^task_[A-Za-z0-9]+$/.test(other.task_id) ? other.task_id : null,
         phase,
-        tokens,
+        billingUnit,
+        tokens: tokens !== null && tokens > 0 ? tokens : 0,
+        seconds: seconds !== null && seconds > 0 ? seconds : null,
         resolution,
         videoInput,
+        ratio: typeof aspect === 'string' && /^[1-9]\d{0,2}:[1-9]\d{0,2}$/.test(aspect) ? aspect : null,
+        requestPath,
         unitCnyPer1M,
+        unitCnyPerSecond,
         preConsumedCny: settled ? preConsumedQuota / quotaPerCny : null,
         actualCny: settled ? actualQuota / quotaPerCny : null,
     };
