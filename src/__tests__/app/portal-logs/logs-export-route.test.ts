@@ -167,13 +167,13 @@ describe('GET /api/portal/logs/export', () => {
             .trimEnd()
             .split('\r\n');
         expect(lines).toHaveLength(5); // 表头 + 4 行(id=5 并进了 id=3)
-        expect(lines[1]).toContain(',-3.0000,失败退款,');
+        expect(lines[1]).toContain(',-3.000000,失败退款,');
         expect(lines[1]).toContain('已自动退还预扣的 ¥3.00');
-        expect(lines[2]).toContain(',-0.0500,结算退款,');
+        expect(lines[2]).toContain(',-0.050000,结算退款,');
         expect(lines[2]).toContain('预扣 ¥1.00，实际 ¥0.95');
-        expect(lines[3]).toContain(',0.0000,失败,');
+        expect(lines[3]).toContain(',0.000000,失败,');
         expect(lines[3]).toContain('视频任务未生成成功');
-        expect(lines[4]).toContain(',1.0000,成功,');
+        expect(lines[4]).toContain(',1.000000,成功,');
         expect(text).not.toContain('REQ5');
         expect(text).not.toContain("'-"); // 负数是数字,不加防公式注入前缀
     });
@@ -350,9 +350,9 @@ describe('GET /api/portal/logs/export — 日志库直连主路径(全量,无 10
         expect(text).toContain('claude-opus-5');
         expect(text).toContain('127885'); // 缓存读列
         expect(text).toContain('失败');
-        expect(text).toContain(',-0.3500,结算退款,');
+        expect(text).toContain(',-0.350000,结算退款,');
         // 结算退款与预扣行同模型同金额,也不能把预扣行当成失败任务
-        expect(text).toContain(',0.3500,成功,');
+        expect(text).toContain(',0.350000,成功,');
         expect(text).toContain('boom');
         expect(mockQueryLogs).not.toHaveBeenCalled(); // 不打 new-api HTTP API
     });
@@ -369,8 +369,8 @@ describe('GET /api/portal/logs/export — 日志库直连主路径(全量,无 10
         const text = await (await GET(req())).text();
         const lines = text.trimEnd().split('\r\n');
         expect(lines).toHaveLength(3); // 表头 + id=4 + id=2
-        expect(lines[1]).toContain(',-0.7000,失败退款,');
-        expect(lines[2]).toContain(',0.0000,失败,');
+        expect(lines[1]).toContain(',-0.700000,失败退款,');
+        expect(lines[2]).toContain(',0.000000,失败,');
         expect(lines[2]).toContain('视频任务未生成成功');
         expect(text).not.toContain('REQ3');
     });

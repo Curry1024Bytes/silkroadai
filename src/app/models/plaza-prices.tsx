@@ -273,10 +273,12 @@ export function PlazaPriceDetails({ model, selectedGroup }: { model: PricingMode
                     const price = tariff.pricesByTier[tier.key];
                     const groupBreakdown = tariff.breakdownByTier?.[tier.key];
                     // A multiplier shown here must apply to the base displayed above.
-                    const groupMultiplier =
-                        base && groupBreakdown && JSON.stringify(base) === JSON.stringify(groupBreakdown.base)
-                            ? groupBreakdown.groupMultiplier
-                            : undefined;
+                    const sameBase =
+                        !!base && !!groupBreakdown && JSON.stringify(base) === JSON.stringify(groupBreakdown.base);
+                    // official_multiplier is the customer's final price relative to the official base.
+                    const exclusive = price?.customer_pricing;
+                    const exclusiveMultiplier = sameBase ? exclusive?.official_multiplier : undefined;
+                    const groupMultiplier = sameBase ? groupBreakdown!.groupMultiplier : undefined;
                     const details = price?.billing_details;
                     return (
                         <section
@@ -288,13 +290,23 @@ export function PlazaPriceDetails({ model, selectedGroup }: { model: PricingMode
                                 <h4 className="text-success m-0 min-w-0 text-sm font-semibold break-words">
                                     {tier.label}
                                 </h4>
-                                {groupMultiplier !== undefined && !price?.customer_pricing && (
+                                {exclusiveMultiplier != null ? (
                                     <span
-                                        className="text-muted-foreground font-mono text-xs"
-                                        title={m.prices.publicGroupMultiplier}
+                                        className="text-brand-accent font-mono text-xs font-semibold"
+                                        title={m.prices.exclusiveGroupMultiplier}
                                     >
-                                        {formatTieredPrice(groupMultiplier)}x
+                                        {formatTieredPrice(exclusiveMultiplier)}x {m.prices.exclusiveTag}
                                     </span>
+                                ) : (
+                                    groupMultiplier !== undefined &&
+                                    !exclusive && (
+                                        <span
+                                            className="text-muted-foreground font-mono text-xs"
+                                            title={m.prices.publicGroupMultiplier}
+                                        >
+                                            {formatTieredPrice(groupMultiplier)}x
+                                        </span>
+                                    )
                                 )}
                             </div>
                             {details?.mode === 'tiered_token' && price?.per_image_cny == null ? (

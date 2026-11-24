@@ -262,7 +262,7 @@ function CallRowItem({
                 <td
                     className={`${cell} text-right tabular-nums font-medium ${isRefund ? 'text-status-warning-text' : ''}`}
                 >
-                    {formatSignedCny(row.costCny, { preciseSmall: result === 'settlement_refund' })}
+                    {formatSignedCny(row.costCny, { perCall: true })}
                 </td>
                 <td className={`${cell} text-center`}>
                     {isRefund ? (

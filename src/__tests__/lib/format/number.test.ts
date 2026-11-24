@@ -51,6 +51,13 @@ describe('formatCnyAmount', () => {
         expect(formatCnyAmount(-0.0049)).toBe('-0.0049');
         expect(formatCnyAmount(-0)).toBe('0.00');
     });
+
+    it('shows a single call charge to the ¥0.000002 quota unit', () => {
+        expect(formatCnyAmount(3.50658, { perCall: true })).toBe('3.50658');
+        expect(formatCnyAmount(3.4776, { perCall: true })).toBe('3.4776');
+        expect(formatCnyAmount(2, { perCall: true })).toBe('2.00');
+        expect(formatSignedCny(-3.50658, { perCall: true })).toBe('-¥3.50658');
+    });
 });
 
 describe('formatSignedCny', () => {

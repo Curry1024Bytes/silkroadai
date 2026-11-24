@@ -137,6 +137,23 @@ describe('verified customer official-price presentation', () => {
         expect(price.customer_pricing).toMatchObject({ multiplier: 0.15, scope: 'model', official_multiplier: 0.15 });
     });
 
+    it('shows official × multiplier exactly when the native ratio is a rounded repeating fraction', async () => {
+        // Public price is official × 0.72; a 0.7 rule needs ratio 0.7 / 0.72 = 0.97222…, stored rounded up.
+        const source = context();
+        source.rules[0].official_multiplier = 0.7;
+        source.options.ModelRatio = { 'model-a': 36 };
+        const model = source.tiers[0].models[0];
+        model.current_ratio = 0.972222222223;
+        model.public_official_multiplier = 0.72;
+        const sale = [72, 144, 7.2, 90, 144, 180];
+        model.cells = model.cells.map((cell, index) => ({ ...cell, public_cny: sale[index], base_cny: sale[index] }));
+        m.context.mockResolvedValue(source);
+        const price = (await loadCustomerOfficialQuotes('customer-a')).get('model-a\u0000sd')!;
+        expect(price.input_cny_per_1m).toBe(70);
+        expect(price.output_cny_per_1m).toBe(140);
+        expect(price.customer_pricing).toMatchObject({ official_multiplier: 0.7, public_official_multiplier: 0.72 });
+    });
+
     it.each(['applying', 'failed', 'restoring', null])(
         'refuses to show a customer quote for binding status %s',
         async (status) => {

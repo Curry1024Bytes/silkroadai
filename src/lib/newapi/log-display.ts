@@ -230,3 +230,105 @@ export function isPerImageBilled(other: string | null | undefined, model: string
     if (m.includes('gpt-image')) return false; // gpt-image 族按 token 计费,即使缺 other 也要显示 token
     return isImageModel(m);
 }
+
+/**
+ * 视频任务(new-api Task Plugin,按 token 计费)的客户可见计费明细。
+ *
+ * 一个视频任务在 new-api 记两行,同一个 `task_id`、各自一个 request_id:
+ *   - 提交时按插件预估的 tokens 预扣(type=2,无 `pre_consumed_quota`);
+ *   - 完成后按上游返回的实际 tokens 结算差额:多了补扣(type=2),少了退还(type=6)。
+ *     这一行的 `other` 带 `pre_consumed_quota` / `actual_quota`,整笔账都在这里。
+ *
+ * 单价 = 命中档位在计费表达式里的系数 × 分组倍率,还原成 ¥/1M tokens 后只保留 6 位小数
+ * (分组倍率是 12 位小数的近似值,原始乘积带 1e-11 的尾巴)。还原出的单价必须能复算出 new-api
+ * 实际记的 quota,否则不给单价,只给 tokens 和金额 —— 宁可少显示,不显示一条对不上的公式。
+ *
+ * 只出公开信息:不含渠道、上游模型名、上游任务号、表达式原文和分组倍率本身。
+ */
+export type VideoTaskPhase = 'estimate' | 'settle_extra' | 'settle_refund';
+
+export interface VideoTaskBilling {
+    taskId: string | null;
+    phase: VideoTaskPhase;
+    /** 本行计费所用 tokens:预扣行是预估值,结算行是实际值。 */
+    tokens: number;
+    resolution: string | null;
+    videoInput: 'none' | 'video' | null;
+    /** ¥ / 1M tokens;复算对不上时为 null。 */
+    unitCnyPer1M: number | null;
+    /** 结算行才有:预扣与实际总额(¥)。 */
+    preConsumedCny: number | null;
+    actualCny: number | null;
+}
+
+function decodeBase64Utf8(value: string): string | null {
+    try {
+        const binary = atob(value);
+        return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    } catch {
+        return null;
+    }
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 计费表达式里命中档位的 tokens 系数(`tier("720p·none", u("tokens") * 33.12 / 1000000)`)。 */
+function tierTokenCoefficient(expr: string, tier: string): number | null {
+    const re = new RegExp(
+        `tier\\("${escapeRegExp(tier)}",\\s*u\\("tokens"\\)\\s*\\*\\s*([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*1000000\\s*\\)`,
+    );
+    const match = re.exec(expr);
+    return match ? Number(match[1]) : null;
+}
+
+export function parseVideoTaskBilling(
+    log: { type: number; quota: number; other?: string | null },
+    units: { quotaPerUsd: number; quotaPerCny: number },
+): VideoTaskBilling | null {
+    const { quotaPerUsd, quotaPerCny } = units;
+    if (!log.other || !(quotaPerCny > 0) || !(quotaPerUsd > 0)) return null;
+    let other: Record<string, unknown>;
+    try {
+        other = JSON.parse(log.other) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+    if (other.is_task !== true || other.billing_mode !== 'tiered_expr') return null;
+    const facts = other.usage_facts as Record<string, unknown> | undefined;
+    const tokens = finiteNumber(facts?.tokens);
+    if (tokens === null || tokens <= 0) return null;
+
+    const preConsumedQuota = finiteNumber(other.pre_consumed_quota);
+    const actualQuota = finiteNumber(other.actual_quota);
+    const settled = preConsumedQuota !== null && actualQuota !== null;
+    if (log.type === 6 && !settled) return null;
+    const phase: VideoTaskPhase = !settled ? 'estimate' : log.type === 6 ? 'settle_refund' : 'settle_extra';
+    // 本行对应的总额 quota:预扣行就是本行,结算行是实际总额。
+    const totalQuota = settled ? actualQuota : log.quota;
+
+    let unitCnyPer1M: number | null = null;
+    const ratio = finiteNumber(other.group_ratio);
+    const tier = typeof other.matched_tier === 'string' ? other.matched_tier : null;
+    const expr = typeof other.expr_b64 === 'string' ? decodeBase64Utf8(other.expr_b64) : null;
+    const coefficient = expr && tier ? tierTokenCoefficient(expr, tier) : null;
+    if (coefficient !== null && ratio !== null && ratio > 0) {
+        // 表达式结果按 new-api 计费单位计:quota = 结果 × quotaPerUsd × 分组倍率。
+        const unit = Number(((coefficient * ratio * quotaPerUsd) / quotaPerCny).toFixed(6));
+        if (Math.abs((tokens * unit * quotaPerCny) / 1_000_000 - totalQuota) <= 1) unitCnyPer1M = unit;
+    }
+
+    const resolution = typeof facts?.resolution === 'string' ? facts.resolution : null;
+    const videoInput = facts?.video_input === 'video' ? 'video' : facts?.video_input === 'none' ? 'none' : null;
+    return {
+        taskId: typeof other.task_id === 'string' && /^task_[A-Za-z0-9]+$/.test(other.task_id) ? other.task_id : null,
+        phase,
+        tokens,
+        resolution,
+        videoInput,
+        unitCnyPer1M,
+        preConsumedCny: settled ? preConsumedQuota / quotaPerCny : null,
+        actualCny: settled ? actualQuota / quotaPerCny : null,
+    };
+}

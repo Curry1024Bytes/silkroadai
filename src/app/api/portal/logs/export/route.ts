@@ -152,7 +152,7 @@ function toCsvRow(log: CsvSourceLog, failedConsume = false): string {
         // 缓存读写与页面同语义:按张计费留空;0 也如实写 0(CSV 是对账口径,不藏)
         perImage ? '' : cache.read,
         perImage ? '' : cache.write,
-        costCny.toFixed(4),
+        costCny.toFixed(6),
         result,
         detail,
     ]

@@ -3,7 +3,49 @@ import { prisma } from '@/lib/db';
 import { customerPrice, readBasePrice } from '@/lib/admin/pricing-simple-core';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 import { loadOfficialContext } from './context';
-import { compileOfficialRatio, CustomerPricingError, selectOfficialRule } from './math';
+import { compileOfficialRatio, CustomerPricingError, exactOfficialAmounts, selectOfficialRule } from './math';
+
+type Amounts = ReturnType<typeof customerPrice>;
+
+/** Replace each billed rate with its exact contracted amount, keyed like `flattenBase` cells. */
+function withExactAmounts(actual: Amounts, exact: Map<string, number>): Amounts {
+    const pick = (key: string): number => {
+        const value = exact.get(key);
+        if (value === undefined)
+            throw new CustomerPricingError('customer_price_missing', '该模型实际价格无法核对。');
+        return value;
+    };
+    const details = actual.billing_details;
+    if (details?.mode === 'video_token')
+        return {
+            ...actual,
+            billing_details: {
+                ...details,
+                cells: details.cells.map((c) => ({
+                    ...c,
+                    price: pick(`${c.resolution}·${c.video_input}`),
+                })),
+            },
+        };
+    if (actual.per_image_cny !== null) return { ...actual, per_image_cny: pick('call') };
+    const result = { ...actual };
+    if (actual.input_cny_per_1m !== null) result.input_cny_per_1m = pick('0:input');
+    if (actual.output_cny_per_1m !== null) result.output_cny_per_1m = pick('0:output');
+    if (details?.mode === 'tiered_token')
+        result.billing_details = {
+            ...details,
+            tiers: details.tiers.map((tier, index) => ({
+                ...tier,
+                rates: Object.fromEntries(
+                    Object.entries(tier.rates).map(([key, value]) => [
+                        key,
+                        value == null ? value : pick(`${index}:${key}`),
+                    ]),
+                ) as typeof tier.rates,
+            })),
+        };
+    return result;
+}
 
 export async function summarizeCustomerOfficialTiers(
     userId: string,
@@ -45,7 +87,10 @@ function verifiedQuotes(context: Awaited<ReturnType<typeof loadOfficialContext>>
                 throw new CustomerPricingError('customer_price_drift', '实际扣费倍率与客户专属价格不一致。');
             const base = readBasePrice(context.options, model.model_name);
             if (!base) throw new CustomerPricingError('customer_price_missing', '该模型实际价格无法核对。');
-            const actual = customerPrice(base, model.current_ratio);
+            const actual = withExactAmounts(
+                customerPrice(base, model.current_ratio),
+                exactOfficialAmounts(model, rule.official_multiplier, model.current_ratio),
+            );
             result.set(`${model.model_name}\u0000${tier.key}`, {
                 input_cny_per_1m: actual.input_cny_per_1m,
                 output_cny_per_1m: actual.output_cny_per_1m,

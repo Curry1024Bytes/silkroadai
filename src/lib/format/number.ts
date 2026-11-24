@@ -68,12 +68,20 @@ export function formatCny(value: number, locale: Locale = 'zh'): CompactNumber {
     return { display: thousands(n / 10_000, 2), unit: '万', exact, compact: true };
 }
 
-/** 调用明细中的金额格式：常规金额保留两位，小额退款保留更多位，避免显示成 ±¥0.00。 */
-export function formatCnyAmount(value: number, options: { preciseSmall?: boolean } = {}): string {
+/**
+ * 调用明细中的金额格式：常规金额保留两位，小额退款保留更多位，避免显示成 ±¥0.00。
+ * `perCall`: a single request's charge. Quota settles at ¥0.000002, so six decimals show the
+ * exact amount billed (e.g. 108900 tokens × ¥32.2/M = ¥3.50658) and customers can verify it.
+ */
+export function formatCnyAmount(
+    value: number,
+    options: { preciseSmall?: boolean; perCall?: boolean } = {},
+): string {
     let n = safe(value);
     if (Object.is(n, -0)) n = 0;
     const abs = Math.abs(n);
-    const maxFractionDigits = n !== 0 && abs < 0.01 ? 6 : options.preciseSmall && n !== 0 && abs < 1 ? 4 : 2;
+    const maxFractionDigits =
+        options.perCall || (n !== 0 && abs < 0.01) ? 6 : options.preciseSmall && n !== 0 && abs < 1 ? 4 : 2;
     return n.toLocaleString('zh-CN', {
         minimumFractionDigits: 2,
         maximumFractionDigits: maxFractionDigits,
@@ -81,7 +89,7 @@ export function formatCnyAmount(value: number, options: { preciseSmall?: boolean
 }
 
 /** 带 ¥ 的明细金额,负数把负号放在 ¥ 前面(`-¥0.0498`,不是 `¥-0.0498`)。 */
-export function formatSignedCny(value: number, options: { preciseSmall?: boolean } = {}): string {
+export function formatSignedCny(value: number, options: { preciseSmall?: boolean; perCall?: boolean } = {}): string {
     const text = formatCnyAmount(value, options);
     return text.startsWith('-') ? `-¥${text.slice(1)}` : `¥${text}`;
 }

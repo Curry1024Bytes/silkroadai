@@ -178,6 +178,29 @@ export function compileOfficialRatio(model: OfficialModelContext, multiplier: nu
     return ratio;
 }
 
+/**
+ * The customer's contracted price per cell: official × multiplier, computed exactly.
+ * The native ratio can only approximate official/base (e.g. 0.7 / 0.72 = 35/36), so a
+ * price derived from it carries a 1e-11 tail that integer quota settlement drops.
+ * Customers must see the contracted amount, so every cell is checked against the
+ * actually billed rate before the exact amount replaces it.
+ */
+export function exactOfficialAmounts(
+    model: OfficialModelContext,
+    multiplier: number,
+    nativeRatio: number,
+): Map<string, number> {
+    const result = new Map<string, number>();
+    for (const cell of model.cells) {
+        const exact = toNumber(multiply(parseDecimal(String(cell.official_cny)), parseDecimal(String(multiplier))));
+        const billed = cell.base_cny * nativeRatio;
+        if (Math.abs(billed - exact) > 0.000001 + Math.abs(exact) * 1e-11)
+            throw new CustomerPricingError('customer_price_drift', '实际扣费倍率与客户专属价格不一致。');
+        result.set(cell.key, exact);
+    }
+    return result;
+}
+
 export function officialMultiplierOf(cells: OfficialPriceCell[], nativeRatio: number): number | null {
     try {
         const first = cells.find((c) => c.official_cny > 0);
