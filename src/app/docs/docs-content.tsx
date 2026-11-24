@@ -4999,11 +4999,18 @@ function SdSpecialVideoSection({ modelsHref }: { modelsHref: string }) {
                 <code className="font-mono text-xs">resolution</code>。 同一个模型可选择 480p 或 720p，只有 sd-2.5
                 还支持 1080p。实际像素尺寸以下载的成片为准。
             </p>
+            <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
+                可选字段 <code className="font-mono text-xs">aspect_ratio</code>
+                （字符串）用于指定画幅。各型号在表列分辨率下均可选 <code className="font-mono text-xs">16:9</code>、
+                <code className="font-mono text-xs">9:16</code>、<code className="font-mono text-xs">4:3</code>、
+                <code className="font-mono text-xs">3:4</code>、<code className="font-mono text-xs">1:1</code>、
+                <code className="font-mono text-xs">21:9</code>，有无参考视频均适用。下面的示例请求 480p 竖屏视频。
+            </p>
             <CodeBlock language="bash">
                 {`curl --fail-with-body -sS "${OPENAI_BASE}/videos" \\
   -H "Authorization: Bearer $LLMROUTE_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"sd-2-mini","prompt":"一片树叶随风落在水面，镜头缓慢推进","duration":5,"resolution":"480p"}'`}
+  -d '{"model":"sd-2-mini","prompt":"一片树叶随风落在水面，镜头缓慢推进","duration":5,"resolution":"480p","aspect_ratio":"9:16"}'`}
             </CodeBlock>
 
             <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">2. 查询状态与下载</h3>
