@@ -1,3 +1,5 @@
+import { SD_SPECIAL_MODELS, sdSpecialSpecs, type SdSpecialModel } from '@/lib/sd-special-video';
+
 /**
  * /docs — public quickstart for connecting various AI coding agents +
  * official OpenAI SDKs to api.llmroute.club (W7 D4 PR-G).
@@ -172,41 +174,6 @@ const OPENAI_BASE = OPENAI_API_BASE_URL;
 const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
 const SAMPLE_OPENAI_MODEL = 'gpt-5.4';
 const SAMPLE_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
-
-// Snapshot of the SD特惠 channel's per-second model IDs and configured duration ranges.
-const SD_SPECIAL_MODELS = [
-    ['sd-2-mini-480', '480p', '5–15'],
-    ['sd-2-mini-720', '720p', '4–15'],
-    ['sd-2-fast-480', '480p', '4–15'],
-    ['sd-2-fast-720', '720p', '4–15'],
-    ['sd-2-vip-480', '480p', '4–15'],
-    ['sd-2-vip-720', '720p', '5–15'],
-    ['sd-2.5-480P', '480p', '4–30'],
-    ['sd-2.5-720P', '720p', '4–30'],
-    ['sd-2.5-1080P', '1080p', '4–30'],
-    ['sd-2.5-flash-480P', '480p', '4–30'],
-    ['sd-2.5-flash-720P', '720p', '4–30'],
-    ['sd-2-mini-480-novideo', '480p', '4–15'],
-    ['sd-2-mini-720-novideo', '720p', '4–15'],
-    ['sd-2-fast-480-novideo', '480p', '4–15'],
-    ['sd-2-fast-720-novideo', '720p', '4–15'],
-    ['sd-2-vip-480-novideo', '480p', '4–15'],
-    ['sd-2-vip-720-novideo', '720p', '4–15'],
-    ['sd-2.5-480P-novideo', '480p', '4–30'],
-    ['sd-2.5-720P-novideo', '720p', '4–30'],
-    ['sd-2.5-flash-480-novideo', '480p', '4–30'],
-    ['sd-2.5-flash-720-novideo', '720p', '4–30'],
-    ['sd-2.0-官方版-480p', '480p', '4–15'],
-    ['sd-2.0-官方版-720p', '720p', '4–15'],
-    ['sd-2.0-fast-官方版-480p', '480p', '5–15'],
-    ['sd-2.0-fast-官方版-720p', '720p', '5–15'],
-    ['sd-2.0-mini-官方版-480p', '480p', '4–15'],
-    ['sd-2.0-mini-官方版-720p', '720p', '4–15'],
-    ['sd-2.5-官方版-480p', '480p', '4–30'],
-    ['sd-2.5-官方版-720p', '720p', '4–30'],
-    ['sd-2.5-480P-限时特价', '480p', '4–30'],
-    ['sd-2.5-720P-限时特价', '720p', '4–30'],
-] as const;
 
 /**
  * Docs prose is Chinese-only for now (English edition = separate PR). The
@@ -5027,18 +4994,16 @@ function SdSpecialVideoSection({ modelsHref }: { modelsHref: string }) {
 
             <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">1. 提交任务</h3>
             <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
-                必填 <code className="font-mono text-xs">model</code>、<code className="font-mono text-xs">prompt</code>{' '}
-                和整数 <code className="font-mono text-xs">duration</code>（秒）。模型 ID
-                原样填写，区分大小写并保留中文后缀。分辨率由模型决定，可以省略{' '}
-                <code className="font-mono text-xs">resolution</code>，如显式传入，须填写匹配的{' '}
-                <code className="font-mono text-xs">480p</code>、<code className="font-mono text-xs">720p</code> 或{' '}
-                <code className="font-mono text-xs">1080p</code>。实际像素尺寸以下载的成片为准。
+                必填 <code className="font-mono text-xs">model</code>、<code className="font-mono text-xs">prompt</code>
+                、 整数 <code className="font-mono text-xs">duration</code>（秒）及{' '}
+                <code className="font-mono text-xs">resolution</code>。 同一个模型可选择 480p 或 720p，只有 sd-2.5
+                还支持 1080p。实际像素尺寸以下载的成片为准。
             </p>
             <CodeBlock language="bash">
                 {`curl --fail-with-body -sS "${OPENAI_BASE}/videos" \\
   -H "Authorization: Bearer $LLMROUTE_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"sd-2-mini-480","prompt":"一片树叶随风落在水面，镜头缓慢推进","duration":5}'`}
+  -d '{"model":"sd-2-mini","prompt":"一片树叶随风落在水面，镜头缓慢推进","duration":5,"resolution":"480p"}'`}
             </CodeBlock>
 
             <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">2. 查询状态与下载</h3>
@@ -5083,13 +5048,17 @@ curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
                     last_frame。各最多一张；尾帧必须搭配首帧，不与普通参考图混用。
                 </li>
                 <li>
-                    <strong className="text-navy">-novideo 仍然会生成视频，只是不接受参考视频作为输入。</strong>
+                    <strong className="text-navy">
+                        平台根据 references 中是否有 type 为 video 的素材自动选择参考视频计费档。同一模型 ID
+                        可用于两种场景。
+                    </strong>
                 </li>
             </ul>
             <p className="m-0 mb-2 text-sm font-medium text-navy">参考图请求示例</p>
             <CodeBlock language="json">
                 {`{
-  "model": "sd-2-mini-720",
+  "model": "sd-2-mini",
+  "resolution": "720p",
   "prompt": "让 @image1 中的纸船沿水面缓缓前进",
   "duration": 4,
   "references": [
@@ -5100,7 +5069,8 @@ curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
             <p className="m-0 mt-3 mb-2 text-sm font-medium text-navy">混合参考请求示例</p>
             <CodeBlock language="json">
                 {`{
-  "model": "sd-2-vip-480",
+  "model": "sd-2-vip",
+  "resolution": "480p",
   "prompt": "参考 @image1 的色彩和 @video1 的运镜，配合 @audio1 的节奏切换画面",
   "duration": 4,
   "references": [
@@ -5120,7 +5090,8 @@ curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
                 <Link href={modelsHref} className="font-medium text-navy hover:text-brand-accent">
                     模型广场
                 </Link>{' '}
-                选择「SD特惠」查看各型号每秒单价。预算可按「单价 × 请求秒数」估算。任务终态的实扣或退款以用量账单为准。
+                选择「SD特惠」查看各分辨率在有参考视频和无参考视频时的每秒单价。预算可按「单价 ×
+                请求秒数」估算。任务终态的实扣或退款以用量账单为准。
             </p>
             <p className="m-0 mb-3 text-sm leading-relaxed text-ink">
                 如果 <code className="font-mono text-xs">GET /v1/models</code> 未列出本分组的模型，从模型广场或下表复制
@@ -5128,13 +5099,13 @@ curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
             </p>
             <details className="rounded-lg border border-brand-border bg-surface">
                 <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-navy">
-                    查看模型 ID 与时长范围（当前配置 {SD_SPECIAL_MODELS.length} 个）
+                    查看模型 ID 与时长范围（{Object.keys(SD_SPECIAL_MODELS).length} 个模型）
                 </summary>
                 <div className="overflow-x-auto">
                     <table className="w-full border-collapse text-sm">
                         <thead className="bg-paper-muted text-muted-ink">
                             <tr>
-                                {['模型 ID', '分辨率', '时长（秒）'].map((col) => (
+                                {['模型 ID', '分辨率', '无参考视频（秒）', '有参考视频（秒）'].map((col) => (
                                     <th key={col} scope="col" className="whitespace-nowrap px-4 py-2 text-left text-xs">
                                         {col}
                                     </th>
@@ -5142,13 +5113,28 @@ curl --fail --location -sS "${OPENAI_BASE}/videos/$TASK_ID/content" \\
                             </tr>
                         </thead>
                         <tbody>
-                            {SD_SPECIAL_MODELS.map(([id, resolution, duration]) => (
-                                <tr key={id} className="border-t border-brand-border">
-                                    <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-navy">{id}</td>
-                                    <td className="px-4 py-2 text-ink">{resolution}</td>
-                                    <td className="whitespace-nowrap px-4 py-2 text-ink">{duration}</td>
-                                </tr>
-                            ))}
+                            {(Object.keys(SD_SPECIAL_MODELS) as SdSpecialModel[]).map((id) => {
+                                const specs = sdSpecialSpecs(id);
+                                return (
+                                    <tr key={id} className="border-t border-brand-border">
+                                        <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-navy">
+                                            {id}
+                                        </td>
+                                        <td className="px-4 py-2 text-ink">
+                                            {specs.map(([resolution]) => resolution).join(' / ')}
+                                        </td>
+                                        {(['withoutVideo', 'withVideo'] as const).map((mode) => (
+                                            <td key={mode} className="px-4 py-2 text-ink">
+                                                {specs.map(([resolution, spec]) => (
+                                                    <div key={resolution}>
+                                                        {resolution} {spec[mode][1]}–{spec[mode][2]}
+                                                    </div>
+                                                ))}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                );
+                            })}
                         </tbody>
                     </table>
                 </div>

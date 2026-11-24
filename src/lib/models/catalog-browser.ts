@@ -1,5 +1,13 @@
 import 'server-only';
 
+import {
+    SD_SPECIAL_GROUP,
+    SD_SPECIAL_MODELS,
+    isSdSpecialLegacyModel,
+    isSdSpecialPublicModel,
+    sdSpecialPrices,
+} from '@/lib/sd-special-video';
+
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { ChannelGroupTopology } from '@/lib/channel-group-topology';
@@ -354,12 +362,24 @@ export async function loadBrowserCatalog(
         });
     }
 
+    const sdTier = groups.find((group) => group.newapi_group === SD_SPECIAL_GROUP)?.key;
+    const bySlug = new Map(visibleModels.map((model) => [model.slug, model]));
+    const publicModels = visibleModels.filter(
+        (model) => !isSdSpecialLegacyModel(model.slug) && !isSdSpecialPublicModel(model.slug),
+    );
+    if (sdTier) {
+        for (const slug of Object.keys(SD_SPECIAL_MODELS).filter(isSdSpecialPublicModel)) {
+            const pricing = sdSpecialPrices(slug, (sku) => bySlug.get(sku)?.pricesByTier[sdTier]);
+            if (pricing) publicModels.push({ slug, pricesByTier: { [sdTier]: pricing } });
+        }
+    }
+
     return {
         tiers: groups.map((group) => ({
             key: group.key,
             label: useNewApiGroupNames ? group.newapi_group : group.display_name,
             isDefault: group.is_default,
         })),
-        models: visibleModels,
+        models: publicModels,
     };
 }

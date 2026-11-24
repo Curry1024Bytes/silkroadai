@@ -8,18 +8,23 @@
  * 自动忽略 → 存量客户端零影响;工具链(litellm、网关、比价脚本)可编程发现。
  *
  * 设计约束:
- *  - 【只加不减】:上游列表的条目集合、已有字段、顺序全部原样(HIDDEN_MODELS
- *    也不从这里剔除 —— 它们仍可调用,denylist 只管 portal 页面/picker 展示);
- *  - 【best-effort】:目录/档次任何一步失败,调用方回退原字节透传,绝不打断
- *    客户请求(镜像 quota-cache / oss-store 的降级哲学);
+ *  - 普通模型保留上游条目和顺序。SD特惠聚合为公开模型，过滤内部 SKU。
+ *  - 目录或档次不可用时，由代理返回过滤后的上游目录。
  *  - 价格【只给精确档次命中】:客户档(NewApiToken.tier,即 ChannelGroup.key /
  *    CatalogPrice.tier 的 key 空间)没定价的模型 pricing=null,不回退别档 ——
  *    错价比没价危害大。
  */
+import {
+    SD_SPECIAL_GROUP,
+    SD_SPECIAL_MODELS,
+    isSdSpecialLegacyModel,
+    isSdSpecialPublicModel,
+    sdSpecialPrices,
+} from '@/lib/sd-special-video';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByType, categorizeByVendor, type TypeName, type VendorName } from '@/lib/models/categorize';
-import { getOption } from '@/lib/newapi/client';
+import { getOption, getTokenForCustomer } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
 import type { PriceProvenance } from './price-provenance';
@@ -53,6 +58,9 @@ export interface CatalogPricingContext {
     multiplierScale: number;
     /** Individually verified native quotes for customer/model official-price rules. */
     modelPrices?: Map<string, TierPricing>;
+    sdSpecial?: true;
+    /** Native key scope for the authenticated empty-list fallback. Null means unrestricted. */
+    sdSpecialFallbackSkus?: ReadonlySet<string> | null;
 }
 
 export interface CatalogMetaEntry {
@@ -148,6 +156,7 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
 /** Resolve the customer-specific price factor without caching it across customers. */
 export async function resolveCatalogPricingContextFromAuthHeader(
     authHeader: string | null,
+    upstreamListIsEmpty = false,
 ): Promise<CatalogPricingContext> {
     const m = authHeader?.match(/^Bearer\s+(.+)$/i);
     if (!m) throw new Error('cannot resolve catalog tier without a bearer token');
@@ -175,8 +184,33 @@ export async function resolveCatalogPricingContextFromAuthHeader(
             .filter(([key]) => key.endsWith(`\u0000${token.tier}`))
             .map(([key, price]) => [key.split('\u0000')[0], price]),
     );
+    let fallbackSkus: ReadonlySet<string> | null | undefined;
+    if (group.newapi_group === SD_SPECIAL_GROUP && upstreamListIsEmpty) {
+        const binding = await prisma.newApiToken.findUnique({
+            where: { newapi_token_value: raw },
+            select: {
+                newapi_token_id: true,
+                user: { select: { newapi_user_id: true, newapi_access_token: true } },
+            },
+        });
+        const owner = binding?.user;
+        if (binding && owner?.newapi_user_id != null && owner.newapi_access_token) {
+            const native = await getTokenForCustomer(
+                { userId: owner.newapi_user_id, accessToken: owner.newapi_access_token },
+                binding.newapi_token_id,
+                2000,
+            );
+            if (native.group === SD_SPECIAL_GROUP && native.status === 1 && native.user_id === owner.newapi_user_id) {
+                fallbackSkus = native.model_limits_enabled
+                    ? new Set(native.model_limits.split(',').map((sku) => sku.trim()))
+                    : null;
+            }
+        }
+    }
     const context = (multiplierScale: number): CatalogPricingContext => {
         const value: CatalogPricingContext = { tier: token.tier, multiplierScale };
+        if (group.newapi_group === SD_SPECIAL_GROUP) value.sdSpecial = true;
+        if (fallbackSkus !== undefined) value.sdSpecialFallbackSkus = fallbackSkus;
         if (modelPrices.size > 0) value.modelPrices = modelPrices;
         return value;
     };
@@ -219,7 +253,7 @@ export async function resolveTierFromAuthHeader(authHeader: string | null): Prom
 
 /**
  * 纯函数:OpenAI 模型列表 payload → 每个条目追加 `silkroadai` 字段。
- * 上游条目集合/字段/顺序原样;形状不符(data 非数组等)直接抛,调用方回退透传。
+ * 保留普通模型条目，按 Key 的范围聚合 SD 特惠。
  */
 export function enrichModelList(
     payload: Record<string, unknown>,
@@ -276,5 +310,53 @@ export function enrichModelList(
         };
         return { ...(entry as Record<string, unknown>), silkroadai: extra };
     });
-    return { ...payload, data: enriched };
+    const filtered = hideSdSpecialInternalModels({ ...payload, data: enriched });
+    if (typeof context !== 'string' && context.sdSpecial) {
+        const listed = new Map(
+            enriched.flatMap((entry) =>
+                entry && typeof entry.id === 'string' ? [[entry.id, entry.silkroadai?.pricing] as const] : [],
+            ),
+        );
+        const publicModels = Object.keys(SD_SPECIAL_MODELS)
+            .filter(isSdSpecialPublicModel)
+            .flatMap((id) => {
+                const pricing = sdSpecialPrices(id, (sku) => {
+                    if (data.length !== 0) return listed.get(sku);
+                    // SD特惠 has previously returned an authenticated empty model list despite active routes.
+                    const allowed = context.sdSpecialFallbackSkus;
+                    if (allowed === undefined || (allowed !== null && !allowed.has(sku))) return null;
+                    const price = meta.get(sku)?.pricesByTier.get(tier);
+                    return (
+                        context.modelPrices?.get(sku) ??
+                        (price?.billing_details
+                            ? {
+                                  ...price,
+                                  billing_details: scaleCatalogBillingDetails(price.billing_details, multiplierScale),
+                              }
+                            : null)
+                    );
+                });
+                if (!pricing) return [];
+                const extra: SilkroadaiModelExtra = {
+                    vendor: 'ByteDance',
+                    type: 'video',
+                    vision: false,
+                    tier,
+                    pricing,
+                };
+                return [{ id, object: 'model', created: 0, owned_by: 'llmroute', silkroadai: extra }];
+            });
+        return { ...filtered, data: [...(filtered.data as unknown[]), ...publicModels] };
+    }
+    return filtered;
+}
+
+/** Do not expose internal SD IDs on the enrichment failure path either. */
+export function hideSdSpecialInternalModels(payload: Record<string, unknown>): Record<string, unknown> {
+    if (!Array.isArray(payload.data)) return payload;
+    const data = payload.data.filter(
+        (entry) =>
+            typeof entry?.id !== 'string' || (!isSdSpecialLegacyModel(entry.id) && !isSdSpecialPublicModel(entry.id)),
+    );
+    return data.length === payload.data.length ? payload : { ...payload, data };
 }

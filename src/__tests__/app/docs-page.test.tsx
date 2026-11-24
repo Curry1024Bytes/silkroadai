@@ -374,21 +374,17 @@ describe('/docs page — SD特惠按秒视频', () => {
         expect(section).not.toMatch(/aigasapi\.com|metadata\.url|out_task_id/);
     });
 
-    it('preserves exact model ID spellings and includes the material request patterns', () => {
+    it('documents only the five public IDs and includes resolution and reference patterns', () => {
         const rows = section.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? '';
-        expect(rows.match(/<tr\b/g)).toHaveLength(31);
-        for (const id of [
-            'sd-2-mini-480',
-            'sd-2.5-1080P',
-            'sd-2.5-flash-720-novideo',
-            'sd-2.0-fast-官方版-720p',
-            'sd-2.5-720P-限时特价',
-        ]) {
+        expect(rows.match(/<tr\b/g)).toHaveLength(5);
+        for (const id of ['sd-2-mini', 'sd-2-fast', 'sd-2-vip', 'sd-2.5', 'sd-2.5-flash']) {
             expect(rows, id).toContain(`>${id}</td>`);
         }
+        expect(rows.match(/<tr[^>]*>.*?1080p.*?<\/tr>/g)).toHaveLength(1);
+        expect(section).not.toMatch(/-novideo|官方版|限时特价|sd-2-mini-480/);
         for (const material of ['@image1', '@video1', '@audio1', 'first_frame', 'last_frame']) {
             expect(section, material).toContain(material);
         }
-        expect(section).toContain('-novideo 仍然会生成视频，只是不接受参考视频作为输入');
+        expect(section).toContain('同一模型 ID 可用于两种场景');
     });
 });

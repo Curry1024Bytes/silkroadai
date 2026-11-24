@@ -65,10 +65,17 @@ const mediaSchema = z
         unit: z.enum(['cny_per_image', 'cny_per_request', 'cny_per_second']),
         default_price: rate.nullable(),
         resolution_prices: z.record(resolution, rate),
+        reference_video_prices: z.record(resolution, rate).optional(),
         scheduled_discount: discount.optional(),
     })
     .strict()
-    .refine((value) => value.default_price !== null || Object.keys(value.resolution_prices).length > 0);
+    .refine((value) => !value.reference_video_prices || value.unit === 'cny_per_second')
+    .refine(
+        (value) =>
+            value.default_price !== null ||
+            Object.keys(value.resolution_prices).length > 0 ||
+            Object.keys(value.reference_video_prices ?? {}).length > 0,
+    );
 const componentSchema = z
     .object({
         version: z.literal(1),
@@ -292,6 +299,10 @@ export function scaleCatalogBillingDetails(raw: CatalogBillingDetails, scale: nu
         if (details.default_price !== null) details.default_price = scalePricingAmount(details.default_price, scale);
         for (const [key, value] of Object.entries(details.resolution_prices))
             details.resolution_prices[key] = scalePricingAmount(value, scale);
+        if (details.reference_video_prices) {
+            for (const [key, value] of Object.entries(details.reference_video_prices))
+                details.reference_video_prices[key] = scalePricingAmount(value, scale);
+        }
     }
     return details;
 }
@@ -468,7 +479,13 @@ export function catalogDetailLines(
     const price = (value: number) => `¥${formatTieredPrice(value)} / ${unit}`;
     const lines = [
         ...(details.default_price === null ? [] : [`${en ? 'Default' : '默认'}：${price(details.default_price)}`]),
-        ...Object.entries(details.resolution_prices).map(([key, value]) => `${key}：${price(value)}`),
+        ...Object.entries(details.resolution_prices).map(
+            ([key, value]) =>
+                `${key}${details.reference_video_prices ? (en ? ' · without reference video' : ' · 无参考视频') : ''}：${price(value)}`,
+        ),
+        ...Object.entries(details.reference_video_prices ?? {}).map(
+            ([key, value]) => `${key}${en ? ' · with reference video' : ' · 有参考视频'}：${price(value)}`,
+        ),
     ];
     if (details.scheduled_discount) lines.push(...catalogScheduledDiscountLines(details.scheduled_discount, en));
     return lines;

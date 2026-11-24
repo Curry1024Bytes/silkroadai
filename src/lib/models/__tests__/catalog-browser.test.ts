@@ -653,3 +653,39 @@ describe('loadBrowserCatalog Seedance price provenance', () => {
         expect((await loadBrowserCatalog()).models[0].pricesByTier.sale!).not.toHaveProperty('price_provenance');
     });
 });
+
+it('groups the SD special SKUs under one model and uses the group’s exact prices', async () => {
+    const sdPrice = (amount: number) => ({
+        ...price('sd', null, null),
+        billing_details: {
+            version: 1,
+            mode: 'media',
+            unit: 'cny_per_second',
+            default_price: amount,
+            resolution_prices: {},
+        },
+    });
+    catalogFixture(
+        [
+            model('sd-2-mini-480', { sd: route(21) }, [sdPrice(0.1)]),
+            model('sd-2-mini-480-novideo', { sd: route(21) }, [sdPrice(0.125)]),
+            model('sd-2-mini-720', { sd: route(21) }, [sdPrice(0.15)]),
+            model('sd-2-mini-720-novideo', { sd: route(21) }, [sdPrice(0.125)]),
+            model('sd-2.5-720P-限时特价', { sd: route(21) }, [sdPrice(0.87)]),
+            model('sd-2.0-官方版-720p', { sd: route(21) }, [sdPrice(1.02)]),
+            model('seedance2.0-pro-720p', { sale: route(1) }),
+        ],
+        [group('sale', 1), group('sd', 21, { newapi_group: 'SD特惠' })],
+    );
+    const catalog = await loadBrowserCatalog(undefined, { useNewApiGroupNames: true });
+    expect(catalog.models.map((item) => item.slug)).toEqual(['seedance2.0-pro-720p', 'sd-2-mini']);
+    expect(catalog.models[1].pricesByTier).toMatchObject({
+        sd: {
+            billing_details: {
+                resolution_prices: { '480p': 0.125, '720p': 0.125 },
+                reference_video_prices: { '480p': 0.1, '720p': 0.15 },
+            },
+        },
+    });
+    expect(catalog.tiers.find((tier) => tier.key === 'sd')?.label).toBe('SD特惠');
+});

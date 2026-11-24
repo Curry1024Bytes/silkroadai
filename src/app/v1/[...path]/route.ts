@@ -97,6 +97,13 @@ import {
     handleSeedanceVideoSubmit,
     handleSeedanceVideoPoll,
 } from '@/lib/seedance/cn-proxy';
+import {
+    exposeSdSpecialTaskModel,
+    isSdSpecialLegacyModel,
+    isSdSpecialPublicModel,
+    resolveSdSpecialVideoRequest,
+} from '@/lib/sd-special-video';
+import { deliverExhaustedSdVideo } from '@/lib/sd-special-video-delivery';
 import { isKlingVideoModel, isKlingVideoTask, handleKlingVideoSubmit, handleKlingVideoPoll } from '@/lib/kling/proxy';
 import { isSeedreamModel } from '@/lib/seedream/adapter';
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
@@ -117,6 +124,7 @@ import {
     loadCatalogMeta,
     resolveCatalogPricingContextFromAuthHeader,
     enrichModelList,
+    hideSdSpecialInternalModels,
 } from '@/lib/models/machine-catalog';
 import {
     newImageTaskId,
@@ -495,6 +503,13 @@ async function forwardToNewApi(
         duplex: 'half',
     };
     let upstream = await fetch(url, init);
+    if (upstream.status === 401 && /^\/videos\/task_[A-Za-z0-9]{32}\/content$/.test(path)) {
+        const delivery = await deliverExhaustedSdVideo(req, path);
+        if (delivery) {
+            void upstream.body?.cancel().catch(() => {});
+            return delivery;
+        }
+    }
     // /responses 同组 failover(2026-08-06 luwei Codex 502 诊断):new-api 收到上游
     // 5xx 不重试不换渠道(亲和钉渠道),号池网关瞬断(502 HTML 页 / 524 CF 超时)直接
     // 透传给客户。这里在体可重发(字符串)时重 POST 一次让 new-api 重新选渠道,仍败
@@ -3244,6 +3259,13 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
         method: 'GET',
         headers: forwardHeaders(req),
     });
+    if (upstream.status === 401) {
+        const delivery = await deliverExhaustedSdVideo(req, path);
+        if (delivery) {
+            void upstream.body?.cancel().catch(() => {});
+            return delivery;
+        }
+    }
     const text = await upstream.text();
     if (!upstream.ok) {
         return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
@@ -3255,6 +3277,7 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
         return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
     }
 
+    exposeSdSpecialTaskModel(body);
     try {
         const data = path.startsWith('/videos/') ? body : (body.data as JsonRecord | undefined);
         const inner = data?.data as JsonRecord | undefined;
@@ -3960,6 +3983,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         let vbody: JsonRecord;
         try {
             vbody = (await req.json()) as JsonRecord;
+            if (!vbody || typeof vbody !== 'object' || Array.isArray(vbody)) throw new Error('Expected JSON object');
         } catch {
             return NextResponse.json(
                 { error: { message: 'invalid JSON body', type: 'invalid_request_error' } },
@@ -3975,6 +3999,30 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         // 格式恰为统一视频格式 → 纯转发;见 @/lib/kling/proxy 文件头)。
         if (isKlingVideoModel(String(vbody.model ?? ''))) {
             return handleKlingVideoSubmit(req, vbody);
+        }
+        const model = typeof vbody.model === 'string' ? vbody.model : '';
+        if (isSdSpecialLegacyModel(model.trim())) {
+            return sdSpecialModelNotFound();
+        }
+        if (isSdSpecialPublicModel(model)) {
+            const resolved = resolveSdSpecialVideoRequest(vbody, model);
+            if (resolved.error) {
+                return NextResponse.json(
+                    { error: { message: resolved.error, type: 'invalid_request_error' } },
+                    { status: 400 },
+                );
+            }
+            const result = await forwardToNewApi(req, resolved.body, path, search, cap);
+            if (!result.ok || !result.headers.get('content-type')?.includes('application/json')) return result;
+            const task = await result
+                .clone()
+                .json()
+                .catch(() => null);
+            if (!exposeSdSpecialTaskModel(task)) return result;
+            const headers = new Headers(result.headers);
+            headers.delete('content-length');
+            void result.body?.cancel().catch(() => {});
+            return NextResponse.json(task, { status: result.status, headers });
         }
         return forwardToNewApi(req, vbody, path, search, cap);
     }
@@ -3999,11 +4047,14 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (await isKlingVideoTask(taskId)) return handleKlingVideoPoll(req, taskId);
     }
 
-    // 机器可读模型目录(OpenRouter /api/v1/models 模式):GET /models 的上游列表
-    // (per-token 过滤)每条追加 `silkroadai` 命名空间元数据(价格/模态/厂商)。
-    // OpenAI SDK 忽略未知字段;增强 best-effort,任何失败原样透传。
-    if (path === '/models' && req.method === 'GET') {
-        return handleModelsEnriched(req, search, cap);
+    // Machine-readable discovery preserves the upstream list for other models.
+    if (req.method === 'GET') {
+        if (path === '/models') return handleModelsEnriched(req, search, cap);
+        if (/^\/models\/[^/]+$/.test(path)) {
+            const id = path.slice('/models/'.length);
+            if (isSdSpecialLegacyModel(id)) return sdSpecialModelNotFound();
+            if (isSdSpecialPublicModel(id)) return handleModelsEnriched(req, search, cap, id);
+        }
     }
 
     // Anthropic 原生 /messages POST:流式走「持头转发」(假 200 → 真错误码 + failover
@@ -4027,10 +4078,26 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     return forwardToNewApi(req, null, path, search, cap);
 }
 
-/** GET /v1/models 拦截:透传上游列表 + 逐条附加 silkroadai 元数据(见 machine-catalog.ts)。
- *  上游非 2xx / 非 JSON → 原样透传;增强链(目录 DB / 档次解析 / 形状)任何失败 →
- *  原字节回退,绝不打断请求。 */
-async function handleModelsEnriched(req: NextRequest, search: string, cap: CaptureCtx | null): Promise<NextResponse> {
+function sdSpecialModelNotFound(): NextResponse {
+    return NextResponse.json(
+        {
+            error: {
+                message: 'SD video model not found. Check the model ID and Key scope.',
+                type: 'invalid_request_error',
+                code: 'model_not_found',
+            },
+        },
+        { status: 404 },
+    );
+}
+
+/** Filter internal SD models on both enrichment and fallback paths. */
+async function handleModelsEnriched(
+    req: NextRequest,
+    search: string,
+    cap: CaptureCtx | null,
+    requestedModel?: string,
+): Promise<NextResponse> {
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1/models${search}`, {
         method: 'GET',
         headers: forwardHeaders(req),
@@ -4062,21 +4129,34 @@ async function handleModelsEnriched(req: NextRequest, search: string, cap: Captu
         const [meta, tier] = await withDeadline(
             Promise.all([
                 loadCatalogMeta(),
-                resolveCatalogPricingContextFromAuthHeader(req.headers.get('authorization')),
+                resolveCatalogPricingContextFromAuthHeader(
+                    req.headers.get('authorization'),
+                    Array.isArray(json.data) && json.data.length === 0,
+                ),
             ]),
             MODELS_ENRICH_DEADLINE_MS,
         );
         const enriched = enrichModelList(json, tier, meta);
-        if (cap) captureJsonResponse(cap, 200, enriched);
+        const result =
+            requestedModel && Array.isArray(enriched.data)
+                ? enriched.data.find((entry) => entry?.id === requestedModel)
+                : enriched;
+        if (!result) return sdSpecialModelNotFound();
+        if (cap) captureJsonResponse(cap, 200, result);
         headers.set('content-type', 'application/json');
         headers.set('X-Silkroadai-Enriched', 'models');
-        return new NextResponse(JSON.stringify(enriched), { status: upstream.status, headers });
+        return new NextResponse(JSON.stringify(result), { status: upstream.status, headers });
     } catch (err) {
-        console.warn('[models-enrich] enrichment failed, passthrough', {
+        console.warn('[models-enrich] enrichment failed', {
             err: err instanceof Error ? err.message : String(err),
         });
-        if (cap) captureJsonResponse(cap, upstream.status, json); // 回退也记日志(与纯透传时代等价)
-        return new NextResponse(text, { status: upstream.status, headers });
+        if (requestedModel) return sdSpecialModelNotFound();
+        const filtered = hideSdSpecialInternalModels(json);
+        if (cap) captureJsonResponse(cap, upstream.status, filtered);
+        return new NextResponse(filtered === json ? text : JSON.stringify(filtered), {
+            status: upstream.status,
+            headers,
+        });
     }
 }
 
