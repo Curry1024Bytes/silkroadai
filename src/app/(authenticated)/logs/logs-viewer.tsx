@@ -33,7 +33,7 @@ import { formatSignedCny } from '@/lib/format/number';
 import { pickMessages, intlLocale, type Locale } from '@/lib/i18n';
 import type { LogRow } from '@/app/api/portal/logs/route';
 import { DateRangePicker, getLogDatePresets } from '@/components/date-range-picker';
-import { VideoBillingDetail, videoSpec, videoPhaseLabel, videoTaskLabel } from './video-billing-detail';
+import { VideoBillingControl, videoSpec, videoPhaseLabel } from './video-billing-detail';
 
 interface Filters {
     start: string;
@@ -547,7 +547,14 @@ function LogRowItem({
                     {formatSignedCny(row.costCny, { perCall: true })}
                 </td>
                 <td className={`${CELL} text-center`}>
-                    {isRefund ? (
+                    {row.video ? (
+                        <VideoBillingControl
+                            row={row}
+                            open={isOpen}
+                            onToggle={onToggle}
+                            refundLabel={isRefund ? refundLabel(result, locale).chip : undefined}
+                        />
+                    ) : isRefund ? (
                         <button
                             type="button"
                             onClick={onToggle}
@@ -579,23 +586,6 @@ function LogRowItem({
                                 <ChevronDown size={12} aria-hidden="true" />
                             )}
                         </button>
-                    ) : row.video ? (
-                        <button
-                            type="button"
-                            onClick={onToggle}
-                            title={copy.video.heading}
-                            aria-expanded={isOpen}
-                            aria-controls={`video-detail-${row.id}`}
-                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-soft px-2 text-xs font-medium text-portal-ink transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
-                        >
-                            <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            {videoTaskLabel(row.video, copy.video)}
-                            {isOpen ? (
-                                <ChevronUp size={12} aria-hidden="true" />
-                            ) : (
-                                <ChevronDown size={12} aria-hidden="true" />
-                            )}
-                        </button>
                     ) : (
                         <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -604,13 +594,6 @@ function LogRowItem({
                     )}
                 </td>
             </tr>
-            {row.video && isOpen && (
-                <tr className="bg-portal-soft">
-                    <td colSpan={8} id={`video-detail-${row.id}`} className="border-b border-portal-line px-4 py-4">
-                        <VideoBillingDetail row={row} />
-                    </td>
-                </tr>
-            )}
             {!row.video && result !== 'success' && isOpen && (
                 <tr className="bg-portal-soft">
                     <td colSpan={8} className="border-b border-portal-line px-4 py-3">

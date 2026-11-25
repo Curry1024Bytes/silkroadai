@@ -41,7 +41,7 @@ import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabe
 import { formatSignedCny } from '@/lib/format/number';
 import type { RefundKind } from '@/lib/newapi/log-display';
 import type { LogRow } from '@/app/api/portal/logs/route';
-import { VideoBillingDetail, videoSpec, videoPhaseLabel, videoTaskLabel } from '../logs/video-billing-detail';
+import { VideoBillingControl, videoSpec, videoPhaseLabel } from '../logs/video-billing-detail';
 
 export interface CallRow {
     id: number;
@@ -287,7 +287,14 @@ function CallRowItem({
                     {formatSignedCny(row.costCny, { perCall: true })}
                 </td>
                 <td className={`${cell} text-center`}>
-                    {isRefund ? (
+                    {row.video ? (
+                        <VideoBillingControl
+                            row={row}
+                            open={isOpen}
+                            onToggle={onToggle}
+                            refundLabel={isRefund ? refundLabel(result, locale).chip : undefined}
+                        />
+                    ) : isRefund ? (
                         <button
                             type="button"
                             onClick={onToggle}
@@ -319,23 +326,6 @@ function CallRowItem({
                                 <ChevronDown size={12} aria-hidden="true" />
                             )}
                         </button>
-                    ) : row.video ? (
-                        <button
-                            type="button"
-                            onClick={onToggle}
-                            title={videoCopy.heading}
-                            aria-expanded={isOpen}
-                            aria-controls={`dashboard-video-detail-${row.id}`}
-                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-soft px-2 text-xs font-medium text-portal-ink transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
-                        >
-                            <CheckCircle2 size={13} aria-hidden="true" />
-                            {videoTaskLabel(row.video, videoCopy)}
-                            {isOpen ? (
-                                <ChevronUp size={12} aria-hidden="true" />
-                            ) : (
-                                <ChevronDown size={12} aria-hidden="true" />
-                            )}
-                        </button>
                     ) : (
                         <span className="inline-flex items-center gap-1.5 rounded bg-status-success-bg px-2 py-1 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} aria-hidden="true" />
@@ -344,17 +334,6 @@ function CallRowItem({
                     )}
                 </td>
             </tr>
-            {row.video && isOpen && (
-                <tr className="bg-portal-soft">
-                    <td
-                        colSpan={COL_SPAN}
-                        id={`dashboard-video-detail-${row.id}`}
-                        className="border-b border-portal-line px-4 py-4"
-                    >
-                        <VideoBillingDetail row={row} />
-                    </td>
-                </tr>
-            )}
             {!row.video && result !== 'success' && isOpen && (
                 <tr className="bg-portal-soft">
                     <td colSpan={COL_SPAN} className="border-b border-portal-line px-4 py-3">

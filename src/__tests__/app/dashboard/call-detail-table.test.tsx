@@ -204,14 +204,14 @@ describe('<CallDetailTable /> video detail', () => {
     };
     const secondsRow = () => row({ model: 'sd-2-mini', costCny: 0.5, video });
 
-    it('shows the video spec and task duration with an accessible expansion control', () => {
+    it('shows the video spec and task duration with an accessible dialog control', () => {
         const html = renderToString(<CallDetailTable rows={[secondsRow()]} />);
         expect(html).toContain('480p · 无参考视频 · 4 秒');
         expect(html).toContain('3m 27s');
         expect(html).not.toContain('100 / 200');
         expect(html).toContain('title="视频任务明细"');
-        expect(html).toContain('aria-expanded="false"');
-        expect(html).toContain('aria-controls="dashboard-video-detail-1"');
+        expect(html).toContain('aria-haspopup="dialog"');
+        expect(html).not.toContain('<dialog');
         expect(html).not.toContain('任务信息');
     });
 
@@ -223,7 +223,7 @@ describe('<CallDetailTable /> video detail', () => {
         expect(html).toContain('480p · 无参考视频 · 4 秒');
     });
 
-    it('renders the shared billing detail in the expanded row, including requested ratio and the verified formula', () => {
+    it('renders the shared billing detail in a dialog, including requested ratio and the verified formula', () => {
         state.expanded = 1;
         const html = renderToString(<CallDetailTable rows={[secondsRow()]} />);
         for (const value of [
@@ -236,8 +236,12 @@ describe('<CallDetailTable /> video detail', () => {
         ]) {
             expect(html).toContain(value);
         }
-        expect(html).toContain('aria-expanded="true"');
-        expect(html).toContain('id="dashboard-video-detail-1"');
+        const dialog = html.match(/<dialog id="([^"]+)"/);
+        expect(dialog).not.toBeNull();
+        expect(html).toContain(`aria-controls="${dialog?.[1]}"`);
+        expect(html).toContain(`aria-labelledby="${dialog?.[1]}-title"`);
+        expect(html).toContain('aria-label="关闭视频任务明细"');
+        expect(html.match(/<tr[\s>]/g)).toHaveLength(2);
         expect(html).not.toContain('错误详情');
     });
 
@@ -266,6 +270,7 @@ describe('<CallDetailTable /> video detail', () => {
             }),
         );
         expect(html).toContain('-¥0.25');
+        expect(html).toContain('<dialog');
         expect(html).toContain('实际消费');
         expect(html).toContain('退还金额');
         expect(html).not.toContain('错误详情');

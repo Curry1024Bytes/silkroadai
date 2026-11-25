@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { Check, Clipboard, Film } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Check, CheckCircle2, Clipboard, Maximize2, Undo2, X } from 'lucide-react';
 import { useMessages } from '@/lib/i18n/client';
 import { logsMessages } from '@/lib/i18n/messages/logs';
 import { formatSignedCny } from '@/lib/format/number';
@@ -11,6 +11,7 @@ import { formatDuration } from '../dashboard/format';
 
 type VideoCopy = (typeof logsMessages)['zh']['video'];
 type RowVideo = NonNullable<LogRow['video']>;
+type VideoDetailRow = Pick<LogRow, 'model' | 'requestId' | 'tokenName' | 'costCny'> & { video?: LogRow['video'] };
 
 export function videoSpec(video: RowVideo, copy: VideoCopy): string {
     const parts: string[] = [];
@@ -30,8 +31,105 @@ export function videoPhaseLabel(phase: RowVideo['phase'], copy: VideoCopy): stri
             : copy.settleRefund;
 }
 
-export function videoTaskLabel(video: RowVideo, copy: VideoCopy): string {
-    return copy.states[video.task?.status ?? 'unknown'];
+export function VideoBillingControl({
+    row,
+    open,
+    onToggle,
+    refundLabel,
+}: {
+    row: VideoDetailRow;
+    open: boolean;
+    onToggle: () => void;
+    refundLabel?: string;
+}) {
+    const { video: copy } = useMessages(logsMessages);
+    const opener = useRef<HTMLButtonElement>(null);
+    const dialogId = useId();
+    if (!row.video) return null;
+    const label = refundLabel ?? copy.states[row.video.task?.status ?? 'unknown'];
+    const Icon = refundLabel ? Undo2 : CheckCircle2;
+    return (
+        <>
+            <button
+                ref={opener}
+                type="button"
+                onClick={onToggle}
+                aria-haspopup="dialog"
+                aria-controls={open ? dialogId : undefined}
+                title={copy.heading}
+                className={`inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-xs font-medium transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 ${refundLabel ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text' : 'border-portal-line bg-portal-soft text-portal-ink'}`}
+            >
+                <Icon size={13} strokeWidth={1.9} aria-hidden="true" />
+                {label}
+                <Maximize2 size={12} aria-hidden="true" />
+            </button>
+            {open && <VideoBillingDialog id={dialogId} row={row} onClose={onToggle} opener={opener} />}
+        </>
+    );
+}
+
+function VideoBillingDialog({
+    id,
+    row,
+    onClose,
+    opener,
+}: {
+    id: string;
+    row: VideoDetailRow;
+    onClose: () => void;
+    opener: React.RefObject<HTMLButtonElement | null>;
+}) {
+    const copy = useMessages(logsMessages).video;
+    const dialog = useRef<HTMLDialogElement>(null);
+
+    useEffect(() => {
+        const element = dialog.current;
+        const trigger = opener.current;
+        if (!element) return;
+        element.showModal();
+        const overflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            element.close();
+            document.body.style.overflow = overflow;
+            trigger?.focus({ preventScroll: true });
+        };
+    }, [opener]);
+
+    return (
+        <dialog
+            id={id}
+            ref={dialog}
+            aria-labelledby={`${id}-title`}
+            onCancel={(event) => {
+                event.preventDefault();
+                onClose();
+            }}
+            onClick={(event) => {
+                if (event.target === event.currentTarget) onClose();
+            }}
+            className="fixed inset-0 m-auto max-h-[86dvh] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto overscroll-contain rounded-xl border border-portal-line bg-portal-panel p-0 text-left text-portal-ink shadow-card-strong backdrop:bg-navy-strong/60 backdrop:backdrop-blur-sm"
+        >
+            <div>
+                <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-portal-line bg-portal-panel px-4 py-2.5 sm:px-6">
+                    <h2 id={`${id}-title`} className="m-0 text-base font-semibold sm:text-lg">
+                        {copy.heading}
+                    </h2>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        aria-label={copy.closeDetail}
+                        className="flex size-11 shrink-0 items-center justify-center rounded-md text-portal-muted hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-navy/30"
+                    >
+                        <X size={20} aria-hidden="true" />
+                    </button>
+                </header>
+                <div className="bg-portal-soft p-4 sm:p-6">
+                    <VideoBillingDetail row={row} />
+                </div>
+            </div>
+        </dialog>
+    );
 }
 
 async function fetchTaskDisplay(endpoint: string, signal: AbortSignal): Promise<CustomerVideoTask> {
@@ -241,11 +339,7 @@ function VideoTaskPanel({ video }: { video: RowVideo }) {
 }
 
 /** Shared customer-facing presentation; billing and upstream routing remain in new-api. */
-export function VideoBillingDetail({
-    row,
-}: {
-    row: Pick<LogRow, 'model' | 'requestId' | 'tokenName' | 'costCny'> & { video?: LogRow['video'] };
-}) {
+export function VideoBillingDetail({ row }: { row: VideoDetailRow }) {
     const copy = useMessages(logsMessages);
     const v = copy.video;
     const video = row.video;
@@ -306,13 +400,9 @@ export function VideoBillingDetail({
         <section aria-label={v.heading} className="min-w-0 space-y-4 py-1">
             <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-portal-line bg-portal-panel p-4 sm:p-5">
                 <div className="min-w-0 space-y-2">
-                    <h3 className="m-0 flex items-center gap-2 text-sm font-semibold text-portal-ink">
-                        <Film size={17} className="text-portal-muted" aria-hidden="true" />
-                        {v.heading}
-                        <span className="whitespace-nowrap rounded-md bg-portal-soft px-2 py-1 text-xs font-medium text-portal-muted">
-                            {videoPhaseLabel(video.phase, v)}
-                        </span>
-                    </h3>
+                    <span className="inline-block whitespace-nowrap rounded-md bg-portal-soft px-2 py-1 text-xs font-medium text-portal-muted">
+                        {videoPhaseLabel(video.phase, v)}
+                    </span>
                     <p className="m-0 text-sm text-portal-muted">
                         {videoSpec(video, v) || (perSecond ? v.bySeconds : v.byTokens)}
                     </p>
