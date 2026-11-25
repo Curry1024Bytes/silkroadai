@@ -29,7 +29,7 @@ export const VIDEO_TOKEN_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_RESOLUTIONS.fla
     VIDEO_TOKEN_INPUTS.map((video_input) => ({ resolution, video_input })),
 );
 
-/** Seedance 2.0 Fast's domestic token matrix supports only 480p and 720p. */
+/** Seedance 2.0 Fast and Artsdance 2.5 Flash use the 480p/720p token matrix. */
 export const VIDEO_TOKEN_FAST_COMBOS: VideoTokenCombo[] = VIDEO_TOKEN_COMBOS.filter(
     (combo) => combo.resolution === '480p' || combo.resolution === '720p',
 );
@@ -77,7 +77,8 @@ export function isSeedance25Model(model: string | undefined): boolean {
 
 export function videoTokenCombosForModel(model?: string): readonly VideoTokenCombo[] {
     if (isSeedanceMiniModel(model)) return VIDEO_TOKEN_MINI_COMBOS;
-    if (isSeedanceFastModel(model)) return VIDEO_TOKEN_FAST_COMBOS;
+    if (isSeedanceFastModel(model) || model?.trim().toLowerCase() === 'artsdance-2-5-flash-261101')
+        return VIDEO_TOKEN_FAST_COMBOS;
     if (isSeedance25Model(model)) return VIDEO_TOKEN_25_COMBOS;
     return VIDEO_TOKEN_COMBOS;
 }

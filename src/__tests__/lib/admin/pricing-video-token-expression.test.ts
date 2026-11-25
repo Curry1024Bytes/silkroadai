@@ -53,6 +53,15 @@ describe('videoTokenCombosForModel', () => {
         expect(videoTokenCombosForModel('seedance2.5-global-720p')).toHaveLength(8);
         expect(videoTokenCombosForModel('seedance2.0-fast-promax-720p')).toHaveLength(8);
     });
+
+    it('uses only the four Artsdance Flash price tiers', () => {
+        expect(videoTokenCombosForModel('artsdance-2-5-flash-261101').map(videoTokenKey)).toEqual([
+            '480p·none',
+            '480p·video',
+            '720p·none',
+            '720p·video',
+        ]);
+    });
 });
 
 describe('parseVideoTokenExpression', () => {
@@ -201,6 +210,7 @@ describe('rewriteVideoTokenExpression', () => {
     it.each([
         ['doubao-seedance-2-0-fast-260128', 4],
         ['doubao-seedance-2-0-mini-260615', 4],
+        ['artsdance-2-5-flash-261101', 4],
         ['doubao-seedance-2-5-260628', 6],
     ])('reduces legacy eight-tier formulas for %s', (model, count) => {
         const expected = videoTokenCombosForModel(model).map((combo, index) => ({ ...combo, price: index + 1.25 }));

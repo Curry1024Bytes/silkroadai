@@ -5,7 +5,7 @@ SELECT t.task_id, t.user_id AS owner_id,
        t.properties::jsonb ->> 'origin_model_name' AS model,
        t.status, t.progress, t.submit_time, t.finish_time,
        -- AIGAS output_seconds may be copied from the requested length.
-       CASE WHEN t.status = 'SUCCESS' AND t.platform = 'doubao'
+       CASE WHEN t.status = 'SUCCESS' AND t.platform IN ('doubao', 'llmroute_artsdance_flash')
            THEN t.data::jsonb ->> 'duration' END AS output_seconds,
        CASE WHEN t.status = 'SUCCESS' THEN t.data::jsonb ->> 'resolution' END AS output_resolution,
        CASE WHEN t.status = 'SUCCESS' THEN t.data::jsonb ->> 'ratio' END AS output_ratio,
@@ -25,7 +25,10 @@ SELECT t.task_id, t.user_id AS owner_id,
        ) END AS media_url,
        CASE WHEN t.status = 'SUCCESS' THEN t.private_data::jsonb ->> 'result_url' END AS result_url
 FROM public.tasks t
-WHERE t.platform = 'doubao' OR (t.platform = 'aigas-seedance' AND t."group" = 'SD特惠');
+WHERE t.platform = 'doubao'
+   OR (t.platform = 'aigas-seedance' AND t."group" = 'SD特惠')
+   OR (t.platform = 'llmroute_artsdance_flash'
+       AND t.properties::jsonb ->> 'origin_model_name' = 'artsdance-2-5-flash-261101');
 
 REVOKE ALL ON portal_sd_video.customer_tasks FROM PUBLIC;
 GRANT SELECT ON portal_sd_video.customer_tasks TO portal_sd_video_reader;
