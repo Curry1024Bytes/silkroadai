@@ -67,10 +67,25 @@ vi.mock('@/lib/newapi/client', () => ({
 }));
 
 const mockRechargeLogFindMany = vi.fn();
+const mockVideoMetadata = vi.fn();
+const mockVideoTimings = vi.fn();
+const mockVideoTasks = vi.fn<(...args: unknown[]) => Promise<Map<string, unknown>>>(async () => new Map());
+vi.mock('@/lib/customer-video-tasks', () => ({
+    readCustomerVideoTasks: (...args: unknown[]) => mockVideoTasks(...args),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         rechargeLog: { findMany: (...a: unknown[]) => mockRechargeLogFindMany(...a) },
+        sdVideoTaskMetadata: { findMany: (...a: unknown[]) => mockVideoMetadata(...a) },
     },
+}));
+vi.mock('@/lib/sd-special-video-delivery', () => ({
+    readSdSpecialTaskTimings: (...a: unknown[]) => mockVideoTimings(...a),
+}));
+vi.mock('@/lib/newapi/quota-units', async (load) => ({
+    ...(await load<typeof import('@/lib/newapi/quota-units')>()),
+    QUOTA_PER_USD: 500_000,
+    USD_TO_CNY_RATE: 7.2,
 }));
 
 vi.mock('@/lib/reseller/fetch-status', () => ({
@@ -88,6 +103,7 @@ vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart-lazy', () => ({
 import DashboardPage, { generateMetadata } from '@/app/(authenticated)/dashboard/page';
 import { LocaleProvider } from '@/lib/i18n/client';
 import { __resetLogsCacheForTest } from '@/lib/newapi/logs-cache';
+import { loadUsageData } from '@/app/(authenticated)/dashboard/sections';
 
 /** P1 streaming(2026-08-29):页面拆成 Suspense + async sections 后,
  *  renderToString 渲不动 async 组件 —— 改用 Fizz 流式渲染,onAllReady 时
@@ -206,11 +222,182 @@ beforeEach(() => {
     mockGetCustomerBalance.mockResolvedValue(newapiBal());
     mockGetUsageAggregate.mockResolvedValue(aggSnap());
     mockRechargeLogFindMany.mockResolvedValue([]);
+    mockVideoMetadata.mockResolvedValue([]);
+    mockVideoTimings.mockResolvedValue(new Map());
     setLogs([], []);
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe('dashboard video log metadata', () => {
+    const taskId = `task_${'x'.repeat(32)}`;
+    const snapshot = {
+        task_id: taskId,
+        public_model: 'sd-2-mini',
+        resolution: '480p',
+        has_video: false,
+        aspect_ratio: '16:9',
+    };
+    const args = {
+        portalUserId: PORTAL_USER_ID,
+        newapiUserId: NEWAPI_USER_ID,
+        newapiUsername: NEWAPI_USERNAME,
+        period: '30d' as const,
+    };
+    const sdLog = () =>
+        makeLog({
+            model_name: 'sd-2-mini-480-novideo',
+            quota: 250_000,
+            use_time: 3,
+            other: JSON.stringify({
+                is_task: true,
+                billing_mode: 'tiered_expr',
+                task_id: taskId,
+                usage_facts: { seconds: 4 },
+                matched_tier: 'seconds',
+                group_ratio: 1,
+                expr_b64: Buffer.from('tier("seconds", u("seconds") * 0.125)').toString('base64'),
+            }),
+        });
+
+    it('uses public SD names and owner-scoped specs/timings without changing the charge or aggregate', async () => {
+        const aggregate = aggSnap();
+        mockGetUsageAggregate.mockResolvedValue(aggregate);
+        mockVideoMetadata.mockResolvedValue([snapshot]);
+        mockVideoTimings.mockResolvedValue(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+        setLogs([
+            sdLog(),
+            { ...sdLog(), id: 2, user_id: 999, other: sdLog().other.replace(taskId, `task_${'y'.repeat(32)}`) },
+        ]);
+        const data = await loadUsageData(args);
+        expect(data.calls).toHaveLength(1);
+        expect(data.calls[0]).toMatchObject({
+            model: 'sd-2-mini',
+            costCny: 3.6,
+            quota: 250_000,
+            video: { resolution: '480p', videoInput: 'none', ratio: '16:9', elapsedSec: 207, unitCnyPerSecond: 0.9 },
+        });
+        expect(mockVideoMetadata.mock.calls[0][0].where).toEqual({
+            user_id: PORTAL_USER_ID,
+            task_id: { in: [taskId] },
+        });
+        expect(mockVideoTimings).toHaveBeenCalledExactlyOnceWith(NEWAPI_USER_ID, [taskId]);
+        expect(data.agg).toBe(aggregate);
+        const html = await renderPage();
+        expect(html).toContain('480p · 无参考视频 · 4 秒');
+        expect(html).toContain('3m 27s');
+        expect(html).not.toContain('sd-2-mini-480-novideo');
+    });
+
+    it('enriches historical task time without inventing an unrecorded aspect ratio', async () => {
+        mockVideoTimings.mockResolvedValue(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+        setLogs([sdLog()]);
+        const data = await loadUsageData(args);
+        expect(data.calls[0].video).toMatchObject({ elapsedSec: 207, ratio: null });
+    });
+
+    it.each(['snapshot', 'timing', 'both'])(
+        'degrades %s lookup failures without losing charges or totals',
+        async (failed) => {
+            const aggregate = aggSnap();
+            mockGetUsageAggregate.mockResolvedValue(aggregate);
+            vi.spyOn(console, 'warn').mockImplementation(() => {});
+            mockVideoMetadata.mockResolvedValue([snapshot]);
+            mockVideoTimings.mockResolvedValue(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+            if (failed !== 'timing') mockVideoMetadata.mockRejectedValue(new Error('metadata unavailable'));
+            if (failed !== 'snapshot') mockVideoTimings.mockRejectedValue(new Error('task timing unavailable'));
+            setLogs([sdLog()]);
+            const data = await loadUsageData(args);
+            expect(data.usageErr).toBeNull();
+            expect(data.agg).toBe(aggregate);
+            expect(data.calls[0]).toMatchObject({
+                model: 'sd-2-mini',
+                costCny: 3.6,
+                video: { ratio: failed === 'timing' ? '16:9' : null, elapsedSec: failed === 'snapshot' ? 207 : null },
+            });
+        },
+    );
+
+    it.each([
+        { type: 2, tokens: 10_000, actual: 50_000, phase: 'settle_extra', cost: 0.144 },
+        { type: 6, tokens: 6_000, actual: 30_000, phase: 'settle_refund', cost: -0.144 },
+    ])(
+        'shows official $phase with task timing independent of a missing estimate and preserves signed amounts',
+        async ({ type, tokens, actual, phase, cost }) => {
+            const other = {
+                is_task: true,
+                billing_mode: 'tiered_expr',
+                task_id: `task_${'o'.repeat(32)}`,
+                usage_facts: { tokens: 8_000, resolution: '480p', video_input: 'none' },
+                matched_tier: '480p·none',
+                group_ratio: 1,
+                expr_b64: Buffer.from('tier("480p·none", u("tokens") * 10 / 1000000)').toString('base64'),
+            };
+            const estimate = makeLog({
+                model_name: 'doubao-seedance-2-5-260628',
+                quota: 40_000,
+                other: JSON.stringify(other),
+            });
+            const settlement = {
+                ...estimate,
+                id: 2,
+                type,
+                created_at: estimate.created_at + 311,
+                quota: 10_000,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                other: JSON.stringify({
+                    ...other,
+                    usage_facts: { ...other.usage_facts, tokens },
+                    pre_consumed_quota: 40_000,
+                    actual_quota: actual,
+                }),
+            };
+            mockVideoTasks.mockResolvedValue(
+                new Map([
+                    [
+                        other.task_id,
+                        {
+                            model: estimate.model_name,
+                            display: { elapsedSec: 311, status: 'completed', outputSeconds: 5, request: {} },
+                        },
+                    ],
+                ]),
+            );
+            setLogs(type === 2 ? [settlement] : [], [], type === 6 ? [settlement] : []);
+            const data = await loadUsageData(args);
+            expect(data.calls[0].costCny).toBeCloseTo(cost, 12);
+            expect(data.calls[0]).toMatchObject({
+                video: { phase, billingUnit: 'tokens', tokens, unitCnyPer1M: 72, elapsedSec: 311 },
+            });
+            expect(data.calls).toHaveLength(1);
+            const html = await renderPage();
+            expect(html).toContain(`0 / ${tokens.toLocaleString('en-US')}`);
+            expect(html).toContain('5m 11s');
+            expect(mockVideoTimings).not.toHaveBeenCalled();
+        },
+    );
+
+    it('keeps a matched failed SD task at zero cost without exposing a successful billing detail', async () => {
+        const charge = sdLog();
+        setLogs([charge], [], [{ ...charge, id: 2, type: 6, created_at: charge.created_at + 100 }]);
+        const data = await loadUsageData(args);
+        expect(data.calls).toHaveLength(1);
+        expect(data.calls[0]).toMatchObject({ model: 'sd-2-mini', type: 6, costCny: 0, video: null });
+        expect(mockVideoMetadata).not.toHaveBeenCalled();
+        expect(mockVideoTimings).not.toHaveBeenCalled();
+    });
+
+    it('does not query SD metadata for ordinary text and image rows', async () => {
+        setLogs([makeLog(), makeLog({ id: 2, model_name: 'gpt-image-2' })]);
+        const data = await loadUsageData(args);
+        expect(data.calls).toHaveLength(2);
+        expect(data.calls.every((row) => row.video === null)).toBe(true);
+        expect(mockVideoMetadata).not.toHaveBeenCalled();
+        expect(mockVideoTimings).not.toHaveBeenCalled();
+    });
 });
 
 describe('<DashboardPage /> merged console — happy path', () => {

@@ -55,11 +55,22 @@ export function roundDurationSec(sec: number): number {
 }
 
 /** Range 读成片头部并解析。上游不支持 Range(回 200 全量)时只读前 PROBE_BYTES 就断开。 */
-export async function probeVideoMeta(url: string): Promise<ProbedVideoMeta | null> {
+export async function probeVideoMeta(
+    url: string,
+    options: { redirect?: RequestRedirect; mp4Only?: boolean } = {},
+): Promise<ProbedVideoMeta | null> {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS);
     try {
-        const res = await fetch(url, { headers: { Range: `bytes=0-${PROBE_BYTES - 1}` }, signal: ctl.signal });
+        const res = await fetch(url, {
+            headers: { Range: `bytes=0-${PROBE_BYTES - 1}` },
+            signal: ctl.signal,
+            ...(options.redirect ? { redirect: options.redirect, cache: 'no-store' } : {}),
+        });
+        if (options.mp4Only && res.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'video/mp4') {
+            void res.body?.cancel().catch(() => {});
+            return null;
+        }
         if (!res.ok || !res.body) return null;
         const chunks: Buffer[] = [];
         let got = 0;

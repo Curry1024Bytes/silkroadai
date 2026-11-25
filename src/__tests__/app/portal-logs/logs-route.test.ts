@@ -21,6 +21,20 @@ vi.mock('@/lib/i18n/server', () => ({
 }));
 
 const mockQueryLogs = vi.fn();
+const mockVideoTasks = vi.fn<(...args: unknown[]) => Promise<Map<string, unknown>>>(async () => new Map());
+vi.mock('@/lib/customer-video-tasks', () => ({
+    readCustomerVideoTasks: (...args: unknown[]) => mockVideoTasks(...args),
+}));
+const mockVideoMetadata = vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>[]>>(async () => []);
+const mockVideoTimings = vi.fn<(...args: unknown[]) => Promise<Map<string, { model: string; elapsedSec: number }>>>(
+    async () => new Map(),
+);
+vi.mock('@/lib/db', () => ({
+    prisma: { sdVideoTaskMetadata: { findMany: (...args: unknown[]) => mockVideoMetadata(...args) } },
+}));
+vi.mock('@/lib/sd-special-video-delivery', () => ({
+    readSdSpecialTaskTimings: (...args: unknown[]) => mockVideoTimings(...args),
+}));
 vi.mock('@/lib/newapi/quota-units', () => ({ QUOTA_PER_USD: 500000, USD_TO_CNY_RATE: 5 }));
 vi.mock('@/lib/newapi/client', () => ({
     queryLogs: (...a: unknown[]) => mockQueryLogs(...a),
@@ -76,6 +90,40 @@ beforeEach(() => {
 });
 
 describe('GET /api/portal/logs', () => {
+    it('按公开简名筛选全部精确SKU,返回自有任务的画幅和时长,不改金额', async () => {
+        const taskId = `task_${'x'.repeat(32)}`;
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockVideoMetadata.mockResolvedValueOnce([
+            { task_id: taskId, public_model: 'sd-2-mini', resolution: '480p', has_video: false, aspect_ratio: '16:9' },
+        ]);
+        mockVideoTimings.mockResolvedValueOnce(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+        const own = makeLog({
+            model_name: 'sd-2-mini-480-novideo',
+            quota: 50000,
+            other: JSON.stringify({
+                is_task: true,
+                billing_mode: 'tiered_expr',
+                task_id: taskId,
+                usage_facts: { seconds: 4 },
+            }),
+        });
+        mockQueryLogs.mockImplementation(async ({ model_name }: { model_name: string }) => ({
+            items: model_name === own.model_name ? [own, { ...own, id: 2, user_id: 999 }] : [],
+            total: 2,
+        }));
+        const data = await (await GET(req('?model=sd-2-mini'))).json();
+        expect(data.rows).toHaveLength(1);
+        expect(data.rows[0]).toMatchObject({
+            model: 'sd-2-mini',
+            costCny: 0.5,
+            video: { resolution: '480p', videoInput: 'none', ratio: '16:9', elapsedSec: 207 },
+        });
+        expect(mockVideoMetadata.mock.calls[0][0]).toMatchObject({
+            where: { user_id: 'u1', task_id: { in: [taskId] } },
+        });
+        expect(mockQueryLogs.mock.calls).toHaveLength(5);
+    });
+
     it('官转和特惠统一视频明细,保留账单金额和隔离边界', async () => {
         mockGetCurrentUser.mockResolvedValue(provisioned);
         const secondOther = JSON.stringify({
@@ -96,20 +144,23 @@ describe('GET /api/portal/logs', () => {
             matched_tier: '480p·none',
             group_ratio: 1,
             expr_b64: Buffer.from('tier("480p·none", u("tokens") * 50 / 1000000)').toString('base64'),
-            task_id: 'task_tokens123',
+            task_id: `task_${'t'.repeat(32)}`,
             usage_facts: { tokens: 100000, resolution: '480p', video_input: 'none' },
         };
+        mockVideoTasks.mockResolvedValueOnce(
+            new Map([
+                [
+                    tokenBase.task_id,
+                    {
+                        model: 'doubao-seedance-2-5-260628',
+                        display: { status: 'completed', elapsedSec: 71, outputSeconds: 5, request: { duration: 5 } },
+                    },
+                ],
+            ]),
+        );
         mockQueryLogs.mockResolvedValue({
             items: [
                 makeLog({ id: 1, type: 2, model_name: 'sd-2.5-480P-novideo', quota: 600000, other: secondOther }),
-                makeLog({
-                    id: 2,
-                    type: 2,
-                    model_name: 'doubao-seedance-2-5-260628',
-                    created_at: 100,
-                    quota: 2400000,
-                    other: JSON.stringify(tokenBase),
-                }),
                 makeLog({
                     id: 3,
                     type: 2,
@@ -120,10 +171,10 @@ describe('GET /api/portal/logs', () => {
                 }),
                 makeLog({ id: 4, type: 2, user_id: 999, quota: 600000, other: secondOther }),
             ],
-            total: 4,
+            total: 3,
         });
         const data = await (await GET(req())).json();
-        expect(data.rows).toHaveLength(3);
+        expect(data.rows).toHaveLength(2);
         const byId = Object.fromEntries(data.rows.map((r: { id: number }) => [r.id, r]));
         expect(byId[1]).toMatchObject({
             costCny: 6,
@@ -139,7 +190,14 @@ describe('GET /api/portal/logs', () => {
         });
         expect(byId[3]).toMatchObject({
             costCny: 1,
-            video: { billingUnit: 'tokens', phase: 'settle_extra', actualCny: 25, preConsumedCny: 24, elapsedSec: 30 },
+            video: {
+                billingUnit: 'tokens',
+                phase: 'settle_extra',
+                actualCny: 25,
+                preConsumedCny: 24,
+                elapsedSec: 71,
+                task: { status: 'completed', outputSeconds: 5 },
+            },
         });
         expect(JSON.stringify(data)).not.toMatch(
             /supplier-secret|supplier-key|expr_b64|group_ratio|root_info|admin_info/,

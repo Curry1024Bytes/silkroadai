@@ -8,10 +8,23 @@
  * manual smoke (same shallow pattern as the other authenticated component
  * tests).
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { CallDetailTable, type CallRow } from '@/app/(authenticated)/dashboard/call-detail-table';
 import { LocaleProvider } from '@/lib/i18n/client';
+
+const state = vi.hoisted(() => ({ expanded: null as number | null }));
+vi.mock('react', async (load) => {
+    const react = await load<typeof import('react')>();
+    return {
+        ...react,
+        useState: (initial: unknown) => react.useState(initial === null ? state.expanded : initial),
+    };
+});
+
+beforeEach(() => {
+    state.expanded = null;
+});
 
 function row(o: Partial<CallRow> = {}): CallRow {
     return {
@@ -31,6 +44,7 @@ function row(o: Partial<CallRow> = {}): CallRow {
         type: o.type ?? 2,
         refundKind: o.refundKind ?? null,
         content: o.content ?? '',
+        video: o.video ?? null,
     };
 }
 
@@ -170,6 +184,120 @@ describe('<CallDetailTable /> SSR', () => {
 function renderRow(o: Partial<CallRow>) {
     return <CallDetailTable rows={[row(o)]} />;
 }
+
+describe('<CallDetailTable /> video detail', () => {
+    const video: NonNullable<CallRow['video']> = {
+        taskId: `task_${'x'.repeat(32)}`,
+        phase: 'charge',
+        billingUnit: 'seconds',
+        tokens: 0,
+        seconds: 4,
+        resolution: '480p',
+        videoInput: 'none',
+        ratio: '16:9',
+        requestPath: '/v1/videos',
+        unitCnyPer1M: null,
+        unitCnyPerSecond: 0.125,
+        preConsumedCny: null,
+        actualCny: null,
+        elapsedSec: 207,
+    };
+    const secondsRow = () => row({ model: 'sd-2-mini', costCny: 0.5, video });
+
+    it('shows the video spec and task duration with an accessible expansion control', () => {
+        const html = renderToString(<CallDetailTable rows={[secondsRow()]} />);
+        expect(html).toContain('480p · 无参考视频 · 4 秒');
+        expect(html).toContain('3m 27s');
+        expect(html).not.toContain('100 / 200');
+        expect(html).toContain('title="视频任务明细"');
+        expect(html).toContain('aria-expanded="false"');
+        expect(html).toContain('aria-controls="dashboard-video-detail-1"');
+        expect(html).not.toContain('任务信息');
+    });
+
+    it('does not substitute HTTP request latency for an unknown seconds-task duration', () => {
+        const html = renderToString(
+            renderRow({ ...secondsRow(), useTimeMs: 12_300, video: { ...video, elapsedSec: null } }),
+        );
+        expect(html).not.toContain('12.3s');
+        expect(html).toContain('480p · 无参考视频 · 4 秒');
+    });
+
+    it('renders the shared billing detail in the expanded row, including requested ratio and the verified formula', () => {
+        state.expanded = 1;
+        const html = renderToString(<CallDetailTable rows={[secondsRow()]} />);
+        for (const value of [
+            '任务信息',
+            '计费依据',
+            '请求画幅',
+            '16:9',
+            '任务耗时（含排队）',
+            '4 秒 × ¥0.125 = ¥0.50',
+        ]) {
+            expect(html).toContain(value);
+        }
+        expect(html).toContain('aria-expanded="true"');
+        expect(html).toContain('id="dashboard-video-detail-1"');
+        expect(html).not.toContain('错误详情');
+    });
+
+    it('shows official video billing tokens even when the raw token columns are empty', () => {
+        const html = renderToString(
+            renderRow({
+                model: 'doubao-seedance-2-5-260628',
+                promptTokens: 0,
+                completionTokens: 0,
+                video: { ...video, billingUnit: 'tokens', phase: 'estimate', tokens: 58_245, seconds: null },
+            }),
+        );
+        expect(html).toContain('0 / 58,245');
+        expect(html).toContain('预扣');
+    });
+
+    it('uses the shared settlement breakdown rather than error details for a video refund', () => {
+        state.expanded = 1;
+        const html = renderToString(
+            renderRow({
+                ...secondsRow(),
+                type: 6,
+                refundKind: 'settlement',
+                costCny: -0.25,
+                video: { ...video, phase: 'settle_refund', preConsumedCny: 0.75, actualCny: 0.5 },
+            }),
+        );
+        expect(html).toContain('-¥0.25');
+        expect(html).toContain('实际消费');
+        expect(html).toContain('退还金额');
+        expect(html).not.toContain('错误详情');
+    });
+
+    it('keeps the failed/refunded non-video explanation when no billing detail is available', () => {
+        state.expanded = 1;
+        const html = renderToString(renderRow({ type: 6, costCny: 0, content: '视频任务失败，已退款', video: null }));
+        expect(html).toContain('错误详情');
+        expect(html).toContain('视频任务失败，已退款');
+        expect(html).not.toContain('任务信息');
+    });
+
+    it('supports English specs and expanded details without Chinese or provider-origin labels', () => {
+        state.expanded = 1;
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <CallDetailTable rows={[secondsRow()]} />
+            </LocaleProvider>,
+        );
+        for (const value of [
+            'Task information',
+            'Billing basis',
+            'Requested aspect ratio',
+            'Task duration (including queueing)',
+            'no reference video',
+        ]) {
+            expect(html).toContain(value);
+        }
+        expect(html).not.toMatch(/[\u4e00-\u9fff]|reported by the provider/);
+    });
+});
 
 describe('<CallDetailTable /> English locale', () => {
     const en = (rows: CallRow[]) =>

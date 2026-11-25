@@ -1521,6 +1521,20 @@ model LedgerEntry {
   @@map("ledger_entries")
 }
 
+model SdVideoTaskMetadata {
+  task_id      String   @id
+  user_id      String   @db.Uuid
+  public_model String
+  resolution   String?
+  has_video    Boolean?
+  aspect_ratio String?
+  request_summary Json?
+  created_at   DateTime @default(now())
+
+  @@index([user_id, created_at])
+  @@map("sd_video_task_metadata")
+}
+
 /// 异步生图任务(opt-in `?async=true`)。提交即建行返回 task_id,后台跑 handleImagesDalle,
 /// 客户轮询 `GET /v1/images/tasks/{task_id}` 拿结果。计费不变(后台真调 new-api,成功才扣)。
 /// user_id = 从 sk- key 解析的 portal 用户,查询时按它做 IDOR 守门。

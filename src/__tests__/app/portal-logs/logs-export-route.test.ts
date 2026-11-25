@@ -19,6 +19,15 @@ vi.mock('@/lib/auth/session', () => ({
 }));
 
 const mockQueryLogs = vi.fn();
+vi.mock('@/lib/customer-video-tasks', () => ({ readCustomerVideoTasks: async () => new Map() }));
+const mockVideoMetadata = vi.fn();
+const mockVideoTimings = vi.fn();
+vi.mock('@/lib/db', () => ({
+    prisma: { sdVideoTaskMetadata: { findMany: (...args: unknown[]) => mockVideoMetadata(...args) } },
+}));
+vi.mock('@/lib/sd-special-video-delivery', () => ({
+    readSdSpecialTaskTimings: (...args: unknown[]) => mockVideoTimings(...args),
+}));
 vi.mock('@/lib/newapi/client', () => ({
     queryLogs: (...a: unknown[]) => mockQueryLogs(...a),
     quotaToCny: (q: number) => q / 100000, // 简化;测试不深究金额
@@ -79,9 +88,86 @@ const fullPage = (offset = 0) => ({
     total: 100,
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+    vi.clearAllMocks();
+    mockVideoMetadata.mockReset().mockResolvedValue([]);
+    mockVideoTimings.mockReset().mockResolvedValue(new Map());
+});
 
 describe('GET /api/portal/logs/export', () => {
+    it('SD简名CSV包含规格和真实任务耗时,按秒不输出tokens', async () => {
+        const taskId = `task_${'x'.repeat(32)}`;
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockVideoMetadata.mockResolvedValueOnce([
+            { task_id: taskId, public_model: 'sd-2-mini', resolution: '480p', has_video: false, aspect_ratio: '16:9' },
+        ]);
+        mockVideoTimings.mockResolvedValueOnce(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+        mockQueryLogs.mockImplementation(async ({ model_name }: { model_name: string }) => ({
+            items:
+                model_name === 'sd-2-mini-480-novideo'
+                    ? [
+                          makeLog({
+                              model_name,
+                              other: JSON.stringify({
+                                  is_task: true,
+                                  billing_mode: 'tiered_expr',
+                                  task_id: taskId,
+                                  usage_facts: { seconds: 4 },
+                              }),
+                          }),
+                      ]
+                    : [],
+            total: 1,
+        }));
+        const text = await (await GET(req('?model=sd-2-mini'))).text();
+        const line = text.trimEnd().split('\r\n')[1];
+        expect(line).toContain(',sd-2-mini,k,REQ1,207,,,,,1.000000,成功,,按秒计费,480p,无参考视频,16:9,4,207');
+        expect(text).not.toContain('sd-2-mini-480-novideo');
+        expect(mockVideoMetadata.mock.calls[0][0].where.user_id).toBe('u1');
+    });
+
+    it('SD旧记录没有任务时间时留空,不拿HTTP耗时冒充任务耗时', async () => {
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({
+                    model_name: 'sd-2-mini-480-novideo',
+                    other: JSON.stringify({ is_task: true, billing_mode: 'tiered_expr', usage_facts: { seconds: 4 } }),
+                }),
+            ],
+            total: 1,
+        });
+        const line = (await (await GET(req())).text()).trimEnd().split('\r\n')[1];
+        expect(line).toContain(',sd-2-mini,k,REQ1,,,,,,1.000000,成功,,按秒计费,480p,无参考视频,,4,');
+    });
+
+    it('SD失败退款配对后不再导出扣费公式或计费秒数', async () => {
+        const taskId = `task_${'x'.repeat(32)}`;
+        const model_name = 'sd-2-mini-480-novideo';
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({
+                    id: 1,
+                    model_name,
+                    other: JSON.stringify({
+                        is_task: true,
+                        billing_mode: 'tiered_expr',
+                        task_id: taskId,
+                        usage_facts: { seconds: 4 },
+                    }),
+                }),
+                makeLog({ id: 2, type: 6, model_name, created_at: 1100, other: JSON.stringify({ task_id: taskId }) }),
+            ],
+            total: 2,
+        });
+        const text = await (await GET(req())).text();
+        expect(text.trimEnd().split('\r\n')).toHaveLength(2);
+        expect(text).toContain(',0.000000,失败,');
+        expect(text).not.toContain('按秒计费');
+        expect(text).not.toContain('REQ2');
+    });
+
     it('未登录 → 401', async () => {
         mockGetCurrentUser.mockResolvedValue(null);
         expect((await GET(req())).status).toBe(401);
@@ -382,7 +468,41 @@ describe('GET /api/portal/logs/export — 日志库直连主路径(全量,无 10
         await res.arrayBuffer(); // 消费流,确保批查已执行
         const params = mockPoolQuery.mock.calls[0][1] as unknown[];
         expect(params[0]).toBe(100); // newapi_user_id
-        expect(params.slice(1, 7)).toEqual([1000, 2000, 'claude-opus-5', 'CCMAX', 'ABC123', 44]);
+        expect(params.slice(1, 7)).toEqual([1000, 2000, ['claude-opus-5'], 'CCMAX', 'ABC123', 44]);
+    });
+
+    it('直连导出也精确展开SD简名并补齐同账号任务规格和耗时', async () => {
+        const taskId = `task_${'x'.repeat(32)}`;
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockVideoMetadata.mockResolvedValue([
+            { task_id: taskId, public_model: 'sd-2-mini', resolution: '480p', has_video: false, aspect_ratio: '16:9' },
+        ]);
+        mockVideoTimings.mockResolvedValue(new Map([[taskId, { model: 'sd-2-mini', elapsedSec: 207 }]]));
+        mockPoolQuery.mockResolvedValueOnce({
+            rows: [
+                makeDbRow({
+                    id: 1,
+                    model_name: 'sd-2-mini-480-novideo',
+                    other: JSON.stringify({
+                        is_task: true,
+                        billing_mode: 'tiered_expr',
+                        task_id: taskId,
+                        usage_facts: { seconds: 4 },
+                    }),
+                }),
+            ],
+        });
+        const text = await (await GET(req('?model=sd-2-mini'))).text();
+        expect(mockPoolQuery.mock.calls[0][1][3]).toEqual([
+            'sd-2-mini',
+            'sd-2-mini-480',
+            'sd-2-mini-480-novideo',
+            'sd-2-mini-720',
+            'sd-2-mini-720-novideo',
+        ]);
+        expect(text).toContain(',sd-2-mini,CCMAX,REQ1,207,,,,,0.350000,成功,,按秒计费,480p,无参考视频,16:9,4,207');
+        expect(mockQueryLogs).not.toHaveBeenCalled();
+        expect(mockVideoMetadata.mock.calls[0][0].where.user_id).toBe('u1');
     });
 
     it('keyset 翻批:满批(5000 行)后用末行 id 作游标继续,直到不满批', async () => {

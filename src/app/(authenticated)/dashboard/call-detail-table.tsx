@@ -23,6 +23,7 @@
  */
 import { intlLocale } from '@/lib/i18n';
 import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
+import { logsMessages } from '@/lib/i18n/messages/logs';
 import { useState } from 'react';
 import { useMessages, useLocale } from '@/lib/i18n/client';
 import {
@@ -39,6 +40,8 @@ import {
 import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabel, type CallResult } from './format';
 import { formatSignedCny } from '@/lib/format/number';
 import type { RefundKind } from '@/lib/newapi/log-display';
+import type { LogRow } from '@/app/api/portal/logs/route';
+import { VideoBillingDetail, videoSpec, videoPhaseLabel, videoTaskLabel } from '../logs/video-billing-detail';
 
 export interface CallRow {
     id: number;
@@ -72,6 +75,7 @@ export interface CallRow {
     refundKind?: RefundKind | null;
     /** error / 退款详情 */
     content: string;
+    video?: LogRow['video'];
 }
 
 const PAGE_SIZE = 20;
@@ -235,6 +239,7 @@ function CallRowItem({
     const en = locale === 'en';
     const copy = useMessages(dashboardMessages).table;
     const cell = 'px-4 py-3 text-sm text-portal-ink border-b border-portal-line';
+    const videoCopy = useMessages(logsMessages).video;
     const isRefund = result === 'settlement_refund' || result === 'failure_refund';
     return (
         <>
@@ -242,7 +247,16 @@ function CallRowItem({
                 <td className={`${cell} whitespace-nowrap text-portal-muted`}>
                     {new Date(row.createdAt * 1000).toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai' })}
                 </td>
-                <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
+                <td className={`${cell} font-mono text-xs`}>
+                    {row.model || '<unknown>'}
+                    {row.video && (
+                        <span className="mt-0.5 block font-sans text-[11px] leading-tight text-minor-ink">
+                            {videoSpec(row.video, videoCopy)}
+                            {' · '}
+                            {videoPhaseLabel(row.video.phase, videoCopy)}
+                        </span>
+                    )}
+                </td>
                 <td className={`${cell} text-xs`}>
                     <span
                         className="inline-block max-w-[140px] truncate align-bottom"
@@ -254,9 +268,17 @@ function CallRowItem({
                 <td className={cell}>
                     <RequestIdCell value={row.requestId} />
                 </td>
-                <td className={`${cell} text-right tabular-nums text-portal-muted`}>{formatDuration(row.useTimeMs)}</td>
+                <td className={`${cell} whitespace-nowrap text-right tabular-nums text-portal-muted`}>
+                    {formatDuration(
+                        row.video?.elapsedSec != null ? row.video.elapsedSec * 1000 : row.video ? 0 : row.useTimeMs,
+                    )}
+                </td>
                 <td className={`${cell} text-right tabular-nums text-portal-muted`}>
-                    {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
+                    {row.video
+                        ? row.video.billingUnit === 'seconds'
+                            ? '—'
+                            : formatTokens(0, row.video.tokens)
+                        : formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                     <CacheTokensLine row={row} />
                 </td>
                 <td
@@ -297,6 +319,23 @@ function CallRowItem({
                                 <ChevronDown size={12} aria-hidden="true" />
                             )}
                         </button>
+                    ) : row.video ? (
+                        <button
+                            type="button"
+                            onClick={onToggle}
+                            title={videoCopy.heading}
+                            aria-expanded={isOpen}
+                            aria-controls={`dashboard-video-detail-${row.id}`}
+                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-soft px-2 text-xs font-medium text-portal-ink transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                        >
+                            <CheckCircle2 size={13} aria-hidden="true" />
+                            {videoTaskLabel(row.video, videoCopy)}
+                            {isOpen ? (
+                                <ChevronUp size={12} aria-hidden="true" />
+                            ) : (
+                                <ChevronDown size={12} aria-hidden="true" />
+                            )}
+                        </button>
                     ) : (
                         <span className="inline-flex items-center gap-1.5 rounded bg-status-success-bg px-2 py-1 text-xs font-medium text-status-success-text">
                             <CheckCircle2 size={13} aria-hidden="true" />
@@ -305,7 +344,18 @@ function CallRowItem({
                     )}
                 </td>
             </tr>
-            {result !== 'success' && isOpen && (
+            {row.video && isOpen && (
+                <tr className="bg-portal-soft">
+                    <td
+                        colSpan={COL_SPAN}
+                        id={`dashboard-video-detail-${row.id}`}
+                        className="border-b border-portal-line px-4 py-4"
+                    >
+                        <VideoBillingDetail row={row} />
+                    </td>
+                </tr>
+            )}
+            {!row.video && result !== 'success' && isOpen && (
                 <tr className="bg-portal-soft">
                     <td colSpan={COL_SPAN} className="border-b border-portal-line px-4 py-3">
                         <p

@@ -23,7 +23,7 @@ vi.mock('pg', () => ({
     },
 }));
 
-import { deliverExhaustedSdVideo } from '@/lib/sd-special-video-delivery';
+import { deliverExhaustedSdVideo, readSdSpecialTaskTimings } from '@/lib/sd-special-video-delivery';
 
 const path = `/videos/task_${'x'.repeat(32)}`;
 const task = {
@@ -181,5 +181,47 @@ describe('SD特惠 exhausted-Key reads', () => {
         vi.stubEnv('NEWAPI_SD_VIDEO_DELIVERY_DATABASE_URL', '');
         expect(await deliverExhaustedSdVideo(request(), path)).toBeNull();
         expect(findKey).not.toHaveBeenCalled();
+    });
+});
+
+describe('SD log task timing read', () => {
+    it('reads only requested completed tasks for the owner and validates canonical timestamps', async () => {
+        const ids = ['a', 'b', 'c', 'd', 'e'].map((value) => `task_${value.repeat(32)}`);
+        const completed = { sku: task.sku, submit_time: 100, finish_time: 307 };
+        query.mockResolvedValue({
+            rows: [
+                { ...completed, task_id: ids[0] },
+                { ...completed, task_id: ids[1], finish_time: 99 },
+                { ...completed, task_id: ids[2], finish_time: null },
+                { ...completed, task_id: ids[3], submit_time: 0 },
+                { ...completed, task_id: ids[4], sku: 'unknown-model' },
+                { ...completed, task_id: `task_${'z'.repeat(32)}` },
+            ],
+        });
+        expect(await readSdSpecialTaskTimings(21, [...ids, ids[0], 'task_short'])).toEqual(
+            new Map([[ids[0], { model: 'sd-2-mini', elapsedSec: 207 }]]),
+        );
+        expect(query).toHaveBeenCalledExactlyOnceWith(
+            expect.stringContaining('owner_id = $1 AND task_id = ANY($2::text[])'),
+            [21, ids],
+        );
+        expect(query.mock.calls[0][0]).toContain("status IN ('SUCCESS', 'FAILURE')");
+        expect(fetchMedia).not.toHaveBeenCalled();
+    });
+
+    it('does not read when the owner, IDs or optional reader configuration are absent', async () => {
+        expect((await readSdSpecialTaskTimings(0, [path.slice(8)])).size).toBe(0);
+        expect((await readSdSpecialTaskTimings(21, ['task_short'])).size).toBe(0);
+        vi.stubEnv('NEWAPI_SD_VIDEO_DELIVERY_DATABASE_URL', '');
+        expect((await readSdSpecialTaskTimings(21, [`task_${'x'.repeat(32)}`])).size).toBe(0);
+        expect(query).not.toHaveBeenCalled();
+    });
+
+    it('bounds export queries to 500 unique task IDs per batch', async () => {
+        query.mockResolvedValue({ rows: [] });
+        const ids = Array.from({ length: 501 }, (_, index) => `task_${String(index).padStart(32, '0')}`);
+        await readSdSpecialTaskTimings(21, ids);
+        expect(query).toHaveBeenCalledTimes(2);
+        expect(query.mock.calls.map(([, params]) => params[1].length)).toEqual([500, 1]);
     });
 });

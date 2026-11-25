@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Clipboard, Film } from 'lucide-react';
 import { useMessages } from '@/lib/i18n/client';
 import { logsMessages } from '@/lib/i18n/messages/logs';
 import { formatSignedCny } from '@/lib/format/number';
 import type { LogRow } from '@/app/api/portal/logs/route';
+import type { CustomerVideoTask } from '@/lib/video-task-display';
 import { formatDuration } from '../dashboard/format';
 
 type VideoCopy = (typeof logsMessages)['zh']['video'];
@@ -27,6 +28,17 @@ export function videoPhaseLabel(phase: RowVideo['phase'], copy: VideoCopy): stri
           : phase === 'settle_extra'
             ? copy.settleExtra
             : copy.settleRefund;
+}
+
+export function videoTaskLabel(video: RowVideo, copy: VideoCopy): string {
+    return copy.states[video.task?.status ?? 'unknown'];
+}
+
+async function fetchTaskDisplay(endpoint: string, signal: AbortSignal): Promise<CustomerVideoTask> {
+    const response = await fetch(endpoint, { cache: 'no-store', signal });
+    if (!response.ok) throw new Error('Task lookup failed');
+    const data = (await response.json()) as { task: CustomerVideoTask };
+    return data.task;
 }
 
 function CopyValue({ label, value }: { label: string; value: string }) {
@@ -75,8 +87,165 @@ function DetailList({ items }: { items: Array<[string, ReactNode]> }) {
 const money = (value: number) => formatSignedCny(value, { perCall: true });
 const unitMoney = (value: number) => `¥${value.toLocaleString('en-US', { maximumFractionDigits: 6 })}`;
 
+function VideoTaskPanel({ video }: { video: RowVideo }) {
+    const copy = useMessages(logsMessages).video;
+    const [task, setTask] = useState<CustomerVideoTask | undefined>(video.task);
+    const [loading, setLoading] = useState(false);
+    const [failed, setFailed] = useState(false);
+    const [preview, setPreview] = useState(false);
+    const [mediaFailed, setMediaFailed] = useState(false);
+    const endpoint =
+        video.taskId && /^task_[A-Za-z0-9]{32}$/.test(video.taskId)
+            ? `/api/portal/video-tasks/${encodeURIComponent(video.taskId)}`
+            : null;
+    const needsProbe = video.task?.mediaAvailable && video.task.outputSeconds === null;
+    useEffect(() => {
+        if (!endpoint || !needsProbe) return;
+        const controller = new AbortController();
+        void fetchTaskDisplay(endpoint, AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]))
+            .then((updated) => {
+                if (controller.signal.aborted) return;
+                setTask((current) =>
+                    current?.outputSeconds != null
+                        ? current
+                        : { ...updated, request: { ...updated.request, ...current?.request } },
+                );
+            })
+            .catch(() => {});
+        return () => controller.abort();
+    }, [endpoint, needsProbe]);
+    const date = (seconds: number) => new Date(seconds * 1000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const items: Array<[string, ReactNode]> = [[copy.taskState, copy.states[task?.status ?? 'unknown']]];
+    if (task?.progress !== null && task?.progress !== undefined) items.push([copy.progress, `${task.progress}%`]);
+    if (task?.submittedAt) items.push([copy.submittedAt, `${date(task.submittedAt)} (UTC+8)`]);
+    if (task?.finishedAt) items.push([copy.finishedAt, `${date(task.finishedAt)} (UTC+8)`]);
+    const elapsed = task ? task.elapsedSec : video.elapsedSec;
+    if (elapsed != null) items.push([copy.taskElapsed, formatDuration(elapsed * 1000)]);
+    if (task?.outputSeconds != null) items.push([copy.outputSeconds, copy.seconds(String(task.outputSeconds))]);
+    if (task?.outputResolution) items.push([copy.outputResolution, task.outputResolution]);
+    if (task?.outputRatio) items.push([copy.outputRatio, task.outputRatio]);
+    const parameters = task?.request ?? {};
+    const summary = Object.fromEntries(
+        Object.entries({
+            resolution: parameters.resolution,
+            ratio: parameters.ratio,
+            duration: parameters.duration,
+            generate_audio: parameters.generateAudio,
+            watermark: parameters.watermark,
+            seed: parameters.seed,
+            has_reference_video: parameters.hasVideo,
+        }).filter(([, value]) => value !== undefined),
+    );
+    return (
+        <div className="min-w-0 space-y-4 rounded-lg border border-portal-line bg-portal-panel p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <h4 className="m-0 text-sm font-semibold text-portal-ink">{copy.taskState}</h4>
+                {endpoint && (
+                    <button
+                        type="button"
+                        disabled={loading}
+                        className="min-h-10 rounded-md border border-portal-line px-3 text-xs text-portal-ink hover:bg-portal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 disabled:opacity-50"
+                        onClick={async () => {
+                            setLoading(true);
+                            setFailed(false);
+                            try {
+                                const updated = await fetchTaskDisplay(endpoint, AbortSignal.timeout(10_000));
+                                setTask((current) => ({
+                                    ...updated,
+                                    request: { ...updated.request, ...current?.request },
+                                }));
+                                setMediaFailed(false);
+                            } catch {
+                                setFailed(true);
+                            } finally {
+                                setLoading(false);
+                            }
+                        }}
+                    >
+                        {loading ? copy.refreshing : copy.refreshTask}
+                    </button>
+                )}
+            </div>
+            <DetailList items={items} />
+            <p className="m-0 text-xs leading-relaxed text-portal-muted">{copy.taskNote}</p>
+            {failed && (
+                <p role="alert" className="m-0 text-sm text-status-warning-text">
+                    {copy.refreshFailed}
+                </p>
+            )}
+            {!!Object.keys(summary).length && (
+                <div className="min-w-0 space-y-2 border-t border-portal-line pt-4">
+                    <h4 className="m-0 text-sm font-semibold text-portal-ink">{copy.requestSummary}</h4>
+                    <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-portal-soft p-3 text-xs text-portal-ink">
+                        {JSON.stringify(summary, null, 2)}
+                    </pre>
+                    <p className="m-0 text-xs leading-relaxed text-portal-muted">{copy.summaryNote}</p>
+                </div>
+            )}
+            {task?.status === 'completed' && endpoint && (
+                <div className="space-y-3 border-t border-portal-line pt-4">
+                    {task.mediaAvailable ? (
+                        <>
+                            <div className="flex flex-wrap gap-3">
+                                <button
+                                    type="button"
+                                    aria-expanded={preview}
+                                    onClick={() => {
+                                        setPreview(!preview);
+                                        setMediaFailed(false);
+                                    }}
+                                    className="min-h-10 rounded-md border border-portal-line px-3 text-sm text-portal-ink hover:bg-portal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                                >
+                                    {copy.preview}
+                                </button>
+                                <a
+                                    href={`${endpoint}/content?download=1`}
+                                    className="inline-flex min-h-10 items-center rounded-md border border-portal-line px-3 text-sm text-portal-ink hover:bg-portal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                                >
+                                    {copy.download}
+                                </a>
+                            </div>
+                            {preview && (
+                                <video
+                                    controls
+                                    playsInline
+                                    preload="none"
+                                    aria-label={copy.preview}
+                                    src={`${endpoint}/content`}
+                                    className="max-h-[480px] w-full rounded-md bg-black"
+                                    onError={() => setMediaFailed(true)}
+                                    onLoadedMetadata={({ currentTarget }) => {
+                                        const duration = currentTarget.duration;
+                                        if (Number.isFinite(duration) && duration > 0 && duration <= 86400)
+                                            setTask((current) =>
+                                                current
+                                                    ? { ...current, outputSeconds: Math.round(duration * 1000) / 1000 }
+                                                    : current,
+                                            );
+                                    }}
+                                />
+                            )}
+                            {mediaFailed && (
+                                <p role="alert" className="m-0 text-sm text-status-warning-text">
+                                    {copy.previewFailed}
+                                </p>
+                            )}
+                        </>
+                    ) : (
+                        <p className="m-0 text-sm text-portal-muted">{copy.mediaUnavailable}</p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 /** Shared customer-facing presentation; billing and upstream routing remain in new-api. */
-export function VideoBillingDetail({ row }: { row: LogRow }) {
+export function VideoBillingDetail({
+    row,
+}: {
+    row: Pick<LogRow, 'model' | 'requestId' | 'tokenName' | 'costCny'> & { video?: LogRow['video'] };
+}) {
     const copy = useMessages(logsMessages);
     const v = copy.video;
     const video = row.video;
@@ -108,14 +277,13 @@ export function VideoBillingDetail({ row }: { row: LogRow }) {
                 {video.requestPath}
             </span>,
         ]);
-    if (video.elapsedSec !== null) taskItems.push([v.elapsed, formatDuration(video.elapsedSec * 1000)]);
 
     const billingItems: Array<[string, ReactNode]> = [
         [v.billingMode, perSecond ? v.bySeconds : v.byTokens],
         [v.resolution, video.resolution ?? v.unknown],
         [v.reference, video.videoInput === 'video' ? v.withVideo : video.videoInput === 'none' ? v.noVideo : v.unknown],
     ];
-    if (video.ratio) billingItems.push([v.ratio, video.ratio]);
+    if (video.ratio) billingItems.push([perSecond ? v.requestedRatio : v.ratio, video.ratio]);
     billingItems.push([
         perSecond ? v.billedDuration : v.tokens,
         <span key="quantity" className="font-mono tabular-nums">
@@ -181,6 +349,7 @@ export function VideoBillingDetail({ row }: { row: LogRow }) {
                     </div>
                 </div>
             </div>
+            <VideoTaskPanel video={video} />
             {settled && (
                 <div className="rounded-lg border border-portal-line bg-portal-panel p-4 sm:p-5">
                     <h4 className="m-0 mb-4 text-sm font-semibold text-portal-ink">{v.settlement}</h4>

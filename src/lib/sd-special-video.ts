@@ -63,6 +63,11 @@ export function sdSpecialPublicModelForSku(sku: string): SdSpecialModel | undefi
     return publicModelBySku.get(sku);
 }
 
+export function sdSpecialLogModelNames(model: string): string[] | null {
+    if (!isSdSpecialPublicModel(model)) return null;
+    return [model, ...publicModelBySku.keys()].filter((id) => id === model || publicModelBySku.get(id) === model);
+}
+
 /** Rewrite the model field in both supported video task envelopes. */
 export function exposeSdSpecialTaskModel(body: unknown): boolean {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;

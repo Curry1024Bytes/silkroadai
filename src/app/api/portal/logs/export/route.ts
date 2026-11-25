@@ -26,7 +26,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { getCurrentUser } from '@/lib/auth/session';
-import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { customerLogPages } from '@/lib/newapi/customer-log-query';
+import { QUOTA_PER_USD, USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { sdSpecialLogModelNames } from '@/lib/sd-special-video';
+import { enrichSdSpecialVideoLogs, type VideoLogDisplay } from '@/lib/sd-special-video-log-metadata';
 import { formatSignedCny } from '@/lib/format/number';
 import { getNewapiLogsPool } from '@/lib/newapi/logs-db';
 import { resolveVideoRefunds } from '@/lib/newapi/failed-video-match';
@@ -39,6 +43,7 @@ import {
     settlementRefundContent,
     unmatchedFailureRefundContent,
     FAILED_VIDEO_REFUND_NOTE,
+    parseVideoTaskBilling,
 } from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
@@ -77,6 +82,17 @@ const HEADER = [
     '消耗(元)',
     '结果',
     '详情',
+    '计费方式',
+    '分辨率',
+    '参考视频',
+    '请求画幅',
+    '计费秒数',
+    '任务耗时(含排队,秒)',
+    '任务生成状态',
+    '成片时长(秒)',
+    '任务提交时间(北京)',
+    '任务完成时间(北京)',
+    '请求参数摘要',
 ];
 
 /** 触顶提示(仅回退路径;放进 CSV 末行第一列,客户打开文件就能看到)。 */
@@ -133,8 +149,10 @@ function resultAndDetail(log: CsvSourceLog, failedConsume: boolean): [string, st
     return log.type === 5 ? ['失败', sanitizeLogContent(log.content)] : ['成功', ''];
 }
 
-function toCsvRow(log: CsvSourceLog, failedConsume = false): string {
+function toCsvRow(log: CsvSourceLog, failedConsume = false, display?: VideoLogDisplay): string {
     const perImage = isPerImageBilled(log.other, log.model_name);
+    const video = failedConsume ? null : display?.video;
+    const perSecond = video?.billingUnit === 'seconds';
     const cache = parseCacheTokens(log.other);
     const cost = quotaToCny(log.quota);
     // 退款行为负;配上失败退款的预扣行已退还,计 0
@@ -142,19 +160,30 @@ function toCsvRow(log: CsvSourceLog, failedConsume = false): string {
     const [result, detail] = resultAndDetail(log, failedConsume);
     return [
         BEIJING_TIME.format(new Date(log.created_at * 1000)),
-        log.model_name || '',
+        display?.model ?? log.model_name ?? '',
         log.token_name || '',
         log.request_id || '',
-        log.use_time, // new-api use_time 是【秒】
+        video ? (video.elapsedSec ?? '') : log.use_time,
         // 按张计费(生图 ModelPrice)时 token 是噪声,与日志页 "—" 同语义 → 留空
-        perImage ? '' : log.prompt_tokens,
-        perImage ? '' : log.completion_tokens,
+        perImage || perSecond ? '' : log.prompt_tokens,
+        perImage || perSecond ? '' : log.completion_tokens,
         // 缓存读写与页面同语义:按张计费留空;0 也如实写 0(CSV 是对账口径,不藏)
-        perImage ? '' : cache.read,
-        perImage ? '' : cache.write,
+        perImage || perSecond ? '' : cache.read,
+        perImage || perSecond ? '' : cache.write,
         costCny.toFixed(6),
         result,
         detail,
+        video ? (perSecond ? '按秒计费' : '按 tokens 计费') : '',
+        video?.resolution ?? '',
+        video?.videoInput === 'video' ? '有参考视频' : video?.videoInput === 'none' ? '无参考视频' : '',
+        video?.ratio ?? '',
+        perSecond ? (video.seconds ?? '') : '',
+        video?.elapsedSec ?? '',
+        video?.task?.status ?? '',
+        video?.task?.outputSeconds ?? '',
+        video?.task?.submittedAt ? BEIJING_TIME.format(new Date(video.task.submittedAt * 1000)) : '',
+        video?.task?.finishedAt ? BEIJING_TIME.format(new Date(video.task.finishedAt * 1000)) : '',
+        video?.task && Object.keys(video.task.request).length ? JSON.stringify(video.task.request) : '',
     ]
         .map(csvCell)
         .join(',');
@@ -198,7 +227,7 @@ interface DbLogRow {
  * 两条 EXISTS 分别吃 idx_logs_request_id / idx_created_at_type,失败行占比小,代价可控;
  * 规则 3 是纯行内字符串判断,先于 EXISTS 短路掉大量行,反而更快。
  */
-function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof QuerySchema>): Response {
+function exportFromLogsDb(pool: Pool, userId: string, newapiUserId: number, q: z.infer<typeof QuerySchema>): Response {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -219,7 +248,7 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                             AND l.type IN (2, 5, 6)
                             AND ($2::bigint IS NULL OR l.created_at >= $2)
                             AND ($3::bigint IS NULL OR l.created_at <= $3)
-                            AND ($4::text   IS NULL OR l.model_name = $4)
+                            AND ($4::text[] IS NULL OR l.model_name = ANY($4::text[]))
                             AND ($5::text   IS NULL OR l.token_name = $5)
                             AND ($6::text   IS NULL OR l.request_id = $6)
                             AND ($7::bigint IS NULL OR l.channel_id = $7)
@@ -240,7 +269,7 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                             newapiUserId,
                             q.start ?? null,
                             q.end ?? null,
-                            q.model || null,
+                            q.model ? (sdSpecialLogModelNames(q.model) ?? [q.model]) : null,
                             q.token || null,
                             q.request_id || null,
                             q.channel ?? null,
@@ -269,10 +298,11 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                         batch.filter((l) => l.type === 6),
                     );
                     const shownRefundIds = new Set(visibleRefunds.map((l) => l.id));
+                    const displays = await videoDisplays(batch, { userId, newapiUserId });
                     let chunk = '';
-                    for (const log of batch) {
+                    for (const [index, log] of batch.entries()) {
                         if (log.type === 6 && !shownRefundIds.has(log.id)) continue;
-                        chunk += toCsvRow(log, failedConsumeIds.has(log.id)) + '\r\n';
+                        chunk += toCsvRow(log, failedConsumeIds.has(log.id), displays[index]) + '\r\n';
                     }
                     controller.enqueue(encoder.encode(chunk));
                     lastId = rows[rows.length - 1].id;
@@ -302,23 +332,27 @@ async function exportViaHttpPaging(
     const items: NewApiUsageLog[] = [];
     let truncated = false;
     try {
-        for (let page = 1; page <= MAX_EXPORT_PAGES; page++) {
-            const res = await queryLogs({
-                username: user.newapi_username,
-                user_id: newapiUserId,
-                type: 0, // 全类型一次拉,含 2+5(failover 的失败+成功相邻,折叠正确)
-                start_timestamp: q.start,
-                end_timestamp: q.end,
-                model_name: q.model || undefined,
-                token_name: q.token || undefined,
-                request_id: q.request_id || undefined,
-                channel: q.channel,
-                page,
-                page_size: PAGE_SIZE,
-            });
+        let page = 0;
+        for await (const res of customerLogPages({
+            username: user.newapi_username,
+            user_id: newapiUserId,
+            type: 0, // 全类型一次拉,含 2+5(failover 的失败+成功相邻,折叠正确)
+            start_timestamp: q.start,
+            end_timestamp: q.end,
+            model_name: q.model || undefined,
+            token_name: q.token || undefined,
+            request_id: q.request_id || undefined,
+            channel: q.channel,
+            page: 1,
+            page_size: PAGE_SIZE,
+        })) {
+            page++;
             items.push(...res.items);
             if (res.items.length < PAGE_SIZE) break;
-            if (page === MAX_EXPORT_PAGES) truncated = true;
+            if (page === MAX_EXPORT_PAGES) {
+                truncated = true;
+                break;
+            }
         }
     } catch (e) {
         console.warn(`[portal/logs/export] queryLogs failed for user ${user.id}:`, e);
@@ -334,9 +368,9 @@ async function exportViaHttpPaging(
         mine.filter((l) => l.type === 6),
     );
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    const rows = [...consume, ...visibleErrors, ...visibleRefunds]
-        .sort((a, b) => b.created_at - a.created_at)
-        .map((l) => toCsvRow(l, failedConsumeIds.has(l.id)));
+    const shown = [...consume, ...visibleErrors, ...visibleRefunds].sort((a, b) => b.created_at - a.created_at);
+    const displays = await videoDisplays(shown, { userId: user.id, newapiUserId });
+    const rows = shown.map((log, index) => toCsvRow(log, failedConsumeIds.has(log.id), displays[index]));
     if (truncated) rows.push(csvCell(TRUNCATED_NOTE));
 
     // UTF-8 BOM keeps Chinese column names readable in Excel; \r\n supports Windows Excel.
@@ -358,6 +392,19 @@ export async function GET(req: NextRequest) {
 
     // 主路径:日志库直连(全量);未配置的环境回退 HTTP 翻页(10000 行上限)。
     const pool = getNewapiLogsPool();
-    if (pool) return exportFromLogsDb(pool, newapiUserId, q);
+    if (pool) return exportFromLogsDb(pool, user.id, newapiUserId, q);
     return exportViaHttpPaging({ id: user.id, newapi_username: user.newapi_username }, newapiUserId, q);
+}
+
+function videoDisplays(logs: CsvSourceLog[], owner: { userId: string; newapiUserId: number }) {
+    return enrichSdSpecialVideoLogs(
+        logs.map((log) => {
+            const video = parseVideoTaskBilling(log, {
+                quotaPerUsd: QUOTA_PER_USD,
+                quotaPerCny: QUOTA_PER_USD / USD_TO_CNY_RATE,
+            });
+            return { model: log.model_name, video: video ? { ...video, elapsedSec: null } : null };
+        }),
+        owner,
+    );
 }

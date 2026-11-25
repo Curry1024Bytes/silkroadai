@@ -19,7 +19,8 @@ import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer
 import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
 import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { queryLogsCached } from '@/lib/newapi/logs-cache';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { QUOTA_PER_USD, USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { enrichSdSpecialVideoLogs } from '@/lib/sd-special-video-log-metadata';
 import {
     formatCny,
     formatSignedCny,
@@ -38,6 +39,7 @@ import {
     isPerImageBilled,
     isSettlementRefund,
     parseCacheTokens,
+    parseVideoTaskBilling,
     settlementRefundContent,
     failedVideoRefundNote,
     type RefundKind,
@@ -220,21 +222,26 @@ export async function loadUsageData(args: {
     // 折叠"失败了但重试 / failover 成功"的中间失败行(见 collapseRetriedFailures)——
     // 否则客户日志被 429/上游饱和这类中间过程刷屏,主观以为出了大问题。真失败(内容拒绝等)照常显示。
     const visibleErrors = collapseRetriedFailures(consume, errors);
+    const videoUnits = { quotaPerUsd: QUOTA_PER_USD, quotaPerCny: QUOTA_PER_USD / USD_TO_CNY_RATE };
     const calls = [...consume, ...visibleErrors, ...settlementRefunds]
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, CALLS_CAP)
         .map((l) => {
-            if (isSettlementRefund(l)) return settlementRefundRow(l, locale);
-            const row = toCallRow(l, null, locale);
+            const row = isSettlementRefund(l) ? settlementRefundRow(l, locale) : toCallRow(l, null, locale);
             if (failedConsumeIds.has(l.id)) {
                 row.type = 6; // → callResult 判失败
                 row.costCny = 0; // 已退款,本次不计费
                 row.content = failedVideoRefundNote(locale);
             }
-            return row;
+            const video = failedConsumeIds.has(l.id) ? null : parseVideoTaskBilling(l, videoUnits);
+            return {
+                ...row,
+                video: video ? { ...video, elapsedSec: null } : null,
+            };
         });
 
-    return { agg, usageErr, calls };
+    const enriched = await enrichSdSpecialVideoLogs(calls, { userId: portalUserId, newapiUserId });
+    return { agg, usageErr, calls: enriched };
 }
 
 // ────────────────────────── streamed sections ──────────────────────────

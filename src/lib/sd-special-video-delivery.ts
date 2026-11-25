@@ -31,7 +31,7 @@ const fileHeaders = ['accept-ranges', 'content-range', 'content-type', 'etag', '
 const privateHeaders = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 let reader: Pool | undefined;
 
-function readPool(): Pool | null {
+export function getSdVideoDeliveryPool(): Pool | null {
     const connectionString = process.env.NEWAPI_SD_VIDEO_DELIVERY_DATABASE_URL;
     if (!connectionString) return null;
     reader ??= new Pool({
@@ -42,6 +42,41 @@ function readPool(): Pool | null {
         statement_timeout: 2000,
     });
     return reader;
+}
+
+export async function readSdSpecialTaskTimings(ownerId: number, taskIds: string[]) {
+    const result = new Map<string, { model: string; elapsedSec: number }>();
+    const pool = getSdVideoDeliveryPool();
+    if (!pool || !Number.isSafeInteger(ownerId) || ownerId <= 0) return result;
+    const ids = [...new Set(taskIds.filter((id) => /^task_[A-Za-z0-9]{32}$/.test(id)))];
+    const requestedIds = new Set(ids);
+    for (let offset = 0; offset < ids.length; offset += 500) {
+        const { rows } = await pool.query<{
+            task_id: string;
+            sku: string;
+            submit_time: number;
+            finish_time: number;
+        }>(
+            `SELECT task_id, sku, submit_time::float8, finish_time::float8
+             FROM portal_sd_video.delivery_tasks
+             WHERE owner_id = $1 AND task_id = ANY($2::text[]) AND status IN ('SUCCESS', 'FAILURE')`,
+            [ownerId, ids.slice(offset, offset + 500)],
+        );
+        for (const task of rows) {
+            const model = sdSpecialPublicModelForSku(task.sku);
+            if (
+                !model ||
+                !requestedIds.has(task.task_id) ||
+                !Number.isSafeInteger(task.submit_time) ||
+                task.submit_time <= 0 ||
+                !Number.isSafeInteger(task.finish_time) ||
+                task.finish_time < task.submit_time
+            )
+                continue;
+            result.set(task.task_id, { model, elapsedSec: task.finish_time - task.submit_time });
+        }
+    }
+    return result;
 }
 
 function errorResponse(status: number, code: string, message: string): NextResponse {
@@ -157,7 +192,7 @@ export async function deliverExhaustedSdVideo(req: NextRequest, path: string): P
     const match = videoPath.exec(path);
     const key = req.headers.get('authorization')?.match(/^Bearer\s+(?:sk-)?([a-z\d]+)$/i)?.[1];
     if (!match || !key) return null;
-    const pool = readPool();
+    const pool = getSdVideoDeliveryPool();
     if (!pool) return null;
 
     let owner: number | null;

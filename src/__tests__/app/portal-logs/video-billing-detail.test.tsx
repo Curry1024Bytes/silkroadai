@@ -95,6 +95,20 @@ describe('unified video billing detail', () => {
         expect(html).not.toMatch(/1,000,000|计费 tokens|提交时预估|生成耗时|有参考视频|预扣金额/);
     });
 
+    it('SD特惠显示请求画幅和包含排队的任务耗时,不冒充供应商生成耗时', () => {
+        const enriched = { ...secondsRow, video: { ...secondsRow.video!, ratio: '16:9', elapsedSec: 207 } };
+        const html = render(enriched);
+        expect(html).toContain('请求画幅');
+        expect(html).toContain('16:9');
+        expect(html).toContain('任务耗时（含排队）');
+        expect(html).toContain('3m 27s');
+        expect(html).not.toContain('生成耗时');
+        const english = render(enriched, true);
+        expect(english).toContain('Requested aspect ratio');
+        expect(english).toContain('Task duration (including queueing)');
+        expect(english).not.toMatch(/[\u4e00-\u9fff]/);
+    });
+
     it('退款行清楚区分任务实际消费和本条退还金额', () => {
         const html = render({
             ...row,

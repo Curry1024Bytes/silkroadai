@@ -20,7 +20,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
-import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { queryCustomerLogs } from '@/lib/newapi/customer-log-query';
+import { enrichSdSpecialVideoLogs } from '@/lib/sd-special-video-log-metadata';
 import { QUOTA_PER_USD, USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { formatSignedCny } from '@/lib/format/number';
 import { getLocale } from '@/lib/i18n/server';
@@ -36,8 +38,8 @@ import {
     failedVideoRefundNote,
     parseVideoTaskBilling,
     type RefundKind,
-    type VideoTaskBilling,
 } from '@/lib/newapi/log-display';
+import type { VideoLogBilling } from '@/lib/video-task-display';
 
 export const runtime = 'nodejs';
 
@@ -82,22 +84,16 @@ export interface LogRow {
     refundKind: RefundKind | null;
     content: string;
     /** 视频任务的计费明细(预扣 / 结算),非视频任务为 null。 */
-    video: (VideoTaskBilling & { elapsedSec: number | null }) | null;
+    video: VideoLogBilling | null;
 }
 
 const VIDEO_UNITS = { quotaPerUsd: QUOTA_PER_USD, quotaPerCny: QUOTA_PER_USD / USD_TO_CNY_RATE };
 
 const cnyOfQuota = (quota: number) => formatSignedCny(quotaToCny(quota), { preciseSmall: true });
 
-function toLogRow(
-    log: NewApiUsageLog,
-    failedConsume: boolean,
-    locale: import('@/lib/i18n').Locale,
-    submittedAt: Map<string, number>,
-): LogRow {
+function toLogRow(log: NewApiUsageLog, failedConsume: boolean, locale: import('@/lib/i18n').Locale): LogRow {
     const cache = parseCacheTokens(log.other);
     const video = failedConsume ? null : parseVideoTaskBilling(log, VIDEO_UNITS);
-    const submitted = video?.taskId && video.phase !== 'estimate' ? submittedAt.get(video.taskId) : undefined;
     const refundKind = refundKindOf(log);
     const cost = quotaToCny(log.quota);
     return {
@@ -125,7 +121,7 @@ function toLogRow(
                   : failedConsume
                     ? failedVideoRefundNote(locale)
                     : sanitizeLogContent(log.content, locale), // 脱敏后才出参
-        video: video ? { ...video, elapsedSec: submitted ? Math.max(0, log.created_at - submitted) : null } : null,
+        video: video ? { ...video, elapsedSec: null } : null,
     };
 }
 
@@ -144,7 +140,7 @@ export async function GET(req: NextRequest) {
 
     let items: NewApiUsageLog[];
     try {
-        const res = await queryLogs({
+        const res = await queryCustomerLogs({
             username: user.newapi_username,
             user_id: newapiUserId,
             type: 0, // 全类型一次拉,含 2+5(failover 的失败+成功同页相邻,页内折叠正确)
@@ -172,16 +168,11 @@ export async function GET(req: NextRequest) {
         mine.filter((l) => l.type === 6),
     );
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    // 视频任务提交时间(预扣行),结算行据此算「生成耗时」;预扣行不在本页就不显示。
-    const submittedAt = new Map<string, number>();
-    for (const l of consume) {
-        const v = parseVideoTaskBilling(l, VIDEO_UNITS);
-        if (v?.taskId && v.phase === 'estimate') submittedAt.set(v.taskId, l.created_at);
-    }
     const rows: LogRow[] = [...consume, ...visibleErrors, ...visibleRefunds]
         .sort((a, b) => b.created_at - a.created_at)
-        .map((l) => toLogRow(l, failedConsumeIds.has(l.id), locale, submittedAt));
+        .map((l) => toLogRow(l, failedConsumeIds.has(l.id), locale));
 
     // 满页(拿满 100 原始行)= 大概率还有下一页。折叠后 rows 可能 <100,但翻页按 new-api 原始页走。
-    return NextResponse.json({ rows, page: q.page, hasMore: items.length >= PAGE_SIZE });
+    const enriched = await enrichSdSpecialVideoLogs(rows, { userId: user.id, newapiUserId });
+    return NextResponse.json({ rows: enriched, page: q.page, hasMore: items.length >= PAGE_SIZE });
 }

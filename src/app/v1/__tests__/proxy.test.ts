@@ -59,6 +59,7 @@ vi.mock('@/lib/oss/client', () => ({
 // 余额查询拦截:mock NewApiToken 反查 + getCustomerBalance(现有 chat/image 测试不走
 // billing 路径,不触发这两个 mock)。
 const mockTokenFindUnique = vi.fn();
+const mockSdVideoCreateMany = vi.fn();
 // 异步生图任务表 mock(现有测试不触发)
 const mockImageTaskCreate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskUpdate = vi.fn(async (..._a: unknown[]) => ({}));
@@ -73,6 +74,9 @@ vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
 }));
 vi.mock('@/lib/db', () => ({
     prisma: {
+        $transaction: (
+            callback: (tx: { sdVideoTaskMetadata: { createMany: typeof mockSdVideoCreateMany } }) => Promise<unknown>,
+        ) => callback({ sdVideoTaskMetadata: { createMany: mockSdVideoCreateMany } }),
         customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
@@ -7756,6 +7760,57 @@ describe('/v1 proxy — /images/edits 官方 JSON schema:images[{image_url|file_
 });
 
 describe('SD special unified video models', () => {
+    it.each([false, true])(
+        'records request metadata after one accepted submission, even on storage failure=%s',
+        async (storageFailure) => {
+            const taskId = `task_${'x'.repeat(32)}`;
+            mockTokenFindUnique.mockResolvedValue({
+                user_id: '00000000-0000-4000-8000-000000000001',
+                user: { tenant_id: 'test' },
+            });
+            mockSdVideoCreateMany.mockReset();
+            if (storageFailure) mockSdVideoCreateMany.mockRejectedValue(new Error('storage unavailable'));
+            else mockSdVideoCreateMany.mockResolvedValue({ count: 1 });
+            const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            try {
+                mockFetch.mockResolvedValueOnce(Response.json({ id: taskId, model: 'sd-2-mini-480-novideo' }));
+                const response = await POST(
+                    makeReq('/videos', {
+                        headers: { authorization: 'Bearer sk-customer-test' },
+                        body: {
+                            model: 'sd-2-mini',
+                            resolution: '480P',
+                            duration: 4,
+                            aspect_ratio: '16:9',
+                            prompt: 'water',
+                        },
+                    }),
+                    ctx('videos'),
+                );
+                expect(response.status).toBe(200);
+                expect(await response.json()).toEqual({ id: taskId, model: 'sd-2-mini' });
+                expect(mockFetch).toHaveBeenCalledTimes(1);
+                expect(mockSdVideoCreateMany).toHaveBeenCalledExactlyOnceWith({
+                    data: [
+                        {
+                            task_id: taskId,
+                            user_id: '00000000-0000-4000-8000-000000000001',
+                            public_model: 'sd-2-mini',
+                            resolution: '480p',
+                            has_video: false,
+                            aspect_ratio: '16:9',
+                            request_summary: { resolution: '480p', ratio: '16:9', duration: 4, hasVideo: false },
+                        },
+                    ],
+                    skipDuplicates: true,
+                });
+            } finally {
+                warning.mockRestore();
+                mockTokenFindUnique.mockReset();
+            }
+        },
+    );
+
     it.each([
         ['sd-2-mini', '480p', 'sd-2-mini-480', 'sd-2-mini-480-novideo'],
         ['sd-2-mini', '720p', 'sd-2-mini-720', 'sd-2-mini-720-novideo'],

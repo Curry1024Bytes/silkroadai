@@ -104,6 +104,7 @@ import {
     resolveSdSpecialVideoRequest,
 } from '@/lib/sd-special-video';
 import { deliverExhaustedSdVideo } from '@/lib/sd-special-video-delivery';
+import { recordSdSpecialVideoMetadata, recordsVideoMetadata } from '@/lib/sd-special-video-log-metadata';
 import { isKlingVideoModel, isKlingVideoTask, handleKlingVideoSubmit, handleKlingVideoPoll } from '@/lib/kling/proxy';
 import { isSeedreamModel } from '@/lib/seedream/adapter';
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
@@ -4018,13 +4019,33 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
                 .clone()
                 .json()
                 .catch(() => null);
+            await recordSdSpecialVideoMetadata(
+                req.headers.get('authorization'),
+                { ...vbody, resolution: resolved.body.resolution },
+                task,
+            );
             if (!exposeSdSpecialTaskModel(task)) return result;
             const headers = new Headers(result.headers);
             headers.delete('content-length');
             void result.body?.cancel().catch(() => {});
             return NextResponse.json(task, { status: result.status, headers });
         }
-        return forwardToNewApi(req, vbody, path, search, cap);
+        const result = await forwardToNewApi(req, vbody, path, search, cap);
+        if (
+            recordsVideoMetadata(model) &&
+            result.ok &&
+            result.headers.get('content-type')?.includes('application/json')
+        ) {
+            await recordSdSpecialVideoMetadata(
+                req.headers.get('authorization'),
+                vbody,
+                await result
+                    .clone()
+                    .json()
+                    .catch(() => null),
+            );
+        }
+        return result;
     }
 
     // 视频轮询:seedance-cn 任务(我们记录过的)走端到端自扣轮询 + 扣费;其余走 new-api + 客户 OSS 转存。

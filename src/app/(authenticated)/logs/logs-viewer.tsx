@@ -33,7 +33,7 @@ import { formatSignedCny } from '@/lib/format/number';
 import { pickMessages, intlLocale, type Locale } from '@/lib/i18n';
 import type { LogRow } from '@/app/api/portal/logs/route';
 import { DateRangePicker, getLogDatePresets } from '@/components/date-range-picker';
-import { VideoBillingDetail, videoSpec, videoPhaseLabel } from './video-billing-detail';
+import { VideoBillingDetail, videoSpec, videoPhaseLabel, videoTaskLabel } from './video-billing-detail';
 
 interface Filters {
     start: string;
@@ -518,7 +518,9 @@ function LogRowItem({
                     <RequestIdCell value={row.requestId} />
                 </td>
                 <td className={`${CELL} whitespace-nowrap text-right tabular-nums text-portal-muted`}>
-                    {formatDuration(row.video?.elapsedSec != null ? row.video.elapsedSec * 1000 : row.useTimeMs)}
+                    {formatDuration(
+                        row.video?.elapsedSec != null ? row.video.elapsedSec * 1000 : row.video ? 0 : row.useTimeMs,
+                    )}
                 </td>
                 <td className={`${CELL} text-right tabular-nums text-portal-muted`}>
                     {row.video
@@ -584,10 +586,10 @@ function LogRowItem({
                             title={copy.video.heading}
                             aria-expanded={isOpen}
                             aria-controls={`video-detail-${row.id}`}
-                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-success-text/20"
+                            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-soft px-2 text-xs font-medium text-portal-ink transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
                         >
                             <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            {copy.table.success}
+                            {videoTaskLabel(row.video, copy.video)}
                             {isOpen ? (
                                 <ChevronUp size={12} aria-hidden="true" />
                             ) : (
