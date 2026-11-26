@@ -15,8 +15,9 @@ REVOKE ALL ON SCHEMA portal_margin FROM PUBLIC;
 GRANT USAGE ON SCHEMA portal_margin TO portal_margin_reader;
 
 -- Stored metadata is text. Unparseable historical rows still contribute their quota.
+-- The exception block opens a subtransaction, so this helper must run outside parallel workers.
 CREATE OR REPLACE FUNCTION portal_margin.log_meta(value text)
-RETURNS jsonb LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE STRICT
+RETURNS jsonb LANGUAGE plpgsql IMMUTABLE PARALLEL UNSAFE STRICT
 SET search_path TO pg_catalog
 AS $function$
 BEGIN
