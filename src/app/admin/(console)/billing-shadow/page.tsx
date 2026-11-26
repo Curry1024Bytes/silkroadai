@@ -190,7 +190,9 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                 </div>
                 <div className={`rounded-xl border p-4 ${card}`}>
                     <div className={`text-xs ${labelCls}`}>{t.cost}</div>
-                    <div className={`mt-1 text-2xl font-semibold ${okCls}`}>{fmt(summary.costCny)}</div>
+                    <div className={`mt-1 text-2xl font-semibold ${okCls}`}>
+                        {summary.costCoveredRecords > 0 ? fmt(summary.costCny) : t.dash}
+                    </div>
                     <div className={`mt-1 text-xs ${mutedCls}`}>
                         {summary.costCoveredRecords}/{summary.matchedRecords} {t.covered}
                     </div>
@@ -200,10 +202,10 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                     <div
                         className={`mt-1 text-2xl font-semibold ${marginColor(summary.marginRate, summary.costCoveredRecords > 0)}`}
                     >
-                        {fmt(summary.marginCny)}
+                        {summary.costCoveredRecords > 0 ? fmt(summary.marginCny) : t.dash}
                     </div>
                     <div className={`mt-1 text-xs ${marginColor(summary.marginRate, summary.costCoveredRecords > 0)}`}>
-                        {fmtPct(summary.marginRate)}
+                        {summary.costCoveredRecords > 0 ? fmtPct(summary.marginRate) : t.dash}
                     </div>
                 </div>
                 <div className={`rounded-xl border p-4 ${card}`}>

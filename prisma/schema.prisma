@@ -1965,3 +1965,22 @@ model BatchRequestResult {
   @@index([batch_id])
   @@map("batch_request_results")
 }
+
+// Supplier charge evidence used by the admin margin report.
+model UpstreamMarginCost {
+  id             String   @id @default(uuid()) @db.Uuid
+  channel_id     Int
+  reference_kind String   @db.VarChar(16)
+  reference_id   String   @db.VarChar(192)
+  amount         Decimal  @db.Decimal(20, 8)
+  currency       String   @db.VarChar(12)
+  cny_per_unit   Decimal  @db.Decimal(20, 8)
+  status         String   @db.VarChar(12)
+  evidence       String   @db.VarChar(240)
+  imported_by    String?  @db.Uuid
+  created_at     DateTime @default(now())
+
+  @@unique([channel_id, reference_kind, reference_id], map: "upstream_margin_costs_reference_key")
+  @@index([reference_id])
+  @@map("upstream_margin_costs")
+}

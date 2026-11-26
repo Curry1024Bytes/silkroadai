@@ -23,7 +23,7 @@ const NAV_ITEMS: NavItem[] = [
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },
     { path: '/admin/models', label: { zh: '模型管理', en: 'Models' }, superadminOnly: true },
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
-    { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' }, superadminOnly: true },
+    { path: '/admin/margin-report', label: { zh: '模型毛利', en: 'Model Margin' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
     { path: '/admin/announcements', label: { zh: '公告管理', en: 'Announcements' }, superadminOnly: true },
     // 数据存储第③步:请求日志查看(全量客户内容,最高敏感)。
