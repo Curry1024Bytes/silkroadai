@@ -15,20 +15,27 @@ export const runtime = 'nodejs';
  * 每次查询写一条 `list` 访问审计(含筛选摘要)—— best-effort(只看元数据不含原文,
  * 审计失败只 warn,不挡可用性,brief §6.1)。
  *
- * 筛选:user_id / model(模糊)/ status_code / success / streamed / 日期范围(from,to)。
+ * 筛选包括用户、模型、路径、HTTP 方法与状态、完成情况和日期。
  */
 export async function GET(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     const sp = request.nextUrl.searchParams;
-    const page = Math.max(1, Number(sp.get('page') || '1'));
-    const pageSize = Math.min(100, Math.max(1, Number(sp.get('page_size') || '20')));
+    const positiveInteger = (raw: string | null, fallback: number, max: number) => {
+        const value = Number(raw);
+        return Number.isSafeInteger(value) && value > 0 ? Math.min(max, value) : fallback;
+    };
+    const page = positiveInteger(sp.get('page'), 1, 1_000_000);
+    const pageSize = positiveInteger(sp.get('page_size'), 20, 100);
     const userId = sp.get('user_id')?.trim() || undefined;
     const model = sp.get('model')?.trim() || undefined;
+    const path = sp.get('path')?.trim().slice(0, 300) || undefined;
+    const method = sp.get('method')?.trim().toUpperCase() || undefined;
     const statusCode = sp.get('status_code')?.trim() || undefined;
     const success = sp.get('success')?.trim() || undefined; // 'true' | 'false'
     const streamed = sp.get('streamed')?.trim() || undefined;
+    const incomplete = sp.get('incomplete')?.trim() || undefined;
     const from = sp.get('from')?.trim() || undefined; // ISO
     const to = sp.get('to')?.trim() || undefined;
 
@@ -37,6 +44,14 @@ export async function GET(request: NextRequest) {
     where.OR = [{ retention_expires_at: null }, { retention_expires_at: { gt: new Date() } }];
     if (userId) where.user_id = userId;
     if (model) where.model = { contains: model, mode: 'insensitive' };
+    const containsPath = (value: string) => ({ contains: value.replace(/[\\%_]/g, '\\$&') });
+    if (path?.startsWith('/v1/')) {
+        // The /v1 capture layer also stores paths relative to its mount point.
+        where.AND = [{ OR: [{ path: containsPath(path) }, { path: containsPath(path.slice(3)) }] }];
+    } else if (path) {
+        where.path = containsPath(path);
+    }
+    if (method && /^[A-Z]{1,16}$/.test(method)) where.method = method;
     if (statusCode) {
         const n = Number(statusCode);
         if (Number.isInteger(n)) where.status_code = n;
@@ -45,6 +60,7 @@ export async function GET(request: NextRequest) {
     else if (success === 'false') where.success = false;
     if (streamed === 'true') where.streamed = true;
     else if (streamed === 'false') where.streamed = false;
+    if (incomplete === 'true') where.incomplete = true;
     const createdAt: Prisma.DateTimeFilter = {};
     if (from) {
         const d = new Date(from);
@@ -57,7 +73,20 @@ export async function GET(request: NextRequest) {
     if (createdAt.gte || createdAt.lte) where.created_at = createdAt;
 
     // 审计:list（best-effort，元数据不含客户原文）。fire-and-forget 不阻塞查询。
-    const summary = JSON.stringify({ page, pageSize, userId, model, statusCode, success, streamed, from, to });
+    const summary = JSON.stringify({
+        page,
+        pageSize,
+        userId,
+        model,
+        path,
+        method,
+        statusCode,
+        success,
+        streamed,
+        incomplete,
+        from,
+        to,
+    });
     void writeAccessAudit({
         principal: admin,
         action: 'list',
@@ -68,7 +97,7 @@ export async function GET(request: NextRequest) {
     const [logs, total] = await Promise.all([
         prisma.requestLog.findMany({
             where,
-            orderBy: { created_at: 'desc' },
+            orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
             skip: (page - 1) * pageSize,
             take: pageSize,
             select: {

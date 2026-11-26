@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
@@ -33,6 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             id: true,
             email: true,
             nickname: true,
+            admin_alias: true,
             status: true,
             created_at: true,
             last_login_at: true,
@@ -114,6 +116,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             id: user.id,
             email: user.email,
             nickname: user.nickname,
+            admin_alias: user.admin_alias,
             status: user.status,
             created_at: user.created_at,
             last_login_at: user.last_login_at,
@@ -163,4 +166,26 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         },
         usage_window_days: USAGE_WINDOW_DAYS,
     });
+}
+
+const aliasInput = z.strictObject({ admin_alias: z.string().trim().max(80).nullable() });
+
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
+
+    const { id } = await params;
+    if (!z.guid().safeParse(id).success) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
+
+    const parsed = aliasInput.safeParse(await request.json().catch(() => null));
+    if (!parsed.success || parsed.data.admin_alias?.includes('\0')) {
+        return NextResponse.json({ error: 'invalid_alias' }, { status: 400 });
+    }
+    const alias = parsed.data.admin_alias || null;
+    const updated = await prisma.user.updateMany({
+        where: { id, ...tenantScope(admin) },
+        data: { admin_alias: alias },
+    });
+    if (updated.count !== 1) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
+    return NextResponse.json({ admin_alias: alias });
 }

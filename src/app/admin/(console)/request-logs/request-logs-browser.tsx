@@ -1,33 +1,22 @@
 'use client';
 
-/**
- * 请求日志查看 client island(superadmin 内部工具,zh-only,轻量 chrome —— 比
- * customers/ 的全 i18n+theme 机制简化,内部调试工具不值得双倍代码,brief §7
- * 允许 audit-first 偏离)。元数据 list/detail + 原文(in/out)懒加载,数据全走
- * /api/admin/request-logs*(superadmin 门 + 审计在服务端)。
- */
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import {
+    EMPTY_FILTERS,
+    buildLogQuery,
+    formatDuration,
+    formatNumber,
+    groupLogs,
+    logDate,
+    logTime,
+    taskId,
+    type Filters,
+    type LogRow,
+    type View,
+} from './request-log-display';
+import { RequestLogDetail, RequestStatus } from './request-log-detail';
+import styles from './request-logs.module.css';
 
-interface LogRow {
-    id: string;
-    created_at: string;
-    user_id: string | null;
-    tenant_id: string | null;
-    model: string | null;
-    path: string;
-    method: string;
-    status_code: number | null;
-    success: boolean;
-    streamed: boolean;
-    incomplete: boolean;
-    input_tokens: number | null;
-    output_tokens: number | null;
-    input_bytes: number;
-    output_bytes: number;
-    duration_ms: number | null;
-    input_r2_key: string | null;
-    output_r2_key: string | null;
-}
 interface ListData {
     logs: LogRow[];
     total: number;
@@ -35,342 +24,445 @@ interface ListData {
     page_size: number;
     total_pages: number;
 }
-interface BodyData {
-    which: 'in' | 'out';
-    key: string;
-    total_bytes: number;
-    truncated: boolean;
-    body: string;
+
+const views: { id: View; label: string }[] = [
+    { id: 'all', label: '全部请求' },
+    { id: 'failed', label: '失败请求' },
+    { id: 'incomplete', label: '中断请求' },
+];
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function LogLines({
+    rows,
+    expanded,
+    toggle,
+    onSelect,
+}: {
+    rows: LogRow[];
+    expanded: boolean;
+    toggle: () => void;
+    onSelect: (id: string) => void;
+}) {
+    const first = rows[0];
+    const task = taskId(first);
+    const folded = rows.length > 1;
+    const oldest = rows[rows.length - 1];
+    return (
+        <>
+            <tr className={folded ? styles.groupRow : undefined}>
+                <td>
+                    <div className={styles.primaryLine}>{logTime(first.created_at)}</div>
+                    <div className={styles.secondary}>{logDate(first.created_at)}</div>
+                </td>
+                <td>
+                    <span className={styles.method}>{first.method}</span>
+                    <span className={styles.pathName} title={first.path}>
+                        {task ? '视频任务查询' : first.path}
+                    </span>
+                    {task && (
+                        <div className={styles.pathDetail} title={first.path}>
+                            {task}
+                        </div>
+                    )}
+                </td>
+                <td>
+                    <div className={styles.primaryLine} title={first.model ?? undefined}>
+                        {first.model ?? '—'}
+                    </div>
+                    <div className={styles.secondary} title={first.user_id ?? undefined}>
+                        {first.user_id ? first.user_id.slice(0, 8) : '未识别用户'}
+                        {first.streamed ? ' · 流式' : ''}
+                    </div>
+                </td>
+                <td>
+                    <RequestStatus row={first} />
+                </td>
+                <td className={styles.numeric}>
+                    {first.input_tokens == null && first.output_tokens == null
+                        ? '—'
+                        : formatNumber(first.input_tokens) + ' / ' + formatNumber(first.output_tokens)}
+                </td>
+                <td className={styles.numeric}>{formatDuration(first.duration_ms)}</td>
+                <td className={styles.rowAction}>
+                    {folded ? (
+                        <button type="button" className={styles.groupButton} aria-expanded={expanded} onClick={toggle}>
+                            {expanded ? '收起' : '展开'} {rows.length} 条
+                        </button>
+                    ) : (
+                        <button type="button" className={styles.textButton} onClick={() => onSelect(first.id)}>
+                            详情
+                        </button>
+                    )}
+                </td>
+            </tr>
+            {folded && expanded && (
+                <tr className={styles.expandedRow}>
+                    <td colSpan={7}>
+                        <div className={styles.pollPanel}>
+                            <div className={styles.secondary}>
+                                {logDate(oldest.created_at)} {logTime(oldest.created_at)} 至 {logDate(first.created_at)}{' '}
+                                {logTime(first.created_at)} · 当前页 {rows.length} 条查询
+                            </div>
+                            <ul>
+                                {rows.map((row) => (
+                                    <li key={row.id}>
+                                        <time dateTime={row.created_at}>
+                                            {logDate(row.created_at)} {logTime(row.created_at)}
+                                        </time>
+                                        <span>{formatDuration(row.duration_ms)}</span>
+                                        <button
+                                            type="button"
+                                            className={styles.textButton}
+                                            onClick={() => onSelect(row.id)}
+                                        >
+                                            详情
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </td>
+                </tr>
+            )}
+        </>
+    );
 }
 
-// gotcha #20:容器内 server TZ=UTC,显式钉北京时区。
-const fmtDate = (iso: string): string =>
-    new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-const short = (s: string | null): string => (s ? s.slice(0, 8) : '—');
-
-const inputCls = 'rounded border border-gray-300 px-2 py-1 text-sm';
-const btn = 'rounded bg-indigo-600 px-3 py-1 text-sm text-white hover:bg-indigo-700 disabled:opacity-50';
-const btnGhost = 'rounded border border-gray-300 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50';
-
 export function RequestLogsBrowser() {
-    // 筛选(committed)
-    const [filters, setFilters] = useState({
-        user_id: '',
-        model: '',
-        status_code: '',
-        success: '',
-        streamed: '',
-        from: '',
-        to: '',
-    });
-    const [form, setForm] = useState(filters);
+    const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+    const [form, setForm] = useState<Filters>(EMPTY_FILTERS);
+    const [view, setView] = useState<View>('all');
     const [page, setPage] = useState(1);
-    const [data, setData] = useState<ListData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
-
-    const fetchList = useCallback(async (p: number, f: typeof filters) => {
-        setLoading(true);
-        setError('');
-        try {
-            const params = new URLSearchParams({ page: String(p), page_size: '20' });
-            for (const [k, v] of Object.entries(f)) if (v) params.set(k, v);
-            const res = await fetch(`/api/admin/request-logs?${params.toString()}`);
-            if (res.status === 401) {
-                setError('无权限(需 superadmin)或登录已过期');
-                return;
-            }
-            if (!res.ok) throw new Error();
-            setData((await res.json()) as ListData);
-        } catch {
-            setError('加载请求日志失败');
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+    const [pageSize, setPageSize] = useState(20);
+    const [revision, setRevision] = useState(0);
+    const [collapse, setCollapse] = useState(true);
+    const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [advanced, setAdvanced] = useState(false);
+    const [formError, setFormError] = useState('');
+    const [selected, setSelected] = useState<string | null>(null);
+    const query = buildLogQuery(filters, view, page, pageSize).toString();
+    const requestKey = revision + ':' + query;
+    const [result, setResult] = useState<{ key: string; data?: ListData; error?: string }>();
+    const loading = result?.key !== requestKey;
+    const data = loading ? undefined : result.data;
+    const error = loading ? undefined : result.error;
 
     useEffect(() => {
-        fetchList(page, filters);
-    }, [fetchList, page, filters]);
+        const controller = new AbortController();
+        async function load() {
+            try {
+                const response = await fetch('/api/admin/request-logs?' + query, {
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                if (controller.signal.aborted) return;
+                if (response.status === 401 || response.status === 403) {
+                    setResult({ key: requestKey, error: '登录已过期或权限不足，请重新登录。' });
+                    return;
+                }
+                if (!response.ok) throw new Error();
+                const next: ListData = await response.json();
+                if (!controller.signal.aborted) {
+                    if (next.page > next.total_pages) setPage(next.total_pages);
+                    else setResult({ key: requestKey, data: next });
+                }
+            } catch {
+                if (!controller.signal.aborted) setResult({ key: requestKey, error: '请求日志加载失败，请重试。' });
+            }
+        }
+        void load();
+        return () => controller.abort();
+    }, [query, requestKey]);
 
-    const applyFilters = (e: React.FormEvent) => {
-        e.preventDefault();
-        setPage(1);
-        setFilters(form);
+    const update = (key: keyof Filters, value: string) => setForm((previous) => ({ ...previous, [key]: value }));
+    const refresh = () => {
+        setExpanded(new Set());
+        setRevision((value) => value + 1);
     };
+    function submit(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        if (form.user_id.trim() && !uuid.test(form.user_id.trim())) {
+            setFormError('请输入完整的用户 UUID。');
+            return;
+        }
+        if (form.from && form.to && form.from > form.to) {
+            setFormError('开始日期应早于或等于结束日期。');
+            return;
+        }
+        setFormError('');
+        setFilters(form);
+        setPage(1);
+        refresh();
+    }
+    function reset() {
+        setForm(EMPTY_FILTERS);
+        setFilters(EMPTY_FILTERS);
+        setFormError('');
+        setView('all');
+        setPage(1);
+        refresh();
+    }
+    function movePage(next: number) {
+        setExpanded(new Set());
+        setPage(next);
+    }
+    function toggleGroup(id: string) {
+        setExpanded((previous) => {
+            const next = new Set(previous);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }
 
+    const groups = groupLogs(data?.logs ?? [], collapse);
+    const collapsedCount = (data?.logs.length ?? 0) - groups.length;
+    const advancedCount = [filters.user_id, filters.method, filters.status_code, filters.streamed].filter((value) =>
+        value.trim(),
+    ).length;
     return (
-        <div className="space-y-4">
-            <div>
-                <h1 className="text-xl font-semibold">请求日志</h1>
-                <p className="text-sm text-gray-500">
-                    客户 /v1/* 调用的输入+输出捕获(superadmin only,每次查看都留审计)。
-                </p>
-            </div>
-
-            <form onSubmit={applyFilters} className="flex flex-wrap items-end gap-2">
-                <label className="flex flex-col text-xs text-gray-500">
-                    user_id
-                    <input
-                        className={inputCls}
-                        value={form.user_id}
-                        onChange={(e) => setForm({ ...form, user_id: e.target.value })}
-                        placeholder="UUID"
-                    />
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    model
-                    <input
-                        className={inputCls}
-                        value={form.model}
-                        onChange={(e) => setForm({ ...form, model: e.target.value })}
-                        placeholder="模糊匹配"
-                    />
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    status_code
-                    <input
-                        className={inputCls}
-                        value={form.status_code}
-                        onChange={(e) => setForm({ ...form, status_code: e.target.value })}
-                        placeholder="如 200"
-                    />
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    success
-                    <select
-                        className={inputCls}
-                        value={form.success}
-                        onChange={(e) => setForm({ ...form, success: e.target.value })}
-                    >
-                        <option value="">全部</option>
-                        <option value="true">成功</option>
-                        <option value="false">失败</option>
-                    </select>
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    streamed
-                    <select
-                        className={inputCls}
-                        value={form.streamed}
-                        onChange={(e) => setForm({ ...form, streamed: e.target.value })}
-                    >
-                        <option value="">全部</option>
-                        <option value="true">流式</option>
-                        <option value="false">非流式</option>
-                    </select>
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    从
-                    <input
-                        type="date"
-                        className={inputCls}
-                        value={form.from}
-                        onChange={(e) => setForm({ ...form, from: e.target.value })}
-                    />
-                </label>
-                <label className="flex flex-col text-xs text-gray-500">
-                    到
-                    <input
-                        type="date"
-                        className={inputCls}
-                        value={form.to}
-                        onChange={(e) => setForm({ ...form, to: e.target.value })}
-                    />
-                </label>
-                <button type="submit" className={btn}>
-                    筛选
-                </button>
-            </form>
-
-            {error && <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>}
-
-            {loading ? (
-                <div className="py-12 text-center text-gray-500">加载中…</div>
-            ) : !data || data.logs.length === 0 ? (
-                <div className="rounded-xl border p-12 text-center text-gray-500">
-                    暂无日志(捕获默认 off,需 operator 开)。
+        <main className={styles.workspace}>
+            <header className={styles.heading}>
+                <div>
+                    <h1>请求日志</h1>
+                    <p>排查 API 请求异常、视频任务查询及请求和响应原文。</p>
                 </div>
-            ) : (
-                <>
-                    <div className="overflow-x-auto rounded-xl border">
-                        <table className="w-full text-xs">
-                            <thead className="bg-gray-50">
-                                <tr className="border-b text-left text-gray-500">
-                                    <th className="px-3 py-2">时间</th>
-                                    <th className="px-3 py-2">user</th>
-                                    <th className="px-3 py-2">model</th>
-                                    <th className="px-3 py-2">path</th>
-                                    <th className="px-3 py-2">status</th>
-                                    <th className="px-3 py-2">流式</th>
-                                    <th className="px-3 py-2 text-right">in/out tok</th>
-                                    <th className="px-3 py-2 text-right">in/out 字节</th>
-                                    <th className="px-3 py-2 text-right">耗时</th>
-                                    <th className="px-3 py-2"></th>
+                <button type="button" className={styles.button} onClick={refresh} disabled={loading}>
+                    刷新日志
+                </button>
+            </header>
+
+            <section className={styles.panel} aria-label="日志筛选">
+                <div className={styles.views} aria-label="请求结果">
+                    {views.map((item) => (
+                        <button
+                            type="button"
+                            key={item.id}
+                            aria-pressed={item.id === view}
+                            onClick={() => {
+                                setView(item.id);
+                                movePage(1);
+                            }}
+                        >
+                            {item.label}
+                        </button>
+                    ))}
+                </div>
+                <form onSubmit={submit} className={styles.filters}>
+                    <div className={styles.filterGrid}>
+                        <label>
+                            接口路径 / 任务 ID
+                            <input
+                                type="search"
+                                maxLength={300}
+                                value={form.path}
+                                onChange={(e) => update('path', e.target.value)}
+                                placeholder="例 /v1/videos 或 task_…"
+                            />
+                        </label>
+                        <label>
+                            模型
+                            <input
+                                type="search"
+                                value={form.model}
+                                onChange={(e) => update('model', e.target.value)}
+                                placeholder="输入模型名称"
+                            />
+                        </label>
+                        <label>
+                            开始日期
+                            <input
+                                type="date"
+                                max={form.to || undefined}
+                                value={form.from}
+                                onChange={(e) => update('from', e.target.value)}
+                            />
+                        </label>
+                        <label>
+                            结束日期
+                            <input
+                                type="date"
+                                min={form.from || undefined}
+                                value={form.to}
+                                onChange={(e) => update('to', e.target.value)}
+                            />
+                        </label>
+                    </div>
+                    {advanced && (
+                        <div className={styles.filterGrid} id="request-log-advanced-filters">
+                            <label>
+                                用户 UUID
+                                <input
+                                    value={form.user_id}
+                                    onChange={(e) => update('user_id', e.target.value)}
+                                    placeholder="输入完整 UUID"
+                                />
+                            </label>
+                            <label>
+                                HTTP 方法
+                                <select value={form.method} onChange={(e) => update('method', e.target.value)}>
+                                    <option value="">全部</option>
+                                    {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => (
+                                        <option key={method}>{method}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label>
+                                HTTP 状态码
+                                <input
+                                    type="number"
+                                    min={100}
+                                    max={599}
+                                    value={form.status_code}
+                                    onChange={(e) => update('status_code', e.target.value)}
+                                    placeholder="例 404"
+                                />
+                            </label>
+                            <label>
+                                响应方式
+                                <select value={form.streamed} onChange={(e) => update('streamed', e.target.value)}>
+                                    <option value="">全部</option>
+                                    <option value="true">流式</option>
+                                    <option value="false">非流式</option>
+                                </select>
+                            </label>
+                        </div>
+                    )}
+                    {formError && (
+                        <div className={styles.error} role="alert">
+                            {formError}
+                        </div>
+                    )}
+                    <div className={styles.controls}>
+                        <button
+                            className={styles.textButton}
+                            type="button"
+                            aria-expanded={advanced}
+                            aria-controls={advanced ? 'request-log-advanced-filters' : undefined}
+                            onClick={() => setAdvanced(!advanced)}
+                        >
+                            {advanced ? '收起更多筛选' : '更多筛选'}
+                            {advancedCount > 0 ? '（' + advancedCount + ' 项）' : ''}
+                        </button>
+                        <div>
+                            <button className={styles.button} type="button" onClick={reset}>
+                                重置
+                            </button>
+                            <button className={styles.primaryButton} type="submit">
+                                查询
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </section>
+
+            <section className={styles.panel} aria-label="请求记录" aria-busy={loading}>
+                <div className={styles.resultsHeader}>
+                    <div>
+                        <h2>
+                            请求记录 <span aria-live="polite">{data ? formatNumber(data.total) + ' 条' : ''}</span>
+                        </h2>
+                        <p>
+                            {collapsedCount > 0 ? '当前页已折叠 ' + collapsedCount + ' 条重复查询 · ' : ''}
+                            北京时间（UTC+8）
+                        </p>
+                    </div>
+                    <label className={styles.check}>
+                        <input type="checkbox" checked={collapse} onChange={(e) => setCollapse(e.target.checked)} />
+                        折叠当前页重复轮询
+                    </label>
+                </div>
+                {error ? (
+                    <div className={styles.notice} role="alert">
+                        <p>{error}</p>
+                        <button type="button" className={styles.button} onClick={refresh}>
+                            重试
+                        </button>
+                    </div>
+                ) : loading ? (
+                    <div className={styles.notice} role="status">
+                        正在加载请求日志…
+                    </div>
+                ) : !groups.length ? (
+                    <div className={styles.notice} role="status">
+                        没有符合条件的请求。
+                    </div>
+                ) : (
+                    <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="日志列表，可横向滚动">
+                        <table className={styles.table}>
+                            <thead>
+                                <tr>
+                                    <th scope="col">时间</th>
+                                    <th scope="col">请求</th>
+                                    <th scope="col">模型 / 用户</th>
+                                    <th scope="col">状态</th>
+                                    <th scope="col" className={styles.numeric}>
+                                        输入 / 输出 Token
+                                    </th>
+                                    <th scope="col" className={styles.numeric}>
+                                        耗时
+                                    </th>
+                                    <th scope="col" className={styles.rowAction}>
+                                        操作
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {data.logs.map((r) => (
-                                    <tr key={r.id} className="border-b hover:bg-gray-50">
-                                        <td className="whitespace-nowrap px-3 py-2">{fmtDate(r.created_at)}</td>
-                                        <td className="px-3 py-2 font-mono" title={r.user_id ?? ''}>
-                                            {short(r.user_id)}
-                                        </td>
-                                        <td className="px-3 py-2">{r.model ?? '—'}</td>
-                                        <td className="px-3 py-2">{r.path}</td>
-                                        <td className="px-3 py-2">
-                                            <span className={r.success ? 'text-green-600' : 'text-red-600'}>
-                                                {r.status_code ?? '—'}
-                                            </span>
-                                            {r.incomplete && <span className="ml-1 text-amber-600">⚠中断</span>}
-                                        </td>
-                                        <td className="px-3 py-2">{r.streamed ? '是' : '否'}</td>
-                                        <td className="px-3 py-2 text-right">
-                                            {r.input_tokens ?? '—'}/{r.output_tokens ?? '—'}
-                                        </td>
-                                        <td className="px-3 py-2 text-right">
-                                            {r.input_bytes}/{r.output_bytes}
-                                        </td>
-                                        <td className="px-3 py-2 text-right">
-                                            {r.duration_ms != null ? `${r.duration_ms}ms` : '—'}
-                                        </td>
-                                        <td className="px-3 py-2">
-                                            <button className={btnGhost} onClick={() => setSelected({ id: r.id })}>
-                                                详情
-                                            </button>
-                                        </td>
-                                    </tr>
+                                {groups.map((rows) => (
+                                    <LogLines
+                                        key={rows[0].id}
+                                        rows={rows}
+                                        expanded={expanded.has(rows[0].id)}
+                                        toggle={() => toggleGroup(rows[0].id)}
+                                        onSelect={setSelected}
+                                    />
                                 ))}
                             </tbody>
                         </table>
                     </div>
-
-                    <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-500">共 {data.total} 条</span>
-                        <div className="flex items-center gap-2">
-                            <button className={btnGhost} disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                )}
+                {data && (
+                    <footer className={styles.pagination}>
+                        <label>
+                            每页
+                            <select
+                                value={pageSize}
+                                onChange={(e) => {
+                                    setPageSize(Number(e.target.value));
+                                    movePage(1);
+                                }}
+                            >
+                                {[20, 50, 100].map((size) => (
+                                    <option key={size}>{size}</option>
+                                ))}
+                            </select>
+                            条
+                        </label>
+                        <div>
+                            <button
+                                type="button"
+                                className={styles.button}
+                                disabled={page <= 1}
+                                onClick={() => movePage(page - 1)}
+                            >
                                 上一页
                             </button>
                             <span>
-                                第 {data.page} / {data.total_pages} 页
+                                {data.page} / {data.total_pages}
                             </span>
                             <button
-                                className={btnGhost}
+                                type="button"
+                                className={styles.button}
                                 disabled={page >= data.total_pages}
-                                onClick={() => setPage(page + 1)}
+                                onClick={() => movePage(page + 1)}
                             >
                                 下一页
                             </button>
                         </div>
-                    </div>
-                </>
-            )}
-
-            {selected && <DetailDrawer id={String(selected.id)} onClose={() => setSelected(null)} />}
-        </div>
-    );
-}
-
-/** 详情抽屉:拉单条元数据(view_meta)+ 按需拉 in/out 原文(view_input/output)。 */
-function DetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-    const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
-    const [metaError, setMetaError] = useState('');
-    const [bodies, setBodies] = useState<Partial<Record<'in' | 'out', BodyData | { error: string }>>>({});
-    const [loadingBody, setLoadingBody] = useState<'in' | 'out' | null>(null);
-
-    useEffect(() => {
-        let alive = true;
-        (async () => {
-            try {
-                const res = await fetch(`/api/admin/request-logs/${id}`);
-                if (!res.ok) throw new Error();
-                const j = (await res.json()) as { log: Record<string, unknown> };
-                if (alive) setMeta(j.log);
-            } catch {
-                if (alive) setMetaError('加载元数据失败');
-            }
-        })();
-        return () => {
-            alive = false;
-        };
-    }, [id]);
-
-    const loadBody = async (which: 'in' | 'out', full = false) => {
-        setLoadingBody(which);
-        try {
-            const res = await fetch(`/api/admin/request-logs/${id}/body?which=${which}${full ? '&full=1' : ''}`);
-            const j = await res.json();
-            setBodies((b) => ({ ...b, [which]: res.ok ? (j as BodyData) : { error: j.error ?? '加载失败' } }));
-        } catch {
-            setBodies((b) => ({ ...b, [which]: { error: '加载失败' } }));
-        } finally {
-            setLoadingBody(null);
-        }
-    };
-
-    return (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
-            <div
-                className="h-full w-full max-w-2xl overflow-y-auto bg-white p-5 shadow-xl"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="mb-3 flex items-center justify-between">
-                    <h2 className="font-semibold">请求日志详情</h2>
-                    <button className={btnGhost} onClick={onClose}>
-                        关闭
-                    </button>
-                </div>
-                <p className="mb-3 break-all font-mono text-xs text-gray-500">{id}</p>
-
-                {metaError && <div className="text-sm text-red-600">{metaError}</div>}
-                {meta && (
-                    <pre className="mb-4 max-h-72 overflow-auto rounded bg-gray-50 p-3 text-xs">
-                        {JSON.stringify(meta, null, 2)}
-                    </pre>
+                    </footer>
                 )}
-
-                <div className="space-y-3">
-                    {(['in', 'out'] as const).map((which) => {
-                        const b = bodies[which];
-                        return (
-                            <div key={which} className="rounded border p-3">
-                                <div className="mb-2 flex items-center gap-2">
-                                    <span className="text-sm font-medium">
-                                        {which === 'in' ? '输入原文' : '输出原文'}
-                                    </span>
-                                    <button
-                                        className={btnGhost}
-                                        disabled={loadingBody === which}
-                                        onClick={() => loadBody(which)}
-                                    >
-                                        {loadingBody === which ? '加载中…' : '查看'}
-                                    </button>
-                                </div>
-                                {b && 'error' in b && <div className="text-sm text-red-600">{b.error}</div>}
-                                {b && 'body' in b && (
-                                    <>
-                                        {b.truncated && (
-                                            <div className="mb-1 text-xs text-amber-600">
-                                                已截断(共 {b.total_bytes} 字节)。
-                                                <button
-                                                    className="ml-1 underline"
-                                                    onClick={() => loadBody(which, true)}
-                                                >
-                                                    加载完整
-                                                </button>
-                                            </div>
-                                        )}
-                                        <pre className="max-h-80 overflow-auto rounded bg-gray-50 p-2 text-xs">
-                                            {b.body}
-                                        </pre>
-                                    </>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
-        </div>
+            </section>
+            {selected && <RequestLogDetail key={selected} id={selected} onClose={() => setSelected(null)} />}
+        </main>
     );
 }

@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 
-// P6b-2: read-only customer view. gate = admin (partner admins use it); tenantScope
+// P6b-2: tenant-scoped customer management. gate = admin (partner admins use it); tenantScope
 // confines partner admins to their own tenant; detail is IDOR-safe via findFirst+scope.
 const mockResolveAdmin = vi.fn();
-const mockUserFindMany = vi.fn();
+const mockQueryRaw = vi.fn();
+const mockUserUpdateMany = vi.fn();
 const mockUserCount = vi.fn();
 const mockUserFindFirst = vi.fn();
 const mockUsageGroupBy = vi.fn();
@@ -21,8 +23,9 @@ vi.mock('@/lib/admin-auth', () => ({
 // Use the REAL tenant-scope helper so the where-clause wiring is exercised end-to-end.
 vi.mock('@/lib/db', () => ({
     prisma: {
+        $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
         user: {
-            findMany: (...a: unknown[]) => mockUserFindMany(...a),
+            updateMany: (...a: unknown[]) => mockUserUpdateMany(...a),
             count: (...a: unknown[]) => mockUserCount(...a),
             findFirst: (...a: unknown[]) => mockUserFindFirst(...a),
         },
@@ -36,6 +39,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/newapi/client', () => ({
     quotaToCny: (quota: number) => (quota / 500_000) * 7.2,
 }));
+vi.mock('@/lib/newapi/quota-units', () => ({ QUOTA_PER_USD: 500_000, USD_TO_CNY_RATE: 7.2 }));
 // Detail header live-refetches balance via getQuotaWithCache. Default it to REJECT
 // so the existing detail assertions exercise the graceful fallback (→ cache columns,
 // the pre-change behavior). One dedicated test below drives the live-success path.
@@ -45,7 +49,7 @@ vi.mock('@/lib/newapi/quota-cache', () => ({
 }));
 
 import { GET as LIST } from '@/app/api/admin/customers/route';
-import { GET as DETAIL } from '@/app/api/admin/customers/[id]/route';
+import { GET as DETAIL, PATCH as SET_ALIAS } from '@/app/api/admin/customers/[id]/route';
 
 const SUPERADMIN = { role: 'superadmin', tenant_id: null, user: null, viaBreakGlass: true };
 const PARTNER_ADMIN = { role: 'admin', tenant_id: 'tenant-7', user: {}, viaBreakGlass: false };
@@ -56,7 +60,8 @@ const detailParams = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockUserFindMany.mockResolvedValue([]);
+    mockQueryRaw.mockResolvedValue([]);
+    mockUserUpdateMany.mockResolvedValue({ count: 1 });
     mockUserCount.mockResolvedValue(0);
     mockUsageGroupBy.mockResolvedValue([]);
     mockTokenFindMany.mockResolvedValue([]);
@@ -71,39 +76,71 @@ describe('GET /api/admin/customers (list)', () => {
         mockResolveAdmin.mockResolvedValue(null);
         const res = await LIST(listReq());
         expect(res.status).toBe(401);
-        expect(mockUserFindMany).not.toHaveBeenCalled();
+        expect(mockQueryRaw).not.toHaveBeenCalled();
     });
 
-    it('partner admin → findMany + count where confined to their tenant_id', async () => {
+    const executedSql = () => {
+        const [strings, ...values] = mockQueryRaw.mock.calls[0];
+        return Prisma.sql(strings, ...values);
+    };
+
+    it('confines both rows and count to the partner tenant', async () => {
         mockResolveAdmin.mockResolvedValue(PARTNER_ADMIN);
         await LIST(listReq());
-        expect(mockUserFindMany.mock.calls[0][0].where).toMatchObject({ tenant_id: 'tenant-7' });
+        const query = executedSql();
+        expect(query.sql).toContain('u.tenant_id = ?::uuid');
+        expect(query.values).toContain('tenant-7');
         expect(mockUserCount.mock.calls[0][0].where).toMatchObject({ tenant_id: 'tenant-7' });
     });
 
-    it('superadmin → no tenant_id filter (sees all)', async () => {
+    it('applies balance order before pagination and allows superadmin to see all tenants', async () => {
         mockResolveAdmin.mockResolvedValue(SUPERADMIN);
-        await LIST(listReq());
-        expect(mockUserFindMany.mock.calls[0][0].where.tenant_id).toBeUndefined();
+        await LIST(listReq('?page=2&page_size=3&sort=balance'));
+        const query = executedSql();
+        expect(query.sql).not.toContain('u.tenant_id =');
+        expect(query.sql).toMatch(/ORDER BY balance_cny DESC, u\.created_at DESC, u\.id DESC\s+LIMIT \? OFFSET \?/);
+        expect(query.sql).toContain('ORDER BY balance_cny DESC, p.created_at DESC, p.id DESC');
+        expect(query.values).toEqual([7.2, 500000, 3, 3]);
+        expect(mockUserCount.mock.calls[0][0].where.tenant_id).toBeUndefined();
     });
 
-    it('q param adds case-insensitive email filter', async () => {
+    it.each(['', '?sort=recent', '?sort=unknown'])('defaults to most recent registration for %j', async (qs) => {
+        mockResolveAdmin.mockResolvedValue(SUPERADMIN);
+        await LIST(listReq(qs));
+        const { sql } = executedSql();
+        expect(sql).toMatch(/ORDER BY u\.created_at DESC, u\.id DESC\s+LIMIT \? OFFSET \?/);
+        expect(sql).toContain('ORDER BY p.created_at DESC, p.id DESC');
+        expect(sql).not.toContain('ORDER BY balance_cny');
+    });
+
+    it('matches either email or alias within the tenant', async () => {
         mockResolveAdmin.mockResolvedValue(PARTNER_ADMIN);
-        await LIST(listReq('?q=acme'));
-        expect(mockUserFindMany.mock.calls[0][0].where.email).toEqual({ contains: 'acme', mode: 'insensitive' });
+        await LIST(listReq('?q=Acme'));
+        const query = executedSql();
+        expect(query.sql).toContain('u.email ILIKE ? OR u.admin_alias ILIKE ?');
+        expect(query.values).toEqual([7.2, 500000, 'tenant-7', '%Acme%', '%Acme%', 20, 0]);
+        expect(mockUserCount.mock.calls[0][0].where).toEqual({
+            tenant_id: 'tenant-7',
+            OR: [
+                { email: { contains: 'Acme', mode: 'insensitive' } },
+                { admin_alias: { contains: 'Acme', mode: 'insensitive' } },
+            ],
+        });
     });
 
     it('maps balance (¥), key count, and 30d usage into the row', async () => {
         mockResolveAdmin.mockResolvedValue(SUPERADMIN);
-        mockUserFindMany.mockResolvedValue([
+        mockQueryRaw.mockResolvedValue([
             {
                 id: 'u1',
                 email: 'a@x.com',
                 status: 'active',
                 created_at: new Date('2026-01-01T00:00:00Z'),
-                newapi_quota_cache: BigInt(500_000), // 1 USD → ¥7.2
-                newapi_cached_at: null,
-                _count: { keys: 2 },
+                admin_alias: '项目 A',
+                balance_cny: new Prisma.Decimal(7.2),
+                balance_cached_at: null,
+                balance_pending: false,
+                key_count: 2,
             },
         ]);
         mockUserCount.mockResolvedValue(1);
@@ -115,6 +152,7 @@ describe('GET /api/admin/customers (list)', () => {
         expect(body.customers[0]).toMatchObject({
             id: 'u1',
             email: 'a@x.com',
+            admin_alias: '项目 A',
             balance_cny: 7.2,
             key_count: 2,
             usage_30d: { calls: 5, costCny: 1.25 },
@@ -122,23 +160,12 @@ describe('GET /api/admin/customers (list)', () => {
         expect(body.total).toBe(1);
     });
 
-    it('negative cached quota never shows a negative balance (gotcha #3)', async () => {
+    it('reports a pending balance when new-api has no cached quota', async () => {
         mockResolveAdmin.mockResolvedValue(SUPERADMIN);
-        mockUserFindMany.mockResolvedValue([
-            {
-                id: 'u1',
-                email: 'a@x.com',
-                status: 'active',
-                created_at: new Date('2026-01-01T00:00:00Z'),
-                newapi_quota_cache: BigInt(-1000),
-                newapi_cached_at: null,
-                _count: { keys: 0 },
-            },
-        ]);
+        mockQueryRaw.mockResolvedValue([{ balance_cny: new Prisma.Decimal(0), balance_pending: true }]);
         mockUserCount.mockResolvedValue(1);
-        const res = await LIST(listReq());
-        const body = await res.json();
-        expect(body.customers[0].balance_cny).toBe(0);
+        const body = await (await LIST(listReq())).json();
+        expect(body.customers[0]).toMatchObject({ balance_cny: 0, balance_pending: true });
     });
 });
 
@@ -175,6 +202,7 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
             id: 'u1',
             email: 'a@x.com',
             nickname: 'Ada',
+            admin_alias: '项目客户',
             status: 'active',
             created_at: new Date('2026-01-01T00:00:00Z'),
             last_login_at: null,
@@ -203,6 +231,7 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
             email: 'a@x.com',
             balance_cny: 7.2,
             used_cny: 3.6,
+            admin_alias: '项目客户',
             newapi_user_id: 13,
             newapi_username: 'c-4e23b655',
         });
@@ -320,5 +349,51 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
         expect(res.status).toBe(200);
         expect(body.customer.balance_cny).toBeCloseTo(7.2, 5); // from cache column
         expect(body.customer.used_cny).toBeCloseTo(3.6, 5);
+    });
+});
+
+describe('PATCH /api/admin/customers/[id] (admin alias)', () => {
+    const id = '9e06cc13-7777-4eda-bf9d-fb0346e18bbb';
+    const patch = (payload: unknown) =>
+        SET_ALIAS(
+            new NextRequest('https://x/api/admin/customers/' + id, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            }),
+            detailParams(id),
+        );
+
+    it('saves a trimmed alias with the tenant predicate on the write itself', async () => {
+        mockResolveAdmin.mockResolvedValue(PARTNER_ADMIN);
+        const response = await patch({ admin_alias: '  视频客户 A  ' });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ admin_alias: '视频客户 A' });
+        expect(mockUserUpdateMany).toHaveBeenCalledWith({
+            where: { id, tenant_id: 'tenant-7' },
+            data: { admin_alias: '视频客户 A' },
+        });
+    });
+
+    it('allows clearing the alias', async () => {
+        mockResolveAdmin.mockResolvedValue(SUPERADMIN);
+        const response = await patch({ admin_alias: '  ' });
+        expect(await response.json()).toEqual({ admin_alias: null });
+        expect(mockUserUpdateMany).toHaveBeenCalledWith({ where: { id }, data: { admin_alias: null } });
+    });
+
+    it('returns 404 for an out-of-tenant customer', async () => {
+        mockResolveAdmin.mockResolvedValue(PARTNER_ADMIN);
+        mockUserUpdateMany.mockResolvedValue({ count: 0 });
+        expect((await patch({ admin_alias: '跨租户' })).status).toBe(404);
+    });
+
+    it('rejects unauthenticated writes and invalid payloads without updating the user', async () => {
+        mockResolveAdmin.mockResolvedValue(null);
+        expect((await patch({ admin_alias: '新别名' })).status).toBe(401);
+        mockResolveAdmin.mockResolvedValue(PARTNER_ADMIN);
+        expect((await patch({ admin_alias: 'x'.repeat(81) })).status).toBe(400);
+        expect((await patch({ admin_alias: '新别名', nickname: '客户昵称' })).status).toBe(400);
+        expect(mockUserUpdateMany).not.toHaveBeenCalled();
     });
 });

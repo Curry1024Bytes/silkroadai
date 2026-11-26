@@ -243,6 +243,36 @@ describe('筛选 + 分页', () => {
         expect(ca.lte).toBeInstanceOf(Date);
     });
 
+    it('任务路径按字面值匹配，支持 HTTP 方法和中断筛选并写审计', async () => {
+        const query = new URLSearchParams({
+            path: 'task_abc%def',
+            method: 'get',
+            incomplete: 'true',
+        });
+        await LIST(listReq('?' + query.toString()));
+        const { where, orderBy } = mockFindMany.mock.calls[0][0];
+        expect(where.path).toEqual({ contains: 'task\\_abc\\%def' });
+        expect(where.method).toBe('GET');
+        expect(where.incomplete).toBe(true);
+        expect(orderBy).toEqual([{ created_at: 'desc' }, { id: 'desc' }]);
+        await flush();
+        const audit = JSON.parse(mockAccessCreate.mock.calls.at(-1)![0].data.query);
+        expect(audit).toMatchObject({ path: 'task_abc%def', method: 'GET', incomplete: 'true' });
+    });
+
+    it('非法分页回到默认值', async () => {
+        await LIST(listReq('?page=abc&page_size=2.5'));
+        expect(mockFindMany.mock.calls[0][0]).toMatchObject({ skip: 0, take: 20 });
+    });
+
+    it('完整 /v1 路径也可查到去掉前缀存储的日志，且保留到期过滤', async () => {
+        await LIST(listReq('?path=%2Fv1%2Fvideos'));
+        expect(mockFindMany.mock.calls[0][0].where).toEqual({
+            OR: [{ retention_expires_at: null }, { retention_expires_at: { gt: expect.any(Date) } }],
+            AND: [{ OR: [{ path: { contains: '/v1/videos' } }, { path: { contains: '/videos' } }] }],
+        });
+    });
+
     it('分页 skip/take 正确', async () => {
         await LIST(listReq('?page=3&page_size=20'));
         const arg = mockFindMany.mock.calls[0][0] as { skip: number; take: number };

@@ -8,12 +8,14 @@ import { resolveLocale, type Locale } from '@/lib/locale';
 import { RateOverridesPanel } from './rate-overrides-panel';
 import { SaleRulesPanel } from './sale-rules-panel';
 import { OfficialPricingPanel } from './official-pricing-panel';
+import { CustomerAliasEditor } from './customer-alias-editor';
 
 // ── Types (mirror /api/admin/customers/[id]) ──
 interface CustomerDetail {
     id: string;
     email: string;
     nickname: string | null;
+    admin_alias: string | null;
     status: 'active' | 'disabled' | 'banned';
     created_at: string;
     last_login_at: string | null;
@@ -566,7 +568,7 @@ function DetailContent() {
             isDark={isDark}
             isEmbedded={isEmbedded}
             maxWidth="full"
-            title={data ? data.customer.email : t.title}
+            title={data ? data.customer.admin_alias || data.customer.email : t.title}
             subtitle=""
             locale={locale}
             actions={
@@ -601,6 +603,21 @@ function DetailContent() {
                     <div>
                         <div className={sectionTitle}>{t.profile}</div>
                         <div className={`grid grid-cols-2 gap-4 rounded-xl border p-4 sm:grid-cols-3 ${card}`}>
+                            <CustomerAliasEditor
+                                key={data.customer.id}
+                                customerId={data.customer.id}
+                                alias={data.customer.admin_alias}
+                                locale={locale}
+                                isDark={isDark}
+                                onSaved={(alias) => {
+                                    const customerId = data.customer.id;
+                                    setData((current) =>
+                                        current?.customer.id === customerId
+                                            ? { ...current, customer: { ...current.customer, admin_alias: alias } }
+                                            : current,
+                                    );
+                                }}
+                            />
                             <div>
                                 <div className={labelCls}>{t.email}</div>
                                 <div className={valueCls}>{data.customer.email}</div>
