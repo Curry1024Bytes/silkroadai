@@ -10,6 +10,7 @@ import { loadOfficialContext } from './context';
 import { assertTierOutsideSaleRules } from './guards';
 import { compileCustomerPreview } from './preview';
 import { CustomerPricingError } from './math';
+import { isPartnerTenant } from '@/lib/partner/group';
 import {
     prepareNativeModelGroups,
     publishNativeCustomerPricing,
@@ -90,6 +91,9 @@ export async function saveCustomerOfficialPricing(args: SaveOfficialPricingArgs)
         const result = await prisma.$transaction(async (tx) => {
             await assertPricingCatalogWritable(tx);
             const context = await loadOfficialContext(args.userId, tx);
+            // 代理客户按 partner-X 用户分组的代理零售率扣费；官方基准定价会把 Key 改到客户专属分组，绕开代理定价。
+            if (isPartnerTenant(context.user.tenant_id))
+                throw new CustomerPricingError('partner_customer', '代理客户的价格由代理设定，不参与平台定价。');
             const portalKeys = await tx.newApiToken.findMany({
                 where: { user_id: args.userId, tier: args.draft.tier_key, status: 'active' },
                 select: { newapi_token_id: true },

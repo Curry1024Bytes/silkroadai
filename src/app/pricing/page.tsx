@@ -35,6 +35,11 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import {
+    loadPartnerPriceDisplay,
+    resolveDisplayTenant,
+    type PartnerPriceDisplay,
+} from '@/lib/partner/display-pricing';
+import {
     formatTieredPrice,
     isUniformPricingDetails,
     scalePricingAmount,
@@ -64,12 +69,13 @@ export async function generateMetadata() {
     return { title: m.meta.title, description: m.meta.description };
 }
 
-async function getPricingUserId(): Promise<string | undefined> {
+async function getPricingViewer(): Promise<{ userId?: string; tenantId: string }> {
     const h = await headers();
     const user = await getCurrentUser(
         new NextRequest('http://internal/pricing', { headers: { cookie: h.get('cookie') ?? '' } }),
     );
-    return user?.id;
+    // 代理站点（按登录客户所属租户，否则按 Host）要按代理自己的零售率和开放分组显示。
+    return { userId: user?.id, tenantId: await resolveDisplayTenant(user?.tenant_id ?? null, h.get('host')) };
 }
 
 interface PriceCell {
@@ -110,8 +116,12 @@ async function getGroupRatioSafe(): Promise<string | null> {
     }
 }
 
-async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
-    const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map();
+async function loadPricingSheet(
+    userId?: string,
+    partner?: PartnerPriceDisplay | null,
+): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
+    // 代理客户的专属价在代理分组里，平台这一套专属倍率/官方价不适用于代理站。
+    const officialQuotes = userId && !partner ? await loadCustomerOfficialQuotes(userId) : new Map();
     const [models, groups, groupRatioRaw, overrides] = await Promise.all([
         prisma.catalogModel.findMany({
             // 锁平台主体 —— slug 仅在 tenant 内唯一,与 machine-catalog / billing meter 同标准。
@@ -131,7 +141,7 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
         }),
         getGroupRatioSafe(),
         // Never silently display public prices as a logged-in customer's dedicated quote on lookup failure.
-        userId ? listUserTierMultipliers(userId) : Promise.resolve([]),
+        userId && !partner ? listUserTierMultipliers(userId) : Promise.resolve([]),
     ]);
 
     let groupRatios: Record<string, number> = {};
@@ -174,10 +184,11 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
             seen.add(p.tier);
             if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 旧价只留审计,不能冒充当前可售档
             if (!tierLabel.has(p.tier)) continue; // 档次已停用 → 不挂公开价
+            if (partner && !partner.openTiers.has(p.tier)) continue; // 代理没开放 → 代理站不展示
             const billingGroup = groupByTier.get(p.tier) ?? '';
             const publicMultiplier = groupRatios[billingGroup] ?? null;
-            const dedicatedMultiplier = overridesByGroup.get(billingGroup);
-            let multiplierScale = 1;
+            const dedicatedMultiplier = partner ? undefined : overridesByGroup.get(billingGroup);
+            let multiplierScale = partner ? (partner.scales.get(p.tier) ?? 1) : 1;
             if (dedicatedMultiplier !== undefined) {
                 if (
                     publicMultiplier === null ||
@@ -208,10 +219,14 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
                         : scalePricingAmount(Number(p.output_cny_per_1m), multiplierScale)),
                 perImageCny:
                     p.per_image_cny == null ? null : scalePricingAmount(Number(p.per_image_cny), multiplierScale),
-                publicMultiplier,
-                effectiveMultiplier: dedicatedMultiplier ?? publicMultiplier,
+                publicMultiplier: partner ? (partner.retail.get(p.tier) ?? publicMultiplier) : publicMultiplier,
+                effectiveMultiplier: partner
+                    ? (partner.retail.get(p.tier) ?? publicMultiplier)
+                    : (dedicatedMultiplier ?? publicMultiplier),
                 billingDetails,
-                special: !!personal || (dedicatedMultiplier !== undefined && dedicatedMultiplier !== publicMultiplier),
+                special:
+                    !partner &&
+                    (!!personal || (dedicatedMultiplier !== undefined && dedicatedMultiplier !== publicMultiplier)),
                 ...(personal
                     ? {
                           inputCny: personal.input_cny_per_1m,
@@ -245,7 +260,8 @@ export default async function PricingPage() {
     let sheet: Awaited<ReturnType<typeof loadPricingSheet>> | null = null;
     let fetchErr = false;
     try {
-        sheet = await loadPricingSheet(await getPricingUserId());
+        const viewer = await getPricingViewer();
+        sheet = await loadPricingSheet(viewer.userId, await loadPartnerPriceDisplay(viewer.tenantId));
     } catch (err) {
         // 与 /models 同哲学:DB 抖动不炸公开页,渲染 chrome + 错误横幅。
         fetchErr = true;

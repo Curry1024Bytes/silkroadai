@@ -14,6 +14,8 @@ import { resolveTenantByHost } from '@/lib/tenant/resolve';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
 import { enqueueCustomerProvisioningJob } from '@/lib/auth/customer-provisioning-queue';
 import { withCustomerKeyMutation } from '@/lib/newapi/customer-key-mutation';
+import { partnerAcceptsCustomers } from '@/lib/partner/assign-group';
+import { isPartnerTenant } from '@/lib/partner/group';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -131,6 +133,23 @@ export async function POST(req: NextRequest) {
             { error: 'default_tier_unavailable', message: 'Account provisioning is temporarily unavailable' },
             { status: 503 },
         );
+    }
+
+    // 白标代理：默认档次没开放（超管没设批发率或代理没设零售率）时不接新客户，
+    // 否则新客户的第一个 Key 用不了。
+    if (isPartnerTenant(tenant.id)) {
+        let accepts = false;
+        try {
+            accepts = await partnerAcceptsCustomers(tenant.id, defaultGroup.newapi_group);
+        } catch (err) {
+            console.error(`[register] partner pricing unavailable for tenant ${tenant.id}:`, err);
+        }
+        if (!accepts) {
+            return NextResponse.json(
+                { error: 'signup_unavailable', message: '该站点暂未开放注册,请联系客服。' },
+                { status: 403 },
+            );
+        }
     }
 
     const password_hash = await hash(password, BCRYPT_ROUNDS);

@@ -13,12 +13,14 @@ import {
     KeyRound,
     LayoutDashboard,
     ScrollText,
+    Store,
     UsersRound,
     Wrench,
     X,
 } from 'lucide-react';
 import { useMessages } from '@/lib/i18n/client';
 import { commonMessages } from '@/lib/i18n/messages/common';
+import { partnerMessages } from '@/lib/i18n/messages/partner';
 
 type CommonMessages = (typeof commonMessages)['zh'];
 
@@ -58,6 +60,7 @@ function resourceNav(m: CommonMessages): NavItem[] {
 
 export interface SidebarProps {
     resellerStatus?: 'active' | 'suspended' | 'banned' | null;
+    partnerMode?: boolean;
     mobileOpen?: boolean;
     onMobileClose?: () => void;
 }
@@ -65,6 +68,20 @@ export interface SidebarProps {
 function resellerNavLabel(status: SidebarProps['resellerStatus'], m: CommonMessages): string {
     if (status === 'active' || status === 'suspended' || status === 'banned') return m.nav.resellerConsole;
     return m.nav.resellerJoin;
+}
+
+/** 代理后台导航（P1-partner），仅 partnerMode=true 时注入 */
+function partnerNav(labels: Record<string, string>): NavItem[] {
+    return [
+        { href: '/partner/dashboard', label: labels.dashboard, icon: Store },
+        { href: '/partner/wholesale', label: labels.wholesale, icon: Boxes },
+        { href: '/partner/pricing', label: labels.pricing, icon: CreditCard },
+        { href: '/partner/customers', label: labels.customers, icon: UsersRound },
+        { href: '/partner/earnings', label: labels.earnings, icon: ScrollText },
+        { href: '/partner/wallet', label: labels.wallet, icon: HardDrive },
+        { href: '/partner/domain', label: labels.domain, icon: BookOpenText },
+        { href: '/partner/brand', label: labels.brand, icon: Wrench },
+    ];
 }
 
 function isRouteActive(pathname: string, href: string): boolean {
@@ -187,9 +204,10 @@ function NavigationPanel({
     );
 }
 
-export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClose }: SidebarProps) {
+export function Sidebar({ resellerStatus = null, partnerMode = false, mobileOpen = false, onMobileClose }: SidebarProps) {
     const pathname = usePathname();
     const m = useMessages(commonMessages);
+    const p = useMessages(partnerMessages);
     const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
     const groups: NavGroup[] = [
         { label: m.sidebar.groupWorkspace, items: workspaceNav(m) },
@@ -208,6 +226,9 @@ export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClo
             ],
         },
     ];
+    if (partnerMode) {
+        groups.push({ label: p.nav.console, items: partnerNav(p.nav) });
+    }
 
     return (
         <>

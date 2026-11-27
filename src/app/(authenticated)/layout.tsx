@@ -30,6 +30,7 @@ import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { getCurrentTenant } from '@/lib/tenant/resolve';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
+import { roleAtLeast } from '@/lib/admin/roles';
 import { UnverifiedBanner } from './unverified-banner';
 import { AnnouncementBanner } from './announcement-banner';
 import { getActiveAnnouncements } from '@/lib/announcements/fetch-active';
@@ -90,11 +91,16 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     // localStorage 关闭。查询抽到 helper 便于 layout 单测 mock(不连 prisma)。
     const announcements = await getActiveAnnouncements(user.tenant_id ?? null);
 
+    // P1-partner: 代理后台入口 —— role >= staff 且非平台租户的 user 在
+    // sidebar 显示「代理后台」分组。
+    const partnerMode = roleAtLeast(user.role, 'staff') && !!user.tenant_id && user.tenant_id !== PLATFORM_TENANT_ID;
+
     return (
         <CustomerShell
             logo={<BrandLogo variant="primary-flat" size={30} />}
             userEmail={user.email}
             resellerStatus={resellerStatus}
+            partnerMode={partnerMode}
             brandStyle={brandStyle}
             notices={
                 <>

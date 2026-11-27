@@ -12,12 +12,13 @@ interface CustomerShellProps {
     logo: ReactNode;
     userEmail: string;
     resellerStatus: SidebarProps['resellerStatus'];
+    partnerMode?: boolean;
     notices: ReactNode;
     brandStyle?: CSSProperties;
     children: ReactNode;
 }
 
-export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandStyle, children }: CustomerShellProps) {
+export function CustomerShell({ logo, userEmail, resellerStatus, partnerMode = false, notices, brandStyle, children }: CustomerShellProps) {
     const m = useMessages(commonMessages).shell;
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const initial = userEmail.trim().charAt(0).toUpperCase() || 'U';
@@ -91,6 +92,7 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
             <div className="flex min-h-[calc(100dvh-60px)]">
                 <Sidebar
                     resellerStatus={resellerStatus}
+                    partnerMode={partnerMode}
                     mobileOpen={mobileNavOpen}
                     onMobileClose={() => setMobileNavOpen(false)}
                 />

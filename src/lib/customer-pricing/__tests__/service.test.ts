@@ -240,7 +240,8 @@ beforeEach(() => {
     ]);
     context = {
         version: 'v1',
-        user: { id: USER, tenant_id: 'tenant-a', newapi_user_id: 7, newapi_access_token: 'CUSTOMER_PAT_SECRET' },
+        // 平台客户（tenant_id 为空即平台主体）；代理客户由代理定价，另有用例。
+        user: { id: USER, tenant_id: null, newapi_user_id: 7, newapi_access_token: 'CUSTOMER_PAT_SECRET' },
         tiers: [
             {
                 key: 'sd',
@@ -422,6 +423,14 @@ describe('official customer price publication failure contracts', () => {
         ['stale preview hash', { previewHash: 'old' }, 'preview_stale'],
     ] as const)('rejects %s before creating native state or a publication journal', async (_label, patch, code) => {
         await expect(saveCustomerOfficialPricing(args(patch))).rejects.toMatchObject({ code });
+        expect(m.prepare).not.toHaveBeenCalled();
+        expect(m.publish).not.toHaveBeenCalled();
+        expect(m.global.change.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses partner customers before any native mutation', async () => {
+        context.user.tenant_id = '11111111-2222-3333-4444-555555555555';
+        await expect(saveCustomerOfficialPricing(args())).rejects.toMatchObject({ code: 'partner_customer' });
         expect(m.prepare).not.toHaveBeenCalled();
         expect(m.publish).not.toHaveBeenCalled();
         expect(m.global.change.create).not.toHaveBeenCalled();

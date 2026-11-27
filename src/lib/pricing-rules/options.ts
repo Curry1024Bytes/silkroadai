@@ -90,7 +90,11 @@ function parseStringMap(raw: unknown, key: string): Record<string, string> {
     return decoded as Record<string, string>;
 }
 
-function parseSpecialUsable(raw: unknown): Record<string, Record<string, string>> {
+export function parseUsableGroups(raw: unknown): Record<string, string> {
+    return parseStringMap(raw, USABLE_GROUPS_KEY);
+}
+
+export function parseSpecialUsable(raw: unknown): Record<string, Record<string, string>> {
     const decoded = decode(raw, SPECIAL_USABLE_KEY);
     if (!isRecord(decoded)) throw new SaleOptionsError(`new-api 的 ${SPECIAL_USABLE_KEY} 格式无效。`);
     return Object.fromEntries(

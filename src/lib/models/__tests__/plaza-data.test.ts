@@ -77,7 +77,11 @@ describe('Portal plaza data boundary', () => {
         const customer = { id: 'a', newapi_user_id: 12, newapi_access_token: 'test-token' };
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: [] })));
         const data = await loadPlazaData(customer);
-        expect(loadCatalog).toHaveBeenCalledWith('a', { includePriceBreakdown: true, useNewApiGroupNames: true });
+        expect(loadCatalog).toHaveBeenCalledWith('a', {
+            includePriceBreakdown: true,
+            useNewApiGroupNames: true,
+            partner: null,
+        });
         expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'test-token', 'New-Api-User': '12' });
         expect(data.data[0].portal?.pricesByTier.retail?.input_cny_per_1m).toBe(0);
         expect(data.portal_viewer_key).toBe('a');

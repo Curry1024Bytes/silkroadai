@@ -16,7 +16,8 @@ import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
-import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { restrictGroupsForUser } from '@/lib/channel-group';
+import { listCustomerTierGroups } from '@/lib/partner/tiers';
 import { getVerifiedEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
 import { getTokenMetaForCustomer, expiredTimeToIso } from '@/lib/newapi/token-meta';
 import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
@@ -104,7 +105,7 @@ export default async function KeysPage() {
                 }
             }),
         ),
-        listEnabledChannelGroups(user.tenant_id).catch((err) => {
+        listCustomerTierGroups(user.tenant_id).catch((err) => {
             console.error('[keys] invalid channel-group topology; disabling key creation', err);
             return [];
         }),

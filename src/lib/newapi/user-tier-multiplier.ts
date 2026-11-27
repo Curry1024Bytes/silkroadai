@@ -7,6 +7,7 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { managedSaleGroups } from '@/lib/pricing-rules/guards';
 import { assertLegacyCustomerPricingWritable } from '@/lib/customer-pricing/guards';
+import { isPartnerTenant } from '@/lib/partner/group';
 import {
     getOption,
     getTokenForCustomer,
@@ -31,7 +32,7 @@ let optionSyncTail: Promise<void> = Promise.resolve();
 let keyMigrationTail: Promise<void> = Promise.resolve();
 const optionWriteContext = new AsyncLocalStorage<{ tx: Prisma.TransactionClient; writeDeadline: number }>();
 
-async function assertOptionSyncWritable() {
+export async function assertOptionSyncWritable() {
     const context = optionWriteContext.getStore();
     if (!context) throw new UserTierMultiplierError('Missing pricing coordination context', 409);
     // Recheck the transaction immediately before every remote write, including
@@ -41,7 +42,7 @@ async function assertOptionSyncWritable() {
         throw new UserTierMultiplierError('客户倍率操作已超过安全写入时限，请核对当前状态。', 409);
 }
 
-async function withOptionSyncLock<T>(work: () => Promise<T>, coordinatePricing = true): Promise<T> {
+export async function withOptionSyncLock<T>(work: () => Promise<T>, coordinatePricing = true): Promise<T> {
     const previous = optionSyncTail;
     let release: () => void = () => undefined;
     optionSyncTail = new Promise<void>((resolve) => {
@@ -220,7 +221,7 @@ function parseFlatRatioMap(raw: string | null): Record<string, number> {
  * it but the response was lost". Read back the exact state before deciding
  * whether Portal may continue or compensate.
  */
-async function updateUserGroupWithReadback(args: {
+export async function updateUserGroupWithReadback(args: {
     user: NewApiUser;
     group: string;
     operation: string;
@@ -248,7 +249,7 @@ async function updateUserGroupWithReadback(args: {
     }
 }
 
-async function putGroupGroupRatioWithReadback(args: { value: string; operation: string }): Promise<boolean> {
+export async function putGroupGroupRatioWithReadback(args: { value: string; operation: string }): Promise<boolean> {
     const expected = parseGroupGroupRatio(args.value);
     await assertOptionSyncWritable();
     try {
@@ -262,6 +263,35 @@ async function putGroupGroupRatioWithReadback(args: { value: string; operation: 
             console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api option write', {
                 operation: args.operation,
                 option: GROUP_GROUP_RATIO_OPTION,
+                writeError: writeErr instanceof Error ? writeErr.message : String(writeErr),
+                readError: readErr instanceof Error ? readErr.message : String(readErr),
+            });
+        }
+        throw writeErr;
+    }
+}
+
+/**
+ * Write one JSON option and confirm the committed value. A lost response is
+ * reconciled by reading back; an unreadable result stays a failure so the
+ * caller can restore the previous value.
+ */
+export async function putJsonOptionWithReadback(args: {
+    key: string;
+    value: string;
+    operation: string;
+    matches: (raw: string | null) => boolean;
+}): Promise<void> {
+    await assertOptionSyncWritable();
+    try {
+        await putOption(args.key, args.value, 30_000);
+    } catch (writeErr) {
+        try {
+            if (args.matches(await getOption(args.key))) return;
+        } catch (readErr) {
+            console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api option write', {
+                operation: args.operation,
+                option: args.key,
                 writeError: writeErr instanceof Error ? writeErr.message : String(writeErr),
                 readError: readErr instanceof Error ? readErr.message : String(readErr),
             });
@@ -353,6 +383,10 @@ async function saveUserTierMultiplierUnlocked(args: {
             error instanceof Error ? error.message : '客户官方基准定价正在管理该账户。',
             409,
         );
+    }
+    // 代理客户在 partner-X 用户分组里按代理零售率扣费，移进 portal-user-* 会脱离代理定价。
+    if (isPartnerTenant(args.user.tenant_id)) {
+        throw new UserTierMultiplierError('代理客户的价格由代理设定，不能设置平台专属倍率。', 409);
     }
     if (args.user.newapi_user_id == null) {
         throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
@@ -634,7 +668,7 @@ type TokenSnapshot = {
     upstream: NewApiToken;
 };
 
-async function listAllCustomerTokens(customerAuth: { accessToken: string; userId: number }): Promise<NewApiToken[]> {
+export async function listAllCustomerTokens(customerAuth: { accessToken: string; userId: number }): Promise<NewApiToken[]> {
     const pageSize = 100;
     const result: NewApiToken[] = [];
     const seen = new Set<number>();

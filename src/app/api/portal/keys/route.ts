@@ -36,7 +36,8 @@ import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newap
 import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
-import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { restrictGroupsForUser, type listEnabledChannelGroups } from '@/lib/channel-group';
+import { listCustomerTierGroups } from '@/lib/partner/tiers';
 import { ChannelGroupTopologyError, topologyErrorPayload } from '@/lib/channel-group-topology';
 
 import { cnyToQuota } from '@/lib/newapi/quota-units';
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest) {
     // 页用同一个 restrictGroupsForUser,展示与校验一致。
     let enabled: Awaited<ReturnType<typeof listEnabledChannelGroups>>;
     try {
-        enabled = await listEnabledChannelGroups(user.tenant_id);
+        enabled = await listCustomerTierGroups(user.tenant_id);
     } catch (error) {
         if (error instanceof ChannelGroupTopologyError) {
             console.error('[portal/keys POST] invalid channel-group topology', error);

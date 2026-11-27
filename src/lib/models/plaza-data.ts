@@ -7,6 +7,7 @@ import type {
     PricingVendor,
 } from '@newapi/features/pricing/types';
 import type { BrowserCatalog } from './catalog-browser-types';
+import type { PartnerPriceDisplay } from '@/lib/partner/display-pricing';
 import { loadBrowserCatalog } from './catalog-browser';
 import { classifyModels, TYPE_BADGE } from './categorize';
 import type { PlazaViewer } from './plaza-types';
@@ -171,8 +172,15 @@ export function adaptPlazaCatalog(catalog: BrowserCatalog, rawMetadata: unknown)
     };
 }
 
-export async function loadPlazaData(viewer: PlazaViewer | null): Promise<PricingData> {
-    const catalog = await loadBrowserCatalog(viewer?.id, { includePriceBreakdown: true, useNewApiGroupNames: true });
+export async function loadPlazaData(
+    viewer: PlazaViewer | null,
+    partner: PartnerPriceDisplay | null = null,
+): Promise<PricingData> {
+    const catalog = await loadBrowserCatalog(viewer?.id, {
+        includePriceBreakdown: true,
+        useNewApiGroupNames: true,
+        partner,
+    });
     return {
         ...adaptPlazaCatalog(catalog, await readMetadata(viewer)),
         portal_viewer_key: viewer?.id ?? 'anonymous',

@@ -15,6 +15,7 @@ import { roleAtLeast } from '@/lib/admin/roles';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { saleRuleSchedulerEnabled } from '@/lib/scheduler/sale-rules';
 import { assertNoOfficialBindingsForTier } from '@/lib/customer-pricing/guards';
+import { isPartnerTenant } from '@/lib/partner/group';
 import { DISCOUNT_MAX, DISCOUNT_MIN, ruleProblems, SALE_RULE_KINDS, type SaleRuleKind } from './compile';
 import { ceilToScale, compare, divide, equal, floorToScale, multiply, parseDecimal, toDecimalString } from './decimal';
 import { SaleRulePublishError } from './errors';
@@ -181,6 +182,7 @@ async function draftTenant(db: Db, admin: AdminPrincipal, draft: SaleRuleDraft):
     });
     if (!customer) throw new SaleRulePublishError('sale_rules_customer_missing', '客户不存在。', 404);
     if (customer.newapi_user_id === null) invalid('该客户尚未开通 new-api 账号。');
+    if (isPartnerTenant(customer.tenant_id)) invalid('代理客户的价格由代理设定，不参与平台售卖规则。');
     return tenantOf(customer.tenant_id);
 }
 

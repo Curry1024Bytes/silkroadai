@@ -234,6 +234,13 @@ model Tenant {
   catalog_models             CatalogModel[]
   channel_groups             ChannelGroup[]
   announcements              Announcement[]
+  partner_group_prices       PartnerGroupPrice[]
+  partner_wholesale_history  PartnerWholesaleRatioHistory[]
+  partner_retail_history     PartnerRetailRatioHistory[]
+  partner_wallet             PartnerWallet?
+  partner_earnings           PartnerEarning[]
+  partner_withdrawals        PartnerWithdrawal[]
+  partner_domain_claim       PartnerDomainClaim?
 
   @@map("tenants")
 }
@@ -497,27 +504,27 @@ model NewApiToken {
 // Durable customer onboarding queue. The encrypted password is retained only
 // until the job finishes so retries can resume a remote create/login flow.
 model CustomerProvisioningJob {
-  id                  String   @id @default(uuid()) @db.Uuid
-  user_id             String   @unique @db.Uuid
-  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  idempotency_key     String   @unique @db.VarChar(160)
+  id                  String    @id @default(uuid()) @db.Uuid
+  user_id             String    @unique @db.Uuid
+  user                User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  idempotency_key     String    @unique @db.VarChar(160)
   email               String
   tier_key            String
   newapi_group        String
-  initial_quota       Int      @default(0)
-  password_ciphertext String   @db.Text
-  status              String   @default("queued") @db.VarChar(20)
-  attempts            Int      @default(0)
-  max_attempts        Int      @default(8)
-  next_attempt_at     DateTime @default(now())
-  runner_token        String?  @db.Uuid
+  initial_quota       Int       @default(0)
+  password_ciphertext String    @db.Text
+  status              String    @default("queued") @db.VarChar(20)
+  attempts            Int       @default(0)
+  max_attempts        Int       @default(8)
+  next_attempt_at     DateTime  @default(now())
+  runner_token        String?   @db.Uuid
   lease_until         DateTime?
-  last_error_code     String?  @db.VarChar(80)
-  last_error_message  String?  @db.Text
+  last_error_code     String?   @db.VarChar(80)
+  last_error_message  String?   @db.Text
   result              Json?
   completed_at        DateTime?
-  created_at          DateTime @default(now())
-  updated_at          DateTime @updatedAt
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
 
   @@index([status, next_attempt_at])
   @@index([lease_until])
@@ -1291,18 +1298,18 @@ model CustomerModelBillingGroup {
 
 // Before-images contain token settings only, never API keys. Restore the original logical tier exactly.
 model CustomerPricingBinding {
-  id                  String   @id @default(uuid()) @db.Uuid
-  user_id             String   @db.Uuid
-  tier_key            String
-  public_group        String
-  model_groups        Json
-  token_snapshots     Json
-  original_user_group String
-  original_auto_permissions Json @default("{}")
-  status              String   @default("applying")
-  revision            Int      @default(1)
-  created_at          DateTime @default(now())
-  updated_at          DateTime @updatedAt
+  id                        String   @id @default(uuid()) @db.Uuid
+  user_id                   String   @db.Uuid
+  tier_key                  String
+  public_group              String
+  model_groups              Json
+  token_snapshots           Json
+  original_user_group       String
+  original_auto_permissions Json     @default("{}")
+  status                    String   @default("applying")
+  revision                  Int      @default(1)
+  created_at                DateTime @default(now())
+  updated_at                DateTime @updatedAt
 
   @@unique([user_id, tier_key])
   @@index([status])
@@ -1381,9 +1388,10 @@ model UsageRecord {
 
 // 轮询游标(单行表,记上次处理到的 new-api log id)。
 model UsageMeterCursor {
-  id          Int       @id @default(1) // 永远 1 行
-  last_log_id Int       @default(0) // 上次处理到的 new-api log id
-  last_run_at DateTime?
+  id                  Int       @id @default(1) // 永远 1 行
+  last_log_id         Int       @default(0) // 上次处理到的 new-api log id（shadow meter 用）
+  partner_last_log_id Int       @default(0) // 代理结算 job 独立游标
+  last_run_at         DateTime?
 
   @@map("usage_meter_cursor")
 }
@@ -1523,14 +1531,14 @@ model LedgerEntry {
 }
 
 model SdVideoTaskMetadata {
-  task_id      String   @id
-  user_id      String   @db.Uuid
-  public_model String
-  resolution   String?
-  has_video    Boolean?
-  aspect_ratio String?
+  task_id         String   @id
+  user_id         String   @db.Uuid
+  public_model    String
+  resolution      String?
+  has_video       Boolean?
+  aspect_ratio    String?
   request_summary Json?
-  created_at   DateTime @default(now())
+  created_at      DateTime @default(now())
 
   @@index([user_id, created_at])
   @@map("sd_video_task_metadata")
@@ -1984,4 +1992,144 @@ model UpstreamMarginCost {
   @@unique([channel_id, reference_kind, reference_id], map: "upstream_margin_costs_reference_key")
   @@index([reference_id])
   @@map("upstream_margin_costs")
+}
+
+// ───────────────────────────────────────────────────────────────
+// 白标代理（White-label Partner）— P1 v2：按用户分组倍率定价
+// ───────────────────────────────────────────────────────────────
+
+/// 代理 × 分组的倍率。wholesale_ratio 由超管定，retail_ratio 由代理定，
+/// retail_ratio 同步到 new-api GroupGroupRatio["partner-{tenant}"][group_key]。
+/// retail_ratio 为 null = 代理还没定价，该分组对代理客户不开放。
+model PartnerGroupPrice {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+  group_key String @db.VarChar(80)
+
+  wholesale_ratio Decimal  @db.Decimal(12, 6)
+  retail_ratio    Decimal? @db.Decimal(12, 6)
+
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@unique([tenant_id, group_key])
+  @@index([tenant_id])
+  @@map("partner_group_prices")
+}
+
+/// 批发率历史：超管每次保存追加一行，结算按日志时间取当时生效的值。
+model PartnerWholesaleRatioHistory {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  group_key       String   @db.VarChar(80)
+  wholesale_ratio Decimal  @db.Decimal(12, 6)
+  effective_from  DateTime @default(now())
+  created_by      String?  @db.Uuid
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id, group_key, effective_from(sort: Desc)])
+  @@map("partner_wholesale_ratio_history")
+}
+
+/// 零售率历史：代理每次改零售率（含关闭）追加一行，超管收回分组时追加一行 null。
+/// 结算用它核对日志里的倍率确实是代理当时定的价，分组关闭后也能结算关闭前的调用。
+model PartnerRetailRatioHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenant_id      String   @db.Uuid
+  group_key      String   @db.VarChar(80)
+  retail_ratio   Decimal? @db.Decimal(12, 6) // null = 关闭
+  effective_from DateTime @default(now())
+  created_by     String?  @db.Uuid
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id, group_key, effective_from(sort: Desc)])
+  @@map("partner_retail_ratio_history")
+}
+
+/// 代理钱包（每个代理租户一行）
+model PartnerWallet {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @unique @db.Uuid
+
+  balance_cny      Decimal @default(0) @db.Decimal(20, 4)
+  pending_cny      Decimal @default(0) @db.Decimal(20, 4) // 冻结中（提现申请未完成）
+  total_earned_cny Decimal @default(0) @db.Decimal(20, 4) // 累计历史收益
+
+  updated_at DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("partner_wallets")
+}
+
+/// 结算明细（按消耗结算）。newapi_log_id 唯一，同一条日志不会重复结算。
+/// kind=refund 是退款冲减：金额为负，按同一任务扣费那一行的倍率反算。
+model PartnerEarning {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  user_id       String? @db.Uuid
+  newapi_log_id Int     @unique
+  kind          String  @default("consume") @db.VarChar(16) // consume | refund
+  task_id       String? @db.VarChar(200) // 异步任务（视频等）的 other.task_id，退款按它找回扣费行
+
+  model_slug String @db.VarChar(200)
+  group_key  String @db.VarChar(80)
+
+  prompt_tokens     Int    @default(0)
+  completion_tokens Int    @default(0)
+  charged_quota     BigInt
+
+  retail_ratio    Decimal @db.Decimal(12, 6) // 日志 other.user_group_ratio
+  wholesale_ratio Decimal @db.Decimal(12, 6) // 扣费时刻生效的批发率
+  retail_cny      Decimal @db.Decimal(12, 6) // quotaToCny(charged_quota)
+  wholesale_cny   Decimal @db.Decimal(12, 6) // retail_cny × wholesale / retail
+  profit_cny      Decimal @db.Decimal(12, 6) // retail_cny − wholesale_cny
+
+  settled_at DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id, settled_at(sort: Desc)])
+  @@index([user_id])
+  @@index([tenant_id, task_id])
+  @@map("partner_earnings")
+}
+
+/// 代理提现申请：申请时金额从可用余额转到冻结；超管标记已打款后从冻结扣除，驳回则退回可用余额。
+model PartnerWithdrawal {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String    @db.Uuid
+  amount_cny   Decimal   @db.Decimal(20, 4)
+  status       String    @default("pending") @db.VarChar(16) // pending | paid | rejected
+  note         String?   @db.VarChar(500) // 代理填写的收款信息
+  admin_note   String?   @db.VarChar(500)
+  requested_by String?   @db.Uuid
+  processed_by String?   @db.Uuid
+  processed_at DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@index([status, created_at])
+  @@map("partner_withdrawals")
+}
+
+/// 代理待验证的域名。TXT 记录证明归属、CNAME 指向平台后，才写进 Tenant.domains 生效。
+model PartnerDomainClaim {
+  tenant_id  String   @id @db.Uuid
+  domain     String   @db.VarChar(253)
+  token      String   @db.VarChar(64)
+  created_at DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("partner_domain_claims")
 }

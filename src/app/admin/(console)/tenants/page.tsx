@@ -126,6 +126,35 @@ function getTexts(locale: Locale) {
           };
 }
 
+interface PartnerChannelGroup {
+    key: string;
+    display_name: string;
+    newapi_group: string;
+    purchase_rate: number | null;
+}
+
+interface PartnerPrice {
+    group_key: string;
+    wholesale_ratio: number;
+    retail_ratio: number | null;
+}
+
+interface PartnerCustomer {
+    id: string;
+    email: string;
+    group: string | null;
+    assigned: boolean;
+}
+
+interface AssignResult {
+    user_id: string;
+    email?: string;
+    status: 'assigned' | 'already' | 'blocked' | 'error';
+    problems: string[];
+}
+
+const emptyPriceForm = { group_key: '', wholesale_ratio: '' };
+
 function parseDomains(raw: string): string[] {
     return raw
         .split(/[\n,]/)
@@ -149,6 +178,21 @@ function TenantsContent() {
     const [editing, setEditing] = useState<Tenant | null>(null);
     const [form, setForm] = useState<FormData>(emptyForm);
     const [saving, setSaving] = useState(false);
+
+    // 批发率 modal state
+    const [priceTenant, setPriceTenant] = useState<Tenant | null>(null);
+    const [prices, setPrices] = useState<PartnerPrice[]>([]);
+    const [channelGroups, setChannelGroups] = useState<PartnerChannelGroup[]>([]);
+    const [partnerGroup, setPartnerGroup] = useState('');
+    const [priceModalOpen, setPriceModalOpen] = useState(false);
+    const [priceForm, setPriceForm] = useState(emptyPriceForm);
+    const [priceSaving, setPriceSaving] = useState(false);
+    const [priceError, setPriceError] = useState('');
+    const [priceLoading, setPriceLoading] = useState(false);
+    const [partnerCustomers, setPartnerCustomers] = useState<PartnerCustomer[] | null>(null);
+    const [customersLoading, setCustomersLoading] = useState(false);
+    const [assigning, setAssigning] = useState(false);
+    const [assignResults, setAssignResults] = useState<AssignResult[]>([]);
 
     const fetchTenants = useCallback(async () => {
         setLoading(true);
@@ -193,6 +237,140 @@ function TenantsContent() {
             status: tn.status,
         });
         setModalOpen(true);
+    };
+
+    const openPrices = async (tn: Tenant) => {
+        if (tn.id === PLATFORM_TENANT_ID) return;
+        setPriceTenant(tn);
+        setPriceError('');
+        setPriceForm(emptyPriceForm);
+        setPartnerCustomers(null);
+        setAssignResults([]);
+        setPriceModalOpen(true);
+        setPriceLoading(true);
+        try {
+            const res = await fetch(`/api/admin/tenants/${tn.id}/partner-prices`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setPriceError(data.message || data.error || '加载失败');
+                return;
+            }
+            setPrices(data.prices ?? []);
+            setChannelGroups(data.channelGroups ?? []);
+            setPartnerGroup(data.partner_group ?? '');
+        } catch {
+            setPriceError('加载失败');
+        } finally {
+            setPriceLoading(false);
+        }
+    };
+
+    const handlePriceSave = async () => {
+        if (!priceTenant || !priceForm.group_key) return;
+        const ratio = Number(priceForm.wholesale_ratio);
+        if (!Number.isFinite(ratio) || ratio <= 0) {
+            setPriceError('批发率须为大于 0 的数字');
+            return;
+        }
+        setPriceSaving(true);
+        setPriceError('');
+        try {
+            const res = await fetch(`/api/admin/tenants/${priceTenant.id}/partner-prices`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ group_key: priceForm.group_key, wholesale_ratio: ratio }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setPriceError(data.message || data.error || '保存失败');
+                return;
+            }
+            setPrices((prev) => {
+                const next = prev.filter((p) => p.group_key !== data.price.group_key);
+                return [...next, data.price].sort((a, b) => a.group_key.localeCompare(b.group_key));
+            });
+            setPriceForm(emptyPriceForm);
+        } catch {
+            setPriceError('保存失败');
+        } finally {
+            setPriceSaving(false);
+        }
+    };
+
+    const handlePriceDelete = async (price: PartnerPrice) => {
+        if (!priceTenant) return;
+        const warning =
+            price.retail_ratio != null
+                ? `「${price.group_key}」已对代理客户开放，收回后客户的该分组 Key 将无法调用。确定收回吗？`
+                : `确定收回「${price.group_key}」吗？`;
+        if (!window.confirm(warning)) return;
+        setPriceError('');
+        const res = await fetch(
+            `/api/admin/tenants/${priceTenant.id}/partner-prices?group_key=${encodeURIComponent(price.group_key)}`,
+            { method: 'DELETE', credentials: 'same-origin' },
+        );
+        if (res.ok) {
+            setPrices((prev) => prev.filter((p) => p.group_key !== price.group_key));
+        } else {
+            const data = await res.json().catch(() => ({}));
+            setPriceError(data.message || data.error || '收回失败');
+        }
+    };
+
+    const startEditPrice = (p: PartnerPrice) => {
+        setPriceForm({ group_key: p.group_key, wholesale_ratio: String(p.wholesale_ratio) });
+    };
+
+    const loadPartnerCustomers = async () => {
+        if (!priceTenant) return;
+        setCustomersLoading(true);
+        setPriceError('');
+        try {
+            const res = await fetch(`/api/admin/tenants/${priceTenant.id}/partner-customers`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setPriceError(data.message || data.error || '加载客户失败');
+                return;
+            }
+            setPartnerCustomers(data.customers ?? []);
+        } catch {
+            setPriceError('加载客户失败');
+        } finally {
+            setCustomersLoading(false);
+        }
+    };
+
+    const assignPartnerCustomers = async () => {
+        if (!priceTenant || !partnerCustomers) return;
+        const ids = partnerCustomers.filter((c) => !c.assigned && c.group !== null).map((c) => c.id);
+        if (!ids.length) return;
+        setAssigning(true);
+        setAssignResults([]);
+        setPriceError('');
+        const results: AssignResult[] = [];
+        try {
+            for (let i = 0; i < ids.length; i += 20) {
+                const res = await fetch(`/api/admin/tenants/${priceTenant.id}/partner-customers`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_ids: ids.slice(i, i + 20) }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setPriceError(data.message || data.error || '归组失败');
+                    break;
+                }
+                results.push(...(data.results ?? []));
+            }
+        } catch {
+            setPriceError('归组失败');
+        } finally {
+            setAssignResults(results);
+            setAssigning(false);
+            await loadPartnerCustomers();
+        }
     };
 
     const handleSave = async () => {
@@ -374,6 +552,18 @@ function TenantsContent() {
                                             >
                                                 {t.edit}
                                             </button>
+                                            {!isPlatform && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openPrices(tn)}
+                                                    className={[
+                                                        'ml-3',
+                                                        isDark ? 'text-amber-400 hover:underline' : 'text-amber-600 hover:underline',
+                                                    ].join(' ')}
+                                                >
+                                                    批发率
+                                                </button>
+                                            )}
                                         </td>
                                     </tr>
                                 );
@@ -542,6 +732,179 @@ function TenantsContent() {
                                 className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 {saving ? t.saving : t.save}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {priceModalOpen && priceTenant && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div
+                        className={[
+                            'relative w-full max-w-3xl overflow-y-auto rounded-2xl border p-6 shadow-2xl',
+                            isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white',
+                        ].join(' ')}
+                        style={{ maxHeight: '90vh' }}
+                    >
+                        <h2 className={`mb-1 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                            批发率设置
+                        </h2>
+                        <p className={`mb-4 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                            {priceTenant.brand_name} — 平台卖给该代理的倍率。代理在批发率之上自定零售率，零售率就是代理客户的扣费倍率。
+                            {partnerGroup && (
+                                <span className="ml-1 font-mono text-xs">new-api 用户分组：{partnerGroup}</span>
+                            )}
+                        </p>
+
+                        {priceError && (
+                            <div className={`mb-3 rounded-lg border p-2 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}>
+                                {priceError}
+                            </div>
+                        )}
+
+                        {priceLoading ? (
+                            <div className={`py-6 text-center text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>加载中…</div>
+                        ) : prices.length > 0 ? (
+                            <div className="mb-5 overflow-x-auto rounded-xl border" style={{ borderColor: isDark ? '#334155' : '#e2e8f0' }}>
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className={isDark ? 'border-b border-slate-700 text-slate-400' : 'border-b border-slate-200 text-slate-500'}>
+                                            <th className="px-3 py-2 text-left font-medium">分组</th>
+                                            <th className="px-3 py-2 text-right font-medium">平台进货率</th>
+                                            <th className="px-3 py-2 text-right font-medium">批发率</th>
+                                            <th className="px-3 py-2 text-right font-medium">代理零售率</th>
+                                            <th className="px-3 py-2 text-right font-medium">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {prices.map((p) => {
+                                            const group = channelGroups.find((g) => g.key === p.group_key);
+                                            return (
+                                                <tr key={p.group_key} className={isDark ? 'border-b border-slate-700/50' : 'border-b border-slate-100'}>
+                                                    <td className={`px-3 py-2 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                                        {group?.display_name ?? p.group_key}
+                                                        <span className="ml-1 font-mono opacity-60">{p.group_key}</span>
+                                                        {!group && <span className="ml-1 text-amber-500">（平台已停用）</span>}
+                                                    </td>
+                                                    <td className={`px-3 py-2 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{group?.purchase_rate ?? '—'}</td>
+                                                    <td className={`px-3 py-2 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{p.wholesale_ratio}</td>
+                                                    <td className={`px-3 py-2 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{p.retail_ratio ?? '未开放'}</td>
+                                                    <td className="px-3 py-2 text-right">
+                                                        <button type="button" onClick={() => startEditPrice(p)} className={isDark ? 'text-indigo-400 hover:underline' : 'text-indigo-600 hover:underline'}>编辑</button>
+                                                        <button type="button" onClick={() => handlePriceDelete(p)} className="ml-2 text-red-500 hover:underline">收回</button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <p className={`mb-4 text-sm ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>还没有给该代理开放分组，从下方新增。</p>
+                        )}
+
+                        <div className={`rounded-xl border p-4 ${isDark ? 'border-slate-700 bg-slate-700/40' : 'border-slate-200 bg-slate-50'}`}>
+                            <h3 className={`mb-3 text-sm font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                {prices.some((p) => p.group_key === priceForm.group_key) ? `编辑：${priceForm.group_key}` : '开放分组'}
+                            </h3>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>分组</label>
+                                    <select
+                                        value={priceForm.group_key}
+                                        onChange={(e) => setPriceForm({ ...priceForm, group_key: e.target.value })}
+                                        className={[inputCls, 'text-xs'].join(' ')}
+                                    >
+                                        <option value="">— 选择分组 —</option>
+                                        {channelGroups.map((g) => (
+                                            <option key={g.key} value={g.key}>{g.display_name || g.key} ({g.key})</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>批发率</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={priceForm.wholesale_ratio}
+                                        onChange={(e) => setPriceForm({ ...priceForm, wholesale_ratio: e.target.value })}
+                                        className={[inputCls, 'text-xs font-mono'].join(' ')}
+                                        placeholder="如 0.07"
+                                    />
+                                    <p className={`mt-0.5 text-[10px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                        {(() => {
+                                            const rate = channelGroups.find((g) => g.key === priceForm.group_key)?.purchase_rate;
+                                            return rate != null ? `平台进货率 ${rate}，低于它会亏本。` : '不能高于代理当前的零售率。';
+                                        })()}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="mt-3 flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={handlePriceSave}
+                                    disabled={priceSaving || !priceForm.group_key || !priceForm.wholesale_ratio}
+                                    className="rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {priceSaving ? '保存中…' : '保存'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className={`mt-4 rounded-xl border p-4 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
+                            <div className="flex items-center justify-between">
+                                <h3 className={`text-sm font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>存量客户归组</h3>
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={loadPartnerCustomers}
+                                        disabled={customersLoading || assigning}
+                                        className={['rounded-lg px-3 py-1 text-xs font-medium disabled:opacity-50', isDark ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100'].join(' ')}
+                                    >
+                                        {customersLoading ? '检查中…' : '检查客户'}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={assignPartnerCustomers}
+                                        disabled={assigning || !partnerCustomers?.some((c) => !c.assigned && c.group !== null)}
+                                        className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                                    >
+                                        {assigning ? '归组中…' : '全部归入代理分组'}
+                                    </button>
+                                </div>
+                            </div>
+                            <p className={`mt-1 text-[11px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                新客户注册时自动归组；这里只处理开通代理定价之前就存在的客户。Key 未固定分组、原分组有专属倍率等情况会被跳过并列出原因。
+                            </p>
+                            {partnerCustomers && (
+                                <ul className={`mt-2 max-h-48 space-y-1 overflow-y-auto text-xs ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                                    {partnerCustomers.length === 0 && <li>该代理还没有已开户的客户。</li>}
+                                    {partnerCustomers.map((c) => {
+                                        const result = assignResults.find((r) => r.user_id === c.id);
+                                        return (
+                                            <li key={c.id}>
+                                                <span className="font-mono">{c.email}</span>
+                                                <span className="ml-2">
+                                                    {c.assigned ? '✓ 已归组' : c.group === null ? '查询 new-api 失败' : `当前分组 ${c.group || '（空）'}`}
+                                                </span>
+                                                {result && result.problems.length > 0 && (
+                                                    <span className="ml-2 text-red-500">{result.problems.join('；')}</span>
+                                                )}
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            )}
+                        </div>
+
+                        <div className="mt-4 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setPriceModalOpen(false)}
+                                className={['rounded-lg px-4 py-2 text-sm font-medium', isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100'].join(' ')}
+                            >
+                                关闭
                             </button>
                         </div>
                     </div>

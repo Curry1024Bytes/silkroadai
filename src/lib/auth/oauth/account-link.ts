@@ -26,6 +26,8 @@ import { prisma } from '@/lib/db';
 import { withCustomerKeyMutation } from '@/lib/newapi/customer-key-mutation';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
 import { enqueueCustomerProvisioningJob } from '@/lib/auth/customer-provisioning-queue';
+import { partnerAcceptsCustomers } from '@/lib/partner/assign-group';
+import { isPartnerTenant } from '@/lib/partner/group';
 
 export interface OAuthIdentity {
     /** 'google', 'github', etc — matches `oauth_accounts.provider`. */
@@ -58,6 +60,18 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
             err,
         );
         return null;
+    }
+
+    // 白标代理的默认档次没开放时不接新客户（同邮箱注册）。
+    if (isPartnerTenant(tenantId)) {
+        const accepts = await partnerAcceptsCustomers(tenantId, defaultGroup.newapi_group).catch((err: unknown) => {
+            console.error(`[oauth/account-link] partner pricing unavailable for tenant ${tenantId}:`, err);
+            return false;
+        });
+        if (!accepts) {
+            console.warn(`[oauth/account-link] tenant ${tenantId} has not opened its default tier; signup refused`);
+            return null;
+        }
     }
 
     try {

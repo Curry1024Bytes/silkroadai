@@ -45,6 +45,11 @@ vi.mock('@/lib/channel-group', () => ({
     ],
     restrictGroupsForUser: (groups: unknown) => groups,
 }));
+vi.mock('@/lib/partner/tiers', () => ({
+    listCustomerTierGroups: async () => [
+        { key: 'sd', display_name: 'SD官转', newapi_group: 'SD官转', description: null, is_default: true },
+    ],
+}));
 vi.mock('@/lib/newapi/effective-group-ratios', () => ({
     getVerifiedEffectiveGroupRatios: async () => ({
         ratios: { SD官转: 0.277777777778 },

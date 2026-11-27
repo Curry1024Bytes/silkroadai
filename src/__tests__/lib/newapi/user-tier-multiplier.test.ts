@@ -63,7 +63,8 @@ import {
     saveUserTierMultiplier,
 } from '@/lib/newapi/user-tier-multiplier';
 
-const portalUser = { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', tenant_id: 'tenant-1', newapi_user_id: 12 };
+// 平台客户（tenant_id 为空即平台主体）；代理客户另有用例。
+const portalUser = { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', tenant_id: null, newapi_user_id: 12 };
 const internalGroup = internalNewApiUserGroup(portalUser.id);
 let options: Record<string, string>;
 let liveUser: Record<string, unknown>;
@@ -207,6 +208,21 @@ describe('new-api dedicated group multiplier sync', () => {
         expect(mockPutOption).not.toHaveBeenCalled();
         expect(mockOverrideUpsert).not.toHaveBeenCalled();
         expect(mockOverrideUpdate).not.toHaveBeenCalled();
+    });
+
+    it('refuses dedicated multipliers for partner customers before touching new-api', async () => {
+        await expect(
+            saveUserTierMultiplier({
+                user: { ...portalUser, tenant_id: '11111111-2222-3333-4444-555555555555' },
+                tierKey: 'gpt-pro20x',
+                multiplier: 0.18,
+                createdBy: 'admin-1',
+            }),
+        ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('代理客户') });
+        expect(mockGetUser).not.toHaveBeenCalled();
+        expect(mockPutOption).not.toHaveBeenCalled();
+        expect(mockUpdateUser).not.toHaveBeenCalled();
+        expect(mockOverrideUpsert).not.toHaveBeenCalled();
     });
 
     it('rechecks the transaction after slow reads and refuses remote writes when the lock is no longer valid', async () => {

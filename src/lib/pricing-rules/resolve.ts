@@ -4,6 +4,7 @@
  */
 import 'server-only';
 import { getUser, listGroupUserRatios, listTokensForCustomer } from '@/lib/newapi/client';
+import { isPartnerTenant } from '@/lib/partner/group';
 import type { Diagnostic } from './compile';
 import { SaleRulePublishError } from './errors';
 import {
@@ -128,6 +129,8 @@ function checkLinks(resolution: Resolution, args: ResolveArgs, users: Map<string
             const user = users.get(userId);
             if (!user || user.newapi_user_id === null)
                 hold(resolution, userId, group, 'customer_unlinked', '客户不存在或未开通 new-api 账号。');
+            else if (isPartnerTenant(user.tenant_id))
+                hold(resolution, userId, group, 'partner_customer', '代理客户的价格由代理设定，不参与平台售卖规则。');
             else if (tenantOf(user.tenant_id) !== groupTenant.get(group))
                 hold(resolution, userId, group, 'tenant_mismatch', '客户所属主体与计费分组不一致。');
         }

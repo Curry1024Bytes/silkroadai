@@ -8,6 +8,10 @@ const mockHeaders = vi.fn();
 const mockCurrentUser = vi.fn();
 vi.mock('@/app/models/runtime', () => ({ loadPlazaRuntime: (...args: unknown[]) => mockLoadPlazaRuntime(...args) }));
 vi.mock('@/lib/models/plaza-data', () => ({ loadPlazaData: (...args: unknown[]) => mockLoadPlazaData(...args) }));
+vi.mock('@/lib/partner/display-pricing', () => ({
+    loadPartnerPriceDisplay: async () => null,
+    resolveDisplayTenant: async (tenantId: string | null) => tenantId ?? 'platform',
+}));
 vi.mock('next/headers', () => ({ headers: () => mockHeaders() }));
 vi.mock('@/lib/auth/session', () => ({ getCurrentUser: (...args: unknown[]) => mockCurrentUser(...args) }));
 vi.mock('@/app/models/plaza-loader', () => ({
@@ -48,7 +52,7 @@ describe('/models page shell', () => {
         expect(html).toContain('data-price="1"');
         expect(html).toContain('data-server="https://api.llmroute.club"');
         expect(mockLoadPlazaRuntime).toHaveBeenCalledTimes(1);
-        expect(mockLoadPlazaData).toHaveBeenCalledWith(null);
+        expect(mockLoadPlazaData).toHaveBeenCalledWith(null, null);
     });
     it('declares 模型广场 metadata', async () => {
         const metadata = await generateMetadata();
@@ -73,9 +77,9 @@ describe('/models page shell', () => {
         mockHeaders.mockResolvedValueOnce(new Headers({ cookie: 'session=test' }));
         mockCurrentUser.mockResolvedValueOnce(user);
         await ModelsPage();
-        expect(mockLoadPlazaData).toHaveBeenLastCalledWith(user);
+        expect(mockLoadPlazaData).toHaveBeenLastCalledWith(user, null);
         await ModelsPage();
-        expect(mockLoadPlazaData).toHaveBeenLastCalledWith(null);
+        expect(mockLoadPlazaData).toHaveBeenLastCalledWith(null, null);
     });
     it('does not mount an old public quote after the dedicated price loader fails', async () => {
         mockLoadPlazaData.mockRejectedValueOnce(new Error('Cannot verify dedicated customer price'));

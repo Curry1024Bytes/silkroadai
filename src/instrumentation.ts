@@ -121,4 +121,8 @@ export async function register() {
     // 代为对账(终态 + 幂等补扣 + 回调投递)。主站 .env 要配齐各线上游 key。
     const { startEnterpriseReconcileSweepScheduler } = await import('@/lib/scheduler/enterprise-reconcile-sweep');
     startEnterpriseReconcileSweepScheduler();
+    // P1-partner 代理 job（15 分钟）：先对账代理在 new-api 的配置，再按日志里的代理零售率和当时的批发率
+    // 结算代理利润，写 PartnerEarning + 累加 PartnerWallet。newapi_log_id @unique 保幂等。
+    const { startPartnerEarningScheduler } = await import('@/lib/scheduler/partner-earning');
+    startPartnerEarningScheduler();
 }

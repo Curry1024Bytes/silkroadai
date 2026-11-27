@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
     { path: '/admin/margin-report', label: { zh: '模型毛利', en: 'Model Margin' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
+    { path: '/admin/partner-withdrawals', label: { zh: '代理提现', en: 'Partner Withdrawals' }, superadminOnly: true },
     { path: '/admin/announcements', label: { zh: '公告管理', en: 'Announcements' }, superadminOnly: true },
     // 数据存储第③步:请求日志查看(全量客户内容,最高敏感)。
     { path: '/admin/request-logs', label: { zh: '请求日志', en: 'Request Logs' }, superadminOnly: true },

@@ -11,7 +11,14 @@ const mockResolveTenant = vi.fn();
 const mockUserCreate = vi.fn();
 const mockUserFindUnique = vi.fn();
 
+const mockDefaultGroup = vi.fn();
+const mockPartnerAccepts = vi.fn();
+
 vi.mock('@/lib/tenant/resolve', () => ({ resolveTenantByHost: (...a: unknown[]) => mockResolveTenant(...a) }));
+vi.mock('@/lib/channel-group', () => ({ getDefaultChannelGroup: (...a: unknown[]) => mockDefaultGroup(...a) }));
+vi.mock('@/lib/partner/assign-group', () => ({
+    partnerAcceptsCustomers: (...a: unknown[]) => mockPartnerAccepts(...a),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         user: {
@@ -48,6 +55,16 @@ describe('POST /api/auth/register — tenant attribution', () => {
         const res = await POST(req({ email: 'a@b.com', password: 'password123' }));
         expect(res.status).toBe(403);
         expect((await res.json()).error).toBe('signup_disabled');
+        expect(mockUserCreate).not.toHaveBeenCalled();
+    });
+
+    it('partner tenant whose default tier is not open → 403 signup_unavailable, no user created', async () => {
+        mockDefaultGroup.mockResolvedValue({ key: 'default', newapi_group: 'default-billing' });
+        mockPartnerAccepts.mockResolvedValue(false);
+        const res = await POST(req({ email: 'a@b.com', password: 'password123' }));
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toBe('signup_unavailable');
+        expect(mockPartnerAccepts).toHaveBeenCalledWith('tenant-7', 'default-billing');
         expect(mockUserCreate).not.toHaveBeenCalled();
     });
 

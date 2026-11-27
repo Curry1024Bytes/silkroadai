@@ -6,6 +6,7 @@ import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { FormError } from '@/components/ui/FormError';
 import { loadPlazaData } from '@/lib/models/plaza-data';
+import { loadPartnerPriceDisplay, resolveDisplayTenant } from '@/lib/partner/display-pricing';
 import { getCurrentUser } from '@/lib/auth/session';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
@@ -13,10 +14,14 @@ import { PlazaLoader } from './plaza-loader';
 import { loadPlazaRuntime } from './runtime';
 
 async function pricingViewer() {
-    const cookie = (await headers()).get('cookie');
-    if (!cookie) return null;
-    const user = await getCurrentUser(new NextRequest('http://internal/models', { headers: { cookie } }));
-    return user;
+    const h = await headers();
+    const cookie = h.get('cookie');
+    const user = cookie
+        ? await getCurrentUser(new NextRequest('http://internal/models', { headers: { cookie } }))
+        : null;
+    // 代理站点按代理零售率显示价格；平台站保持原样。
+    const partner = await loadPartnerPriceDisplay(await resolveDisplayTenant(user?.tenant_id ?? null, h.get('host')));
+    return { user, partner };
 }
 
 export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }) {
@@ -25,7 +30,8 @@ export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }
     const c = pickMessages(commonMessages, locale);
     let catalog: Awaited<ReturnType<typeof loadPlazaData>> | null = null;
     try {
-        catalog = await loadPlazaData(await pricingViewer());
+        const viewer = await pricingViewer();
+        catalog = await loadPlazaData(viewer.user, viewer.partner);
     } catch (err) {
         console.warn('[models] loadPlazaData failed:', err);
     }

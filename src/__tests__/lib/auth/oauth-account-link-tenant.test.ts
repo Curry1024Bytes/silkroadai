@@ -40,6 +40,10 @@ const mockGetDefaultChannelGroup = vi.fn();
 vi.mock('@/lib/channel-group', () => ({
     getDefaultChannelGroup: (...a: unknown[]) => mockGetDefaultChannelGroup(...a),
 }));
+const mockPartnerAccepts = vi.fn();
+vi.mock('@/lib/partner/assign-group', () => ({
+    partnerAcceptsCustomers: (...a: unknown[]) => mockPartnerAccepts(...a),
+}));
 vi.mock('@/lib/newapi/system-token', () => ({
     getOrCreateSystemToken: (...a: unknown[]) => mockGetOrCreateSystemToken(...a),
 }));
@@ -66,6 +70,7 @@ beforeEach(() => {
         work((await import('@/lib/db')).prisma),
     );
     mockGetOrCreateSystemToken.mockResolvedValue(undefined);
+    mockPartnerAccepts.mockResolvedValue(true);
     mockGetDefaultChannelGroup.mockResolvedValue({
         key: 'gpt特惠分组',
         newapi_group: 'GPT-特惠反代',
@@ -89,6 +94,14 @@ describe('linkOrCreateOAuthUser — tenant attribution (branch 4)', () => {
                 }),
             }),
         );
+    });
+
+    it('partner tenant whose default tier is not open → refuses signup, no user created', async () => {
+        mockPartnerAccepts.mockResolvedValue(false);
+        const out = await linkOrCreateOAuthUser(IDENTITY, 'tenant-7');
+        expect(out).toEqual({ ok: false, error: 'provisioning_failed' });
+        expect(mockPartnerAccepts).toHaveBeenCalledWith('tenant-7', 'GPT-特惠反代');
+        expect(mockUserCreate).not.toHaveBeenCalled();
     });
 
     it('no tenantId → tenant_id null (back-compat)', async () => {

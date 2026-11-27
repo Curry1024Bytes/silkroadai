@@ -15,6 +15,7 @@ import { HIDDEN_MODELS } from '@/lib/models/categorize';
 import type { BrowserCatalog, BrowserModelPricing } from '@/lib/models/catalog-browser-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
+import type { PartnerPriceDisplay } from '@/lib/partner/display-pricing';
 import {
     parseCatalogBillingDetails,
     sanitizeCatalogDisplayDetails,
@@ -145,9 +146,14 @@ async function customerScales(
  */
 export async function loadBrowserCatalog(
     userId?: string,
-    { includePriceBreakdown = false, useNewApiGroupNames = false } = {},
+    {
+        includePriceBreakdown = false,
+        useNewApiGroupNames = false,
+        partner = null,
+    }: { includePriceBreakdown?: boolean; useNewApiGroupNames?: boolean; partner?: PartnerPriceDisplay | null } = {},
 ): Promise<BrowserCatalog> {
-    const officialQuotes = userId ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
+    // 代理站点按代理零售率显示，不套平台客户专属价。
+    const officialQuotes = userId && !partner ? await loadCustomerOfficialQuotes(userId) : new Map<string, TierPricing>();
     const [models, groups, overrides, displayOptions, references] = await Promise.all([
         prisma.catalogModel.findMany({
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
@@ -183,7 +189,7 @@ export async function loadBrowserCatalog(
                 upstream_synced_at: true,
             },
         }),
-        userId ? listUserTierMultipliers(userId) : Promise.resolve([]),
+        userId && !partner ? listUserTierMultipliers(userId) : Promise.resolve([]),
         includePriceBreakdown ? getPricingPublishOptions(2500).catch(() => null) : Promise.resolve(null),
         includePriceBreakdown
             ? prisma.customerOfficialReference
@@ -197,7 +203,7 @@ export async function loadBrowserCatalog(
 
     const referenceByModelTier = new Map(references.map((row) => [`${row.model_id}\u0000${row.tier_key}`, row]));
     const topology = new ChannelGroupTopology(PLATFORM_TENANT_ID, groups);
-    const scales = await customerScales(topology, overrides);
+    const scales = partner ? partner.scales : await customerScales(topology, overrides);
 
     // Cost rules and GroupRatio are only needed for video-token provenance. Keep ordinary
     // catalog reads on their existing query/mocking path and hide the provenance marker when
@@ -248,7 +254,10 @@ export async function loadBrowserCatalog(
     const visibleModels: BrowserModelPricing[] = [];
     for (const model of models) {
         if (HIDDEN_MODELS.has(model.slug)) continue;
-        const memberships = currentMemberships(model.upstream_map, topology);
+        const allMemberships = currentMemberships(model.upstream_map, topology);
+        const memberships = partner
+            ? allMemberships.filter((tier) => partner.openTiers.has(tier))
+            : allMemberships;
         if (memberships.length === 0) continue;
         const latestPrices = new Map<string, (typeof model.prices)[number]>();
         for (const price of model.prices) {
@@ -341,7 +350,7 @@ export async function loadBrowserCatalog(
                 }
                 const officialQuote = officialQuotes.get(`${model.slug}\u0000${tier}`);
                 if (officialQuote) pricing = { ...officialQuote, price_provenance: pricing.price_provenance };
-                else if (scale !== 1) {
+                else if (scale !== 1 && !partner) {
                     const standard = pricing.price_provenance?.verifiable ? pricing.price_provenance.discount : null;
                     pricing.customer_pricing = {
                         basis: 'public',

@@ -8,6 +8,8 @@ import { getEnv } from '@/lib/config';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { loadChannelGroupTopology } from '@/lib/channel-group-topology';
+import { assignNewPartnerCustomer } from '@/lib/partner/assign-group';
+import { isPartnerTenant } from '@/lib/partner/group';
 import { NewApiError, provisionNewCustomerResumable, type ProvisionedCustomer } from '@/lib/newapi/client';
 import { resolveCustomerTokenBinding } from '@/lib/customer-pricing/token-binding';
 
@@ -589,6 +591,10 @@ export async function processNextCustomerProvisioningJob(
                     patCreationStarted = false;
                 },
             });
+            // 白标代理客户：建号成功后、Portal 落库前归入代理分组，扣费才会命中代理零售率。
+            // 已在代理分组时不动，所以重试安全；失败时整个开户按可重试错误处理。
+            if (isPartnerTenant(job.tenantId))
+                await assignNewPartnerCustomer({ tenantId: job.tenantId, newapiUserId: result.newapi_user_id });
             // Renew once immediately before the short Portal commit so a slow
             // final API call cannot leave the transaction racing recovery.
             await renewAndFenceProvisioningLease(job, leaseMs);
