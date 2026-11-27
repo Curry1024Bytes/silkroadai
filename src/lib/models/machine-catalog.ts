@@ -26,6 +26,8 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByType, categorizeByVendor, type TypeName, type VendorName } from '@/lib/models/categorize';
 import { getOption, getTokenForCustomer } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
+import { isPartnerTenant } from '@/lib/partner/group';
+import { loadPartnerPriceDisplay } from '@/lib/partner/display-pricing';
 import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
 import type { PriceProvenance } from './price-provenance';
 import { loadCustomerOfficialQuotes } from '@/lib/customer-pricing/presentation';
@@ -153,6 +155,29 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
     return map;
 }
 
+/**
+ * 代理客户的可读目录口径：把代理租户的档次映射到平台的同名计费分组，
+ * 取平台档次的价格快照再乘代理零售率。分组没对代理开放时失败关闭（调用方回退）。
+ */
+async function resolvePartnerCatalogContext(partnerTierKey: string, tenantId: string): Promise<CatalogPricingContext> {
+    const [partnerTier, display] = await Promise.all([
+        prisma.channelGroup.findFirst({
+            where: { tenant_id: tenantId, key: partnerTierKey, enabled: true },
+            select: { newapi_group: true },
+        }),
+        loadPartnerPriceDisplay(tenantId),
+    ]);
+    if (!partnerTier) throw new Error('catalog tier is unavailable');
+    const platformTier = await prisma.channelGroup.findFirst({
+        where: { tenant_id: PLATFORM_TENANT_ID, newapi_group: partnerTier.newapi_group, enabled: true },
+        select: { key: true },
+    });
+    if (!platformTier) throw new Error('catalog tier is unavailable');
+    const scale = display?.scales.get(platformTier.key);
+    if (scale === undefined) throw new Error('partner tier is not open for this customer');
+    return { tier: platformTier.key, multiplierScale: scale };
+}
+
 /** Resolve the customer-specific price factor without caching it across customers. */
 export async function resolveCatalogPricingContextFromAuthHeader(
     authHeader: string | null,
@@ -164,9 +189,12 @@ export async function resolveCatalogPricingContextFromAuthHeader(
     if (!raw) throw new Error('cannot resolve catalog tier from an empty bearer token');
     const token = await prisma.newApiToken.findUnique({
         where: { newapi_token_value: raw },
-        select: { tier: true, user_id: true, status: true },
+        select: { tier: true, user_id: true, status: true, user: { select: { tenant_id: true } } },
     });
     if (!token || token.status !== 'active') throw new Error('bearer token is not an active Portal customer token');
+    // 代理客户按代理零售率出价：价格快照仍取平台档次，再乘零售率 ÷ 平台倍率。
+    const tenantId = token.user?.tenant_id ?? null;
+    if (isPartnerTenant(tenantId)) return await resolvePartnerCatalogContext(token.tier, tenantId);
     const [group, overrides, officialQuotes] = await Promise.all([
         prisma.channelGroup.findFirst({
             where: { tenant_id: PLATFORM_TENANT_ID, key: token.tier, enabled: true },

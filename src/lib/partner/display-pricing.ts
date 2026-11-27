@@ -15,10 +15,16 @@ export interface PartnerPriceDisplay {
     tenantId: string;
     /** 平台档次 key → 价差倍率（零售率 ÷ 平台倍率）。 */
     scales: Map<string, number>;
+    /** new-api 计费分组 → 价差倍率（同上，但按计费分组名索引）。 */
+    scalesByGroup: Map<string, number>;
     /** 平台档次 key → 代理零售率。 */
     retail: Map<string, number>;
+    /** new-api 计费分组 → 代理零售率。 */
+    retailByGroup: Map<string, number>;
     /** 对代理开放的平台档次 key。 */
     openTiers: Set<string>;
+    /** 对代理开放的 new-api 计费分组。 */
+    openGroups: Set<string>;
 }
 
 async function publicGroupRatios(): Promise<Record<string, number>> {
@@ -51,11 +57,23 @@ export async function loadPartnerPriceDisplay(tenantId: string | null | undefine
         }),
         publicGroupRatios(),
     ]);
-    if (!prices.length) return { tenantId, scales: new Map(), retail: new Map(), openTiers: new Set() };
+    if (!prices.length)
+        return {
+            tenantId,
+            scales: new Map(),
+            scalesByGroup: new Map(),
+            retail: new Map(),
+            retailByGroup: new Map(),
+            openTiers: new Set(),
+            openGroups: new Set(),
+        };
     const tierOf = new Map(tiers.map((tier) => [tier.key, tier.newapi_group]));
     const scales = new Map<string, number>();
+    const scalesByGroup = new Map<string, number>();
     const retail = new Map<string, number>();
+    const retailByGroup = new Map<string, number>();
     const openTiers = new Set<string>();
+    const openGroups = new Set<string>();
     for (const price of prices) {
         const newapiGroup = tierOf.get(price.group_key);
         const publicRatio = newapiGroup ? ratios[newapiGroup] : undefined;
@@ -63,10 +81,13 @@ export async function loadPartnerPriceDisplay(tenantId: string | null | undefine
         const scale = Number(price.retail_ratio) / publicRatio;
         if (!Number.isFinite(scale) || scale <= 0) continue;
         scales.set(price.group_key, scale);
+        scalesByGroup.set(newapiGroup, scale);
         retail.set(price.group_key, Number(price.retail_ratio));
+        retailByGroup.set(newapiGroup, Number(price.retail_ratio));
         openTiers.add(price.group_key);
+        openGroups.add(newapiGroup);
     }
-    return { tenantId, scales, retail, openTiers };
+    return { tenantId, scales, scalesByGroup, retail, retailByGroup, openTiers, openGroups };
 }
 
 /** 当前请求应使用哪个站点的价格口径：登录客户所属租户，否则按 Host 解析。 */

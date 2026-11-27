@@ -31,6 +31,7 @@ import 'server-only';
 import { listChannels, getOption } from '@/lib/newapi/client';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { listEnabledChannelGroups } from '@/lib/channel-group';
+import { loadPartnerPriceDisplay } from '@/lib/partner/display-pricing';
 
 export interface ModelGroupInfo {
     /** Cheapest group serving the model. */
@@ -77,8 +78,12 @@ async function build(tenantId: string | null): Promise<Map<string, ModelGroupInf
         getOption('GroupRatio'),
         listEnabledChannelGroups(tenantId),
     ]);
-    const ratios = parseRatios(ratioRaw);
-    const allowedGroups = new Set(portalGroups.map((group) => group.newapi_group));
+    // 代理客户只认代理开放的分组和零售率：既用于价格徽章，也用于聊天实际选组。
+    const partner = await loadPartnerPriceDisplay(tenantId);
+    const ratios = partner ? Object.fromEntries(partner.retailByGroup) : parseRatios(ratioRaw);
+    const allowedGroups = partner
+        ? new Set(partner.openGroups)
+        : new Set(portalGroups.map((group) => group.newapi_group));
     const allowedRatios = portalGroups
         .map((group) => ratios[group.newapi_group])
         .filter((ratio): ratio is number => Number.isFinite(ratio) && ratio > 0);

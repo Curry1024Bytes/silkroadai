@@ -1057,7 +1057,7 @@ describe('/v1 proxy — passthrough', () => {
         expect(res.headers.get('x-oneapi-request-id')).toBe('req-m-1');
         expect(mockTokenFindUnique).toHaveBeenCalledWith({
             where: { newapi_token_value: 'official-key' },
-            select: { tier: true, user_id: true, status: true },
+            select: { tier: true, user_id: true, status: true, user: { select: { tenant_id: true } } },
         });
         const body = (await res.json()) as {
             object: string;

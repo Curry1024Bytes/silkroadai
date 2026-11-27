@@ -46,6 +46,10 @@ describe('loadPartnerPriceDisplay', () => {
         expect(display?.openTiers).toEqual(new Set(['sd-official']));
         expect(display?.scales.has('sd-cheap')).toBe(false);
         expect(display?.scales.has('claude')).toBe(false);
+        // /v1/models 与聊天路由按 new-api 计费分组名查，两份索引必须一致
+        expect(display?.scalesByGroup.get('SD官转')).toBeCloseTo(1.2);
+        expect(display?.retailByGroup.get('SD官转')).toBe(0.12);
+        expect(display?.openGroups).toEqual(new Set(['SD官转']));
     });
 
     it('excludes tiers whose billing group is missing from new-api GroupRatio', async () => {

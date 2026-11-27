@@ -18,6 +18,10 @@ vi.mock('@/lib/newapi/client', () => ({
 vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
     listUserTierMultipliers: (...args: unknown[]) => mockMultipliers(...args),
 }));
+const mockPartnerDisplay = vi.fn();
+vi.mock('@/lib/partner/display-pricing', () => ({
+    loadPartnerPriceDisplay: (...args: unknown[]) => mockPartnerDisplay(...args),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         customerOfficialPriceRule: { count: async () => 0, findMany: async () => [] },
@@ -292,6 +296,39 @@ describe('customer-specific catalog pricing', () => {
             await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).rejects.toThrow();
         },
     );
+    it('prices partner customers by the partner retail ratio on the platform tier snapshot', async () => {
+        mockFindUniqueToken.mockResolvedValue({
+            tier: 'partner-sd',
+            user_id: 'customer-p',
+            status: 'active',
+            user: { tenant_id: 'partner-tenant' },
+        });
+        mockFindGroup.mockImplementation(async ({ where }: { where: { tenant_id: string } }) =>
+            where.tenant_id === 'partner-tenant' ? { newapi_group: 'Enterprise' } : { key: 'enterprise' },
+        );
+        mockPartnerDisplay.mockResolvedValue({ scales: new Map([['enterprise', 0.5]]) });
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer sk-partner')).resolves.toEqual({
+            tier: 'enterprise',
+            multiplierScale: 0.5,
+        });
+        expect(mockMultipliers).not.toHaveBeenCalled();
+        expect(mockGetOption).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the partner customer tier is not open to that partner', async () => {
+        mockFindUniqueToken.mockResolvedValue({
+            tier: 'partner-sd',
+            user_id: 'customer-p',
+            status: 'active',
+            user: { tenant_id: 'partner-tenant' },
+        });
+        mockFindGroup.mockImplementation(async ({ where }: { where: { tenant_id: string } }) =>
+            where.tenant_id === 'partner-tenant' ? { newapi_group: 'Enterprise' } : { key: 'enterprise' },
+        );
+        mockPartnerDisplay.mockResolvedValue({ scales: new Map() });
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer sk-partner')).rejects.toThrow('not open');
+    });
+
     it('fails closed for inactive tokens and unavailable tiers', async () => {
         mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'revoked' });
         await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).rejects.toThrow('active Portal');
